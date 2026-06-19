@@ -1,46 +1,38 @@
-# AI Content Summarizer
+# Summarizer CLI
 
-A command-line tool that summarizes web pages and local files using AI (OpenAI GPT models).
-
-## Features
-
-- Summarize content from URLs or local files
-- Multiple summary styles (brief, detailed, bullet points)
-- Multiple output formats (text, markdown, JSON)
-- Configurable AI model and parameters
-- Verbose logging support
+A command-line tool that summarizes web pages and local files using LLMs.
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.9 or higher
-- An OpenAI API key
+- Python 3.9+
+- pip
 
-### Install from source
+### Setup
 
-```bash
-# Clone the repository
-git clone <repository-url>
-cd ai-summarizer
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   cd summarizer
+   ```
 
-# Create and activate a virtual environment (recommended)
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
 
-# Install in editable mode
-pip install -e .
-```
+3. Install the package in editable mode:
+   ```bash
+   pip install -e .
+   ```
 
-### Configure environment variables
-
-```bash
-# Copy the example environment file
-cp .env.example .env
-
-# Edit .env and add your OpenAI API key
-nano .env
-```
+4. Configure environment variables:
+   ```bash
+   cp .env.example .env
+   # Edit .env and add your API keys
+   ```
 
 ## Usage
 
@@ -51,59 +43,62 @@ summarize --url https://example.com/article
 # Summarize a local file
 summarize --file /path/to/document.txt
 
-# Choose summary style (brief, detailed, bullets)
-summarize --url https://example.com --style detailed
+# Specify output style
+summarize --url https://example.com/article --style bullet
 
-# Choose output format (text, markdown, json)
-summarize --url https://example.com --format markdown
+# Specify output format
+summarize --url https://example.com/article --format markdown
 
 # Enable verbose logging
-summarize --url https://example.com --verbose
+summarize --url https://example.com/article --verbose
 
 # Show help
 summarize --help
 ```
 
-## Environment Variables
+## Options
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OPENAI_API_KEY` | Your OpenAI API key (required) | — |
-| `SUMMARIZER_MODEL` | OpenAI model to use | `gpt-4o-mini` |
-| `SUMMARIZER_MAX_TOKENS` | Maximum tokens for summary | `1024` |
-| `SUMMARIZER_TEMPERATURE` | Model temperature (0.0–2.0) | `0.7` |
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--url` | URL of the web page to summarize | — |
+| `--file` | Path to local file to summarize | — |
+| `--style` | Summary style: `paragraph`, `bullet`, `tldr` | `paragraph` |
+| `--format` | Output format: `plain`, `markdown`, `json` | `plain` |
+| `--verbose` | Enable debug logging | `False` |
 
 ## Development
 
+### Running Tests
+
 ```bash
-# Install with dev dependencies
 pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# Run tests with coverage
-pytest --cov=summarizer
+pytest tests/
 ```
 
-## Project Structure
+### Project Structure
 
 ```
-.
+summarizer/
 ├── src/
 │   └── summarizer/
-│       ├── __init__.py      # Package init & version
-│       ├── cli.py           # Click CLI entry point
-│       ├── config.py        # Configuration management
-│       └── logger.py        # Logging setup
+│       ├── __init__.py     # Package init, version
+│       ├── cli.py          # Click CLI entry point
+│       ├── config.py       # Environment/config management
+│       └── logger.py       # Logging setup
 ├── tests/
 │   ├── __init__.py
-│   └── test_cli.py          # CLI smoke tests
-├── .env.example             # Environment variable template
-├── pyproject.toml           # Package metadata & dependencies
+│   └── test_cli.py         # CLI smoke tests
+├── .env.example            # Environment variable template
+├── pyproject.toml          # Package metadata & dependencies
 └── README.md
 ```
 
-## License
+## Environment Variables
 
-MIT
+See `.env.example` for all available configuration options.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENAI_API_KEY` | Yes | Your OpenAI API key |
+| `SUMMARIZER_MODEL` | No | Model to use (default: `gpt-4o-mini`) |
+| `SUMMARIZER_MAX_TOKENS` | No | Max tokens for response (default: `512`) |

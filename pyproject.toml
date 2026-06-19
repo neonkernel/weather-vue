@@ -3,40 +3,40 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.backends.legacy:build"
 
 [project]
-name = "ai-summarizer"
+name = "summarizer"
 version = "0.1.0"
-description = "A CLI tool to summarize web pages and local files using AI"
+description = "A CLI tool to summarize web pages and local files using LLMs"
 readme = "README.md"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [
-    { name = "Your Name", email = "you@example.com" }
+  { name = "Your Name", email = "you@example.com" }
 ]
-requires-python = ">=3.9"
-keywords = ["summarizer", "ai", "openai", "cli", "nlp"]
+keywords = ["summarizer", "cli", "llm", "openai", "nlp"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Environment :: Console",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Utilities",
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Utilities",
 ]
+
 dependencies = [
-    "click>=8.1",
-    "python-dotenv>=1.0",
-    "requests>=2.31",
-    "beautifulsoup4>=4.12",
-    "openai>=1.0",
+  "click>=8.1",
+  "python-dotenv>=1.0",
+  "requests>=2.31",
+  "beautifulsoup4>=4.12",
+  "openai>=1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4",
-    "pytest-cov>=4.1",
+  "pytest>=7.4",
+  "pytest-cov>=4.1",
 ]
 
 [project.scripts]

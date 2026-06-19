@@ -1,8 +1,8 @@
 """
-Configuration management for the AI summarizer.
+Configuration management for the summarizer CLI.
 
-Loads environment variables (from .env if present) and exposes them
-as a validated Config dataclass.
+Loads environment variables (from a .env file if present) and exposes
+them as a validated :class:`Config` dataclass.
 """
 
 from __future__ import annotations
@@ -15,88 +15,109 @@ from dotenv import load_dotenv
 
 from summarizer.logger import get_logger
 
-log = get_logger("config")
+log = get_logger(__name__)
 
-# Load .env from the current working directory (or any parent).
-# This is a no-op when the variables are already set in the environment.
-load_dotenv()
-
-_VALID_MODELS = {
-    "gpt-4o",
-    "gpt-4o-mini",
-    "gpt-4-turbo",
-    "gpt-4",
-    "gpt-3.5-turbo",
-}
+# Load .env from the current working directory (or any parent that has one)
+load_dotenv(dotenv_path=Path(".env"), override=False)
 
 
 @dataclass(frozen=True)
 class Config:
-    """Immutable configuration object built from environment variables."""
+    """Validated application configuration."""
 
     api_key: str
     model: str = "gpt-4o-mini"
-    max_tokens: int = 1024
-    temperature: float = 0.7
+    max_tokens: int = 512
+    request_timeout: int = 30
 
-    # Extra metadata — not required by the user
-    env_file_loaded: bool = field(default=False, compare=False, repr=False)
-
-    # ------------------------------------------------------------------
-    # Factory
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ #
+    # Factory                                                              #
+    # ------------------------------------------------------------------ #
 
     @classmethod
     def from_env(cls) -> "Config":
         """
-        Build a Config instance from environment variables.
+        Build a :class:`Config` instance from environment variables.
 
         Raises:
-            ValueError: If a required variable is missing or a value is invalid.
+            ValueError: If a required environment variable is missing or
+                        if a numeric variable cannot be parsed.
         """
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:
             raise ValueError(
                 "OPENAI_API_KEY is not set. "
-                "Add it to your .env file or export it in your shell."
+                "Copy .env.example to .env and add your key, "
+                "or export the variable in your shell."
             )
 
-        model = os.getenv("SUMMARIZER_MODEL", "gpt-4o-mini").strip()
-        log.debug("Using model: %s", model)
+        model = os.getenv("SUMMARIZER_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
 
-        raw_max_tokens = os.getenv("SUMMARIZER_MAX_TOKENS", "1024")
-        try:
-            max_tokens = int(raw_max_tokens)
-            if max_tokens < 1:
-                raise ValueError("max_tokens must be >= 1")
-        except ValueError as exc:
-            raise ValueError(
-                f"SUMMARIZER_MAX_TOKENS must be a positive integer, got: {raw_max_tokens!r}"
-            ) from exc
+        max_tokens = _parse_int("SUMMARIZER_MAX_TOKENS", default=512, min_val=1, max_val=32_768)
+        request_timeout = _parse_int(
+            "SUMMARIZER_REQUEST_TIMEOUT", default=30, min_val=1, max_val=300
+        )
 
-        raw_temperature = os.getenv("SUMMARIZER_TEMPERATURE", "0.7")
-        try:
-            temperature = float(raw_temperature)
-            if not (0.0 <= temperature <= 2.0):
-                raise ValueError("temperature must be between 0.0 and 2.0")
-        except ValueError as exc:
-            raise ValueError(
-                f"SUMMARIZER_TEMPERATURE must be a float in [0.0, 2.0], got: {raw_temperature!r}"
-            ) from exc
-
-        return cls(
+        config = cls(
             api_key=api_key,
             model=model,
             max_tokens=max_tokens,
-            temperature=temperature,
+            request_timeout=request_timeout,
+        )
+        log.debug(
+            "Config loaded: model=%s max_tokens=%d timeout=%ds",
+            config.model,
+            config.max_tokens,
+            config.request_timeout,
+        )
+        return config
+
+
+# ------------------------------------------------------------------ #
+# Helpers                                                             #
+# ------------------------------------------------------------------ #
+
+
+def _parse_int(
+    env_var: str,
+    *,
+    default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """
+    Parse an integer environment variable with optional range validation.
+
+    Args:
+        env_var:   Name of the environment variable.
+        default:   Fallback value when the variable is unset or empty.
+        min_val:   Inclusive lower bound (optional).
+        max_val:   Inclusive upper bound (optional).
+
+    Returns:
+        The parsed integer value.
+
+    Raises:
+        ValueError: If the value is not a valid integer or out of range.
+    """
+    raw = os.getenv(env_var, "").strip()
+    if not raw:
+        return default
+
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"Environment variable {env_var!r} must be an integer, got {raw!r}."
+        ) from exc
+
+    if min_val is not None and value < min_val:
+        raise ValueError(
+            f"Environment variable {env_var!r} must be >= {min_val}, got {value}."
+        )
+    if max_val is not None and value > max_val:
+        raise ValueError(
+            f"Environment variable {env_var!r} must be <= {max_val}, got {value}."
         )
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def masked_api_key(self) -> str:
-        """Return the API key with all but the last 4 characters masked."""
-        if len(self.api_key) <= 4:
-            return "****"
-        return "*" * (len(self.api_key) - 4) + self.api_key[-4:]
+    return value
