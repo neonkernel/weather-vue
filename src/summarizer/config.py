@@ -1,8 +1,8 @@
 """
 Configuration management for the Summarizer CLI.
 
-Loads environment variables (from a .env file or the shell environment)
-and exposes them through a validated Config dataclass.
+Loads and validates environment variables via python-dotenv and exposes
+a Config dataclass with all necessary settings.
 """
 
 from __future__ import annotations
@@ -13,115 +13,102 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from summarizer.logger import get_logger
 
-logger = get_logger("config")
-
-# Load .env from the project root (or wherever the process is run from).
-# Variables already present in the environment take precedence.
-_ENV_FILE = Path(".env")
-
-
-def _load_env(env_file: Path = _ENV_FILE) -> None:
-    """Load environment variables from a .env file if it exists."""
-    if env_file.exists():
-        load_dotenv(dotenv_path=env_file, override=False)
-        logger.debug("Loaded environment variables from: %s", env_file.resolve())
-    else:
-        logger.debug(".env file not found at %s; relying on shell environment.", env_file)
+def _find_dotenv() -> Path | None:
+    """Walk up from cwd looking for a .env file."""
+    current = Path.cwd()
+    for directory in [current, *current.parents]:
+        candidate = directory / ".env"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
-    """
-    Immutable configuration object populated from environment variables.
+    """Application configuration loaded from environment variables."""
 
-    Attributes:
-        api_key:    OpenAI API key (required for summarization).
-        model:      OpenAI model identifier.
-        max_tokens: Maximum number of tokens in the model response.
-        timeout:    HTTP request timeout in seconds.
-    """
-
-    api_key: str
+    api_key: str = ""
     model: str = "gpt-4o-mini"
     max_tokens: int = 512
-    timeout: int = 30
+    log_level: str = "INFO"
 
-    # Internal sentinel: tracks whether the config was loaded successfully
-    _loaded: bool = field(default=True, compare=False, repr=False)
+    # Internal flag: True when the API key is present (even if not yet validated)
+    _has_api_key: bool = field(init=False, repr=False, default=False)
 
-    def is_api_key_set(self) -> bool:
-        """Return True if the API key looks like a real key (not the placeholder)."""
-        return bool(self.api_key) and not self.api_key.startswith("sk-...")
+    def __post_init__(self) -> None:
+        self._has_api_key = bool(self.api_key)
+
+    @property
+    def has_api_key(self) -> bool:
+        """Return True if an API key is configured."""
+        return self._has_api_key
+
+    def validate(self, require_api_key: bool = False) -> None:
+        """
+        Validate the configuration values.
+
+        Args:
+            require_api_key: When True, raise ConfigError if no API key is set.
+
+        Raises:
+            ConfigError: If any required value is missing or invalid.
+        """
+        if require_api_key and not self.api_key:
+            raise ConfigError(
+                "OPENAI_API_KEY is not set. "
+                "Add it to your .env file or set it as an environment variable."
+            )
+
+        if self.max_tokens < 1:
+            raise ConfigError(f"MAX_TOKENS must be a positive integer, got {self.max_tokens!r}.")
+
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if self.log_level.upper() not in valid_levels:
+            raise ConfigError(
+                f"LOG_LEVEL must be one of {sorted(valid_levels)}, got {self.log_level!r}."
+            )
 
 
 class ConfigError(Exception):
-    """Raised when required configuration values are missing or invalid."""
+    """Raised when configuration is invalid or missing required values."""
 
 
-def load_config(env_file: Path = _ENV_FILE) -> Config:
+def load_config(env_file: str | Path | None = None) -> Config:
     """
-    Load and validate configuration from environment variables.
+    Load configuration from environment variables, optionally from a .env file.
 
-    Reads from the given .env file (if it exists) and then from the
-    process environment.  Raises ConfigError if required values are
-    absent or invalid.
+    The lookup order for each variable follows python-dotenv's standard:
+    existing environment variables take precedence over .env file values.
 
     Args:
-        env_file: Path to the .env file to load.
+        env_file: Path to a .env file. If None, auto-discovers one by walking up
+                  from the current working directory. Pass ``False`` to skip
+                  .env loading entirely.
 
     Returns:
-        A populated and validated Config instance.
-
-    Raises:
-        ConfigError: If OPENAI_API_KEY is missing.
+        A populated :class:`Config` instance.
     """
-    _load_env(env_file)
+    if env_file is not False:
+        dotenv_path = Path(env_file) if env_file else _find_dotenv()
+        if dotenv_path:
+            load_dotenv(dotenv_path=dotenv_path, override=False)
+        else:
+            # Still attempt a default load so DOTENV_PATH etc. work
+            load_dotenv(override=False)
 
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        raise ConfigError(
-            "OPENAI_API_KEY is not set. "
-            "Add it to your .env file or export it in your shell.\n"
-            "  Example: export OPENAI_API_KEY=sk-..."
-        )
+    def _int(key: str, default: int) -> int:
+        raw = os.getenv(key, "")
+        if not raw:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            raise ConfigError(f"Environment variable {key} must be an integer, got {raw!r}.")
 
-    model = os.environ.get("SUMMARIZER_MODEL", "gpt-4o-mini").strip()
-    if not model:
-        model = "gpt-4o-mini"
-
-    try:
-        max_tokens = int(os.environ.get("SUMMARIZER_MAX_TOKENS", "512"))
-        if max_tokens < 1:
-            raise ValueError("max_tokens must be a positive integer")
-    except ValueError as exc:
-        raise ConfigError(
-            f"SUMMARIZER_MAX_TOKENS must be a positive integer. Got: "
-            f"{os.environ.get('SUMMARIZER_MAX_TOKENS')!r}"
-        ) from exc
-
-    try:
-        timeout = int(os.environ.get("SUMMARIZER_TIMEOUT", "30"))
-        if timeout < 1:
-            raise ValueError("timeout must be a positive integer")
-    except ValueError as exc:
-        raise ConfigError(
-            f"SUMMARIZER_TIMEOUT must be a positive integer. Got: "
-            f"{os.environ.get('SUMMARIZER_TIMEOUT')!r}"
-        ) from exc
-
-    config = Config(
-        api_key=api_key,
-        model=model,
-        max_tokens=max_tokens,
-        timeout=timeout,
+    return Config(
+        api_key=os.getenv("OPENAI_API_KEY", ""),
+        model=os.getenv("SUMMARIZER_MODEL", "gpt-4o-mini"),
+        max_tokens=_int("MAX_TOKENS", 512),
+        log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
     )
-
-    logger.debug(
-        "Config loaded: model=%s, max_tokens=%d, timeout=%d",
-        config.model,
-        config.max_tokens,
-        config.timeout,
-    )
-    return config
