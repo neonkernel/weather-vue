@@ -1,230 +1,211 @@
 """
-CLI entry point for the summarizer tool.
+CLI entry point for the Summarizer tool.
 
-Defines the `summarize` Click command.  Accepts either a URL or a local file
-path as input, validates the input, and prints a placeholder summary response.
-(Full LLM integration is added in a later phase.)
+Defines the ``summarize`` command and all its options using Click.
+Input validation is performed here; actual summarization will be added
+in a later phase.
 """
 
 from __future__ import annotations
 
-import os
-import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import click
 
 from summarizer import __version__
+from summarizer.config import Config, ConfigurationError
 from summarizer.logger import configure_logging, get_logger
 
-logger = get_logger("cli")
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Validation helpers
+# Constants
 # ---------------------------------------------------------------------------
 
-_URL_RE = re.compile(
-    r"^(https?|ftp)://"          # scheme
-    r"([A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+)"  # rest
-    r"$",
-    re.IGNORECASE,
-)
+VALID_STYLES = ("paragraph", "bullet", "tldr")
+VALID_FORMATS = ("plain", "markdown", "json")
 
 
-def _is_plausible_url(value: str) -> bool:
-    """Return True if *value* looks like a URL (http/https/ftp scheme)."""
-    return bool(_URL_RE.match(value.strip()))
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_valid_url(value: str) -> bool:
+    """Return True if *value* looks like an http/https URL."""
+    try:
+        result = urlparse(value)
+        return result.scheme in {"http", "https"} and bool(result.netloc)
+    except ValueError:
+        return False
 
 
 def _is_readable_file(value: str) -> bool:
-    """Return True if *value* is an existing, readable file path."""
-    p = Path(value)
-    return p.is_file() and os.access(p, os.R_OK)
+    """Return True if *value* is a path to an existing, readable file."""
+    path = Path(value)
+    return path.is_file() and os.access(path, os.R_OK)
 
 
-def _validate_input(url: str | None, file: str | None) -> tuple[str, str]:
-    """
-    Validate that exactly one of *url* or *file* is provided and is usable.
-
-    Returns:
-        A (input_type, input_value) tuple where input_type is 'url' or 'file'.
-
-    Raises:
-        click.UsageError: If validation fails.
-    """
-    if url and file:
-        raise click.UsageError(
-            "Provide either --url or --file, not both."
-        )
-
-    if not url and not file:
-        raise click.UsageError(
-            "You must provide an input via --url <URL> or --file <PATH>."
-        )
-
-    if url:
-        if not _is_plausible_url(url):
-            raise click.BadParameter(
-                f"'{url}' does not look like a valid URL. "
-                "URLs must start with http://, https://, or ftp://.",
-                param_hint="'--url'",
-            )
-        return "url", url
-
-    # file path
-    if not _is_readable_file(file):  # type: ignore[arg-type]
-        raise click.BadParameter(
-            f"'{file}' is not a readable file. "
-            "Please provide a valid path to an existing file.",
-            param_hint="'--file'",
-        )
-    return "file", file  # type: ignore[return-value]
+# We need os for os.access — import it here to keep the top-level imports tidy.
+import os  # noqa: E402 (needed after helper definition for clarity)
 
 
 # ---------------------------------------------------------------------------
-# CLI definition
+# Click command
 # ---------------------------------------------------------------------------
-
-STYLE_CHOICES = click.Choice(["paragraph", "bullet", "tldr"], case_sensitive=False)
-FORMAT_CHOICES = click.Choice(["plain", "markdown", "json"], case_sensitive=False)
 
 
 @click.command("summarize")
 @click.version_option(version=__version__, prog_name="summarize")
 @click.option(
     "--url",
-    "-u",
+    "url",
     default=None,
     metavar="URL",
     help="URL of the web page to summarize.",
 )
 @click.option(
     "--file",
-    "-f",
-    "file",
+    "file_path",
     default=None,
     metavar="PATH",
+    type=click.Path(exists=False),  # We do manual validation for better messages.
     help="Path to a local file to summarize.",
 )
 @click.option(
     "--style",
-    "-s",
+    "style",
     default="paragraph",
     show_default=True,
-    type=STYLE_CHOICES,
-    help="Summary style: paragraph, bullet, or tldr.",
+    type=click.Choice(VALID_STYLES, case_sensitive=False),
+    help="Style of the generated summary.",
 )
 @click.option(
     "--format",
     "output_format",
-    "-o",
     default="plain",
     show_default=True,
-    type=FORMAT_CHOICES,
-    help="Output format: plain, markdown, or json.",
+    type=click.Choice(VALID_FORMATS, case_sensitive=False),
+    help="Output format for the summary.",
 )
 @click.option(
     "--verbose",
-    "-v",
+    "verbose",
     is_flag=True,
     default=False,
-    help="Enable verbose/debug logging.",
+    help="Enable debug-level logging.",
 )
 def main(
     url: str | None,
-    file: str | None,
+    file_path: str | None,
     style: str,
     output_format: str,
     verbose: bool,
 ) -> None:
-    """
-    Summarize a web page or local file using AI.
+    """Summarize a web page or local file using an LLM.
 
-    Provide either a URL (--url) or a file path (--file) as input.
+    Exactly one of --url or --file must be provided.
 
     \b
     Examples:
       summarize --url https://example.com/article
-      summarize --file report.txt --style bullet --format markdown
+      summarize --file ./report.txt --style bullet --format markdown
     """
+    # 1. Configure logging as early as possible.
     configure_logging(verbose=verbose)
 
     logger.debug(
-        "Invoked with url=%r, file=%r, style=%r, format=%r, verbose=%r",
+        "summarize called: url=%r file=%r style=%r format=%r verbose=%r",
         url,
-        file,
+        file_path,
         style,
         output_format,
         verbose,
     )
 
-    # Validate input
+    # 2. Load configuration from environment.
     try:
-        input_type, input_value = _validate_input(url, file)
-    except (click.UsageError, click.BadParameter) as exc:
-        logger.debug("Input validation failed: %s", exc)
-        raise  # Let Click handle the formatting and exit code
+        config = Config.from_env()
+    except ConfigurationError as exc:
+        logger.error("Configuration error: %s", exc)
+        raise click.ClickException(str(exc)) from exc
 
-    logger.info("Input type : %s", input_type)
-    logger.info("Input value: %s", input_value)
-    logger.info("Style      : %s", style)
-    logger.info("Format     : %s", output_format)
+    logger.debug("Config loaded: model=%s max_tokens=%d", config.model, config.max_tokens)
 
-    # ---------------------------------------------------------------------------
-    # Placeholder response (LLM integration added in a later phase)
-    # ---------------------------------------------------------------------------
-    placeholder = _build_placeholder(input_type, input_value, style, output_format)
-    click.echo(placeholder)
+    # 3. Validate that exactly one input source is provided.
+    if url and file_path:
+        raise click.UsageError("Provide either --url or --file, not both.")
+
+    if not url and not file_path:
+        raise click.UsageError("You must provide either --url or --file.")
+
+    # 4. Validate the individual input.
+    if url:
+        if not _is_valid_url(url):
+            raise click.BadParameter(
+                f"{url!r} is not a valid http/https URL.",
+                param_hint="'--url'",
+            )
+        input_type = "url"
+        input_value = url
+        logger.info("Input: URL → %s", url)
+
+    else:
+        # file_path is set
+        path = Path(file_path)
+        if not path.exists():
+            raise click.BadParameter(
+                f"File not found: {file_path!r}",
+                param_hint="'--file'",
+            )
+        if not path.is_file():
+            raise click.BadParameter(
+                f"Path is not a file: {file_path!r}",
+                param_hint="'--file'",
+            )
+        if not os.access(path, os.R_OK):
+            raise click.BadParameter(
+                f"File is not readable: {file_path!r}",
+                param_hint="'--file'",
+            )
+        input_type = "file"
+        input_value = str(path.resolve())
+        logger.info("Input: file → %s", input_value)
+
+    # 5. Placeholder response (LLM integration comes in Phase 2).
+    _print_placeholder(
+        input_type=input_type,
+        input_value=input_value,
+        style=style,
+        output_format=output_format,
+        config=config,
+    )
 
 
-def _build_placeholder(
+def _print_placeholder(
     input_type: str,
     input_value: str,
     style: str,
     output_format: str,
-) -> str:
-    """
-    Build a human-readable placeholder message.
-
-    This will be replaced by real LLM output in a later phase.
-    """
-    description = (
-        f"URL: {input_value}" if input_type == "url" else f"File: {input_value}"
-    )
-
-    message = (
-        f"[PLACEHOLDER] Summarizer received your input.\n"
-        f"  {description}\n"
-        f"  Style  : {style}\n"
-        f"  Format : {output_format}\n\n"
-        f"LLM integration is not yet implemented. "
-        f"This is Phase 1 — the tool is wired up and ready."
-    )
-
-    if output_format == "json":
-        import json
-        return json.dumps(
-            {
-                "status": "placeholder",
-                "input_type": input_type,
-                "input_value": input_value,
-                "style": style,
-                "format": output_format,
-                "summary": "LLM integration not yet implemented (Phase 1).",
-            },
-            indent=2,
-        )
-
-    if output_format == "markdown":
-        return (
-            f"## Summary *(placeholder)*\n\n"
-            f"> **Input ({input_type}):** `{input_value}`  \n"
-            f"> **Style:** {style}  \n"
-            f"> **Format:** {output_format}\n\n"
-            f"_LLM integration is not yet implemented. "
-            f"This is Phase 1 — the tool is wired up and ready._"
-        )
-
-    # default: plain
-    return message
+    config: Config,
+) -> None:
+    """Print a placeholder summary until LLM integration is implemented."""
+    lines = [
+        "=" * 60,
+        "  SUMMARIZER CLI — Placeholder Response (Phase 1)",
+        "=" * 60,
+        f"  Input type   : {input_type}",
+        f"  Input value  : {input_value}",
+        f"  Style        : {style}",
+        f"  Format       : {output_format}",
+        f"  Model        : {config.model}",
+        f"  Max tokens   : {config.max_tokens}",
+        "=" * 60,
+        "",
+        "  ✅ Input validated successfully.",
+        "  🔧 LLM summarization will be implemented in Phase 2.",
+        "",
+    ]
+    click.echo("\n".join(lines))

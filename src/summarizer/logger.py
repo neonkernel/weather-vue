@@ -1,56 +1,78 @@
 """
-Logging configuration for the summarizer package.
+Logging configuration for the Summarizer CLI.
 
-Provides a consistent logging format across all modules and supports
-a --verbose flag to enable DEBUG-level output.
+Provides a helper that configures the root summarizer logger with a
+consistent format and respects a ``--verbose`` flag to enable DEBUG output.
 """
+
+from __future__ import annotations
 
 import logging
 import sys
 
-# Module-level logger for the summarizer package
-logger = logging.getLogger("summarizer")
+# Module-level logger; child loggers in other modules should use
+# ``logging.getLogger(__name__)`` to inherit this configuration.
+_LOG_FORMAT = "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s"
+_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-_HANDLER_CONFIGURED = False
+# Package-level logger name — all child loggers share this namespace.
+LOGGER_NAME = "summarizer"
+
+
+def get_logger(name: str | None = None) -> logging.Logger:
+    """
+    Return a logger namespaced under the ``summarizer`` package.
+
+    Parameters
+    ----------
+    name:
+        Optional sub-name appended to ``"summarizer."``.  Pass ``__name__``
+        from the calling module for a per-module logger.
+
+    Returns
+    -------
+    logging.Logger
+    """
+    if name and not name.startswith(LOGGER_NAME):
+        logger_name = f"{LOGGER_NAME}.{name}"
+    else:
+        logger_name = name or LOGGER_NAME
+
+    return logging.getLogger(logger_name)
 
 
 def configure_logging(verbose: bool = False) -> None:
     """
-    Configure the root summarizer logger.
+    Configure the ``summarizer`` logger hierarchy.
 
-    Sets up a StreamHandler writing to stderr with a consistent format.
-    If verbose is True, the log level is set to DEBUG; otherwise INFO.
+    This should be called **once** at application startup (i.e., inside the
+    Click command callback) before any other logging calls.
 
-    Args:
-        verbose: If True, enable DEBUG-level logging.
+    Parameters
+    ----------
+    verbose:
+        When ``True``, sets the log level to ``DEBUG``.
+        When ``False`` (default), sets it to ``INFO``.
     """
-    global _HANDLER_CONFIGURED
-
     level = logging.DEBUG if verbose else logging.INFO
 
-    # Avoid adding duplicate handlers on repeated calls (e.g., in tests)
-    if not _HANDLER_CONFIGURED:
-        handler = logging.StreamHandler(sys.stderr)
-        formatter = logging.Formatter(
-            fmt="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        _HANDLER_CONFIGURED = True
+    # Build a handler that writes to stderr so that log output does not
+    # pollute stdout (where the actual summary is printed).
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(level)
 
-    logger.setLevel(level)
-    logger.debug("Logging configured (level=%s)", logging.getLevelName(level))
+    formatter = logging.Formatter(fmt=_LOG_FORMAT, datefmt=_DATE_FORMAT)
+    handler.setFormatter(formatter)
 
+    root_logger = logging.getLogger(LOGGER_NAME)
+    root_logger.setLevel(level)
 
-def get_logger(name: str) -> logging.Logger:
-    """
-    Return a child logger under the 'summarizer' namespace.
+    # Avoid duplicate handlers if configure_logging is called more than once
+    # (e.g., in tests).
+    if not root_logger.handlers:
+        root_logger.addHandler(handler)
+    else:
+        root_logger.handlers.clear()
+        root_logger.addHandler(handler)
 
-    Args:
-        name: Sub-module or component name (e.g., 'cli', 'config').
-
-    Returns:
-        A Logger instance named 'summarizer.<name>'.
-    """
-    return logging.getLogger(f"summarizer.{name}")
+    root_logger.debug("Logging initialised at %s level.", logging.getLevelName(level))

@@ -17,8 +17,8 @@ MANIFEST
 # Virtual environments
 .venv/
 venv/
-env/
 ENV/
+env/
 
 # Testing
 .pytest_cache/
@@ -26,23 +26,15 @@ ENV/
 htmlcov/
 .tox/
 
-# IDE / Editor
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
-# Node (for the Vue frontend)
-node_modules/
-
-# Vite build output
-dist/
-
 # Logs
 *.log
-logs/

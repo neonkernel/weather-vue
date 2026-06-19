@@ -1,8 +1,8 @@
 """
-Configuration management for the summarizer package.
+Configuration management for the Summarizer CLI.
 
-Loads environment variables from a .env file (if present) via python-dotenv
-and exposes a validated Config dataclass.
+Loads and validates environment variables via python-dotenv and exposes
+them through a typed Config dataclass.
 """
 
 from __future__ import annotations
@@ -13,104 +13,93 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from summarizer.logger import get_logger
+# Load .env from the current working directory (or any parent) automatically.
+# This is a no-op if no .env file is found.
+load_dotenv()
 
-logger = get_logger("config")
 
-# Load .env from the current working directory (or project root).
-# Does NOT override existing environment variables.
-load_dotenv(override=False)
+class ConfigurationError(Exception):
+    """Raised when required configuration is missing or invalid."""
 
 
 @dataclass
 class Config:
     """
-    Holds validated runtime configuration values.
+    Application configuration loaded from environment variables.
 
-    All values are sourced from environment variables (with defaults where
-    applicable).  Raises ValueError on construction if required values are
-    missing or invalid.
+    All fields have sensible defaults except `api_key`, which must be
+    provided when LLM features are used (Phase 2+).
     """
 
-    api_key: str
-    model: str = "gpt-4o-mini"
-    max_tokens: int = 1024
-    timeout: int = 30
-    log_level: str = "INFO"
+    api_key: str = field(default="")
+    model: str = field(default="gpt-4o-mini")
+    max_tokens: int = field(default=512)
+    temperature: float = field(default=0.3)
 
-    def __post_init__(self) -> None:
-        """Validate field values after dataclass initialisation."""
-        if not self.api_key or not self.api_key.strip():
-            raise ValueError(
-                "OPENAI_API_KEY is not set. "
-                "Please add it to your .env file or export it as an environment variable."
-            )
+    # ------------------------------------------------------------------ #
+    # Factory                                                              #
+    # ------------------------------------------------------------------ #
 
-        valid_log_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-        if self.log_level.upper() not in valid_log_levels:
-            raise ValueError(
-                f"Invalid SUMMARIZER_LOG_LEVEL '{self.log_level}'. "
-                f"Must be one of: {', '.join(sorted(valid_log_levels))}"
-            )
+    @classmethod
+    def from_env(cls) -> "Config":
+        """
+        Build a Config instance from environment variables.
 
-        if self.max_tokens < 1:
-            raise ValueError(
-                f"SUMMARIZER_MAX_TOKENS must be a positive integer, got {self.max_tokens}."
-            )
+        Environment variables
+        --------------------
+        OPENAI_API_KEY        — OpenAI API key (required for LLM calls)
+        SUMMARIZER_MODEL      — model identifier (default: gpt-4o-mini)
+        SUMMARIZER_MAX_TOKENS — max tokens in summary (default: 512)
+        SUMMARIZER_TEMPERATURE — sampling temperature (default: 0.3)
+        """
+        api_key = os.getenv("OPENAI_API_KEY", "")
 
-        if self.timeout < 1:
-            raise ValueError(
-                f"SUMMARIZER_TIMEOUT must be a positive integer, got {self.timeout}."
-            )
+        model = os.getenv("SUMMARIZER_MODEL", "gpt-4o-mini")
 
+        raw_max_tokens = os.getenv("SUMMARIZER_MAX_TOKENS", "512")
+        try:
+            max_tokens = int(raw_max_tokens)
+            if max_tokens < 1:
+                raise ValueError("must be a positive integer")
+        except ValueError as exc:
+            raise ConfigurationError(
+                f"Invalid SUMMARIZER_MAX_TOKENS={raw_max_tokens!r}: {exc}"
+            ) from exc
 
-def _get_int_env(key: str, default: int) -> int:
-    """Parse an integer environment variable, falling back to *default*."""
-    raw = os.getenv(key, "")
-    if not raw.strip():
-        return default
-    try:
-        return int(raw.strip())
-    except ValueError:
-        logger.warning(
-            "Environment variable %s='%s' is not a valid integer; using default %d.",
-            key,
-            raw,
-            default,
+        raw_temperature = os.getenv("SUMMARIZER_TEMPERATURE", "0.3")
+        try:
+            temperature = float(raw_temperature)
+            if not (0.0 <= temperature <= 2.0):
+                raise ValueError("must be between 0.0 and 2.0")
+        except ValueError as exc:
+            raise ConfigurationError(
+                f"Invalid SUMMARIZER_TEMPERATURE={raw_temperature!r}: {exc}"
+            ) from exc
+
+        return cls(
+            api_key=api_key,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
-        return default
 
+    # ------------------------------------------------------------------ #
+    # Validation helpers                                                   #
+    # ------------------------------------------------------------------ #
 
-def load_config() -> Config:
-    """
-    Build and return a Config instance from environment variables.
+    def require_api_key(self) -> None:
+        """
+        Assert that an API key is present.
 
-    Returns:
-        A validated Config dataclass.
+        Call this before making any LLM requests (Phase 2+).
 
-    Raises:
-        ValueError: If required variables are missing or invalid.
-    """
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    model = os.getenv("SUMMARIZER_MODEL", "gpt-4o-mini")
-    max_tokens = _get_int_env("SUMMARIZER_MAX_TOKENS", 1024)
-    timeout = _get_int_env("SUMMARIZER_TIMEOUT", 30)
-    log_level = os.getenv("SUMMARIZER_LOG_LEVEL", "INFO")
-
-    config = Config(
-        api_key=api_key,
-        model=model,
-        max_tokens=max_tokens,
-        timeout=timeout,
-        log_level=log_level.upper(),
-    )
-
-    logger.debug(
-        "Config loaded: model=%s, max_tokens=%d, timeout=%d, log_level=%s",
-        config.model,
-        config.max_tokens,
-        config.timeout,
-        config.log_level,
-    )
-
-    return config
+        Raises
+        ------
+        ConfigurationError
+            If OPENAI_API_KEY is not set or is empty.
+        """
+        if not self.api_key:
+            raise ConfigurationError(
+                "OPENAI_API_KEY is not set. "
+                "Add it to your .env file or export it in your shell."
+            )
