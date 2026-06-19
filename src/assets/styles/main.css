@@ -1,0 +1,91 @@
+/* Tailwind CSS directives */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Google Fonts — Inter */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+/* ─── CSS Custom Properties ─────────────────────────────────────────── */
+:root {
+  --color-weather-primary: #1e3a5f;
+  --color-weather-secondary: #2d6a9f;
+  --color-weather-accent: #4fc3f7;
+  --color-weather-warm: #ff8f00;
+  --color-card-bg: rgba(255, 255, 255, 0.12);
+  --color-card-border: rgba(255, 255, 255, 0.2);
+  --blur-card: 16px;
+  --transition-base: 200ms ease;
+}
+
+/* ─── Base Resets ───────────────────────────────────────────────────── */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply m-0 p-0 min-h-screen;
+  }
+
+  #app {
+    @apply min-h-screen;
+  }
+}
+
+/* ─── Component Utilities ───────────────────────────────────────────── */
+@layer components {
+  /* Glass-morphism card style */
+  .glass-card {
+    background: var(--color-card-bg);
+    border: 1px solid var(--color-card-border);
+    backdrop-filter: blur(var(--blur-card));
+    -webkit-backdrop-filter: blur(var(--blur-card));
+    @apply rounded-2xl;
+  }
+
+  /* Stat item layout */
+  .stat-item {
+    @apply flex flex-col items-center gap-1 p-3 rounded-xl;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  /* Temperature display */
+  .temp-display {
+    @apply font-display font-bold tracking-tight leading-none;
+  }
+
+  /* Forecast day card hover */
+  .forecast-card-hover {
+    @apply transition-all duration-200 hover:scale-105 hover:bg-white/20 cursor-default;
+  }
+}
+
+/* ─── Utility Overrides ─────────────────────────────────────────────── */
+@layer utilities {
+  .text-shadow {
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .text-shadow-lg {
+    text-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
