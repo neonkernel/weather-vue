@@ -1,44 +1,32 @@
 <template>
-  <main class="weather-dashboard w-full max-w-4xl mx-auto px-4 py-8 md:py-12 animate-fade-in">
-    <!-- Header -->
-    <header class="flex items-center justify-between mb-8">
-      <div>
-        <h1 class="text-white text-xl font-semibold tracking-wide text-shadow">
-          🌤️ Weather Dashboard
-        </h1>
-        <p class="text-white/50 text-xs mt-0.5">
-          Last updated: {{ formattedLastUpdated }}
-        </p>
-      </div>
-      <div class="stat-pill text-xs">
-        <span class="w-2 h-2 rounded-full bg-green-400 inline-block animate-pulse"></span>
-        Live Preview
-      </div>
-    </header>
+  <div class="dashboard">
+    <div class="dashboard__container">
+      <!-- Header -->
+      <header class="dashboard__header">
+        <div class="flex items-center gap-2">
+          <span class="text-2xl" aria-hidden="true">🌤️</span>
+          <h1 class="text-white/80 text-lg font-semibold tracking-wide">Weather Dashboard</h1>
+        </div>
+        <div class="flex items-center gap-2 text-white/50 text-sm">
+          <span>🕐</span>
+          <time :datetime="props.weather.current.lastUpdated">
+            Updated {{ formattedUpdateTime }}
+          </time>
+        </div>
+      </header>
 
-    <!-- Current Weather Section -->
-    <section class="mb-6" aria-label="Current weather">
-      <CurrentWeather :current="weather.current" :units="weather.units" />
-    </section>
+      <!-- Current Weather Section -->
+      <section aria-label="Current weather conditions" class="dashboard__section">
+        <CurrentWeather :current="props.weather.current" />
+      </section>
 
-    <!-- 7-Day Forecast Section -->
-    <section aria-label="7-day forecast">
-      <div class="flex items-center justify-between mb-3 px-1">
-        <h2 class="text-white/70 text-sm font-medium uppercase tracking-widest text-shadow-sm">
-          📅 7-Day Forecast
-        </h2>
-        <span class="text-white/40 text-xs">{{ weather.units === 'metric' ? '°C' : '°F' }}</span>
-      </div>
-      <ForecastStrip :forecast="weather.forecast" :units="weather.units" />
-    </section>
-
-    <!-- Footer -->
-    <footer class="mt-8 text-center">
-      <p class="text-white/30 text-xs">
-        Data provided by {{ weather.provider }} · Phase 1 Static UI
-      </p>
-    </footer>
-  </main>
+      <!-- 7-Day Forecast Section -->
+      <section aria-label="7-day weather forecast" class="dashboard__section">
+        <h2 class="section-title">7-Day Forecast</h2>
+        <ForecastStrip :forecast="props.weather.forecast" />
+      </section>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -51,7 +39,7 @@ const props = defineProps<{
   weather: WeatherData
 }>()
 
-const formattedLastUpdated = computed(() => {
+const formattedUpdateTime = computed(() => {
   try {
     const date = new Date(props.weather.current.lastUpdated)
     return date.toLocaleTimeString('en-US', {
@@ -60,7 +48,57 @@ const formattedLastUpdated = computed(() => {
       hour12: true,
     })
   } catch {
-    return props.weather.current.lastUpdated
+    return 'just now'
   }
 })
 </script>
+
+<style scoped>
+.dashboard {
+  width: 100%;
+  padding: 1rem;
+}
+
+.dashboard__container {
+  max-width: 900px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1rem 0;
+}
+
+.dashboard__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.25rem;
+}
+
+.dashboard__section {
+  animation: fadeIn 0.5s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (min-width: 640px) {
+  .dashboard {
+    padding: 1.5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .dashboard {
+    padding: 2rem;
+  }
+}
+</style>

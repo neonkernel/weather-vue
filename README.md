@@ -1,25 +1,29 @@
 # 🌤️ Weather Dashboard
 
-A beautiful, responsive weather dashboard built with Vue 3, TypeScript, and Tailwind CSS.
+A modern, responsive weather dashboard built with Vue 3, TypeScript, and Tailwind CSS.
 
 ## Tech Stack
 
-- **Framework**: Vue 3 (Composition API)
-- **Language**: TypeScript
-- **Bundler**: Vite
-- **Styling**: Tailwind CSS
-- **Linting**: ESLint + Prettier
+- **Frontend Framework:** Vue 3 (Composition API)
+- **Build Tool:** Vite
+- **Language:** TypeScript
+- **Styling:** Tailwind CSS
+- **Code Quality:** ESLint + Prettier
 
 ## Setup Instructions
 
 ### Prerequisites
 
-- Node.js >= 18.x
-- npm >= 9.x
+- Node.js >= 18.0.0
+- npm >= 9.0.0
 
 ### Installation
 
 ```bash
+# Clone the repository
+git clone <repository-url>
+cd weather-dashboard
+
 # Install dependencies
 npm install
 
@@ -32,12 +36,14 @@ npm run build
 # Preview production build
 npm run preview
 
-# Lint code
+# Run linting
 npm run lint
 
 # Format code
 npm run format
 ```
+
+The app will be available at `http://localhost:5173`
 
 ## Project Structure
 
@@ -45,18 +51,18 @@ npm run format
 src/
 ├── assets/
 │   └── styles/
-│       └── main.css        # Global styles & Tailwind directives
+│       └── main.css          # Global styles & Tailwind directives
 ├── components/
 │   ├── WeatherDashboard.vue  # Main dashboard container
-│   ├── CurrentWeather.vue    # Current weather display
+│   ├── CurrentWeather.vue    # Current conditions display
 │   ├── ForecastStrip.vue     # 7-day forecast strip
-│   └── ForecastCard.vue      # Single forecast day card
+│   └── ForecastCard.vue      # Individual forecast day card
 ├── data/
 │   └── mockWeather.ts        # Hardcoded mock weather data
 ├── types/
 │   └── weather.ts            # TypeScript interfaces
 ├── App.vue                   # Root component
-└── main.ts                   # App bootstrap
+└── main.ts                   # App entry point
 ```
 
 ## Phase Roadmap
@@ -69,10 +75,17 @@ src/
 | **Phase 4** | Animations & Polish | 🔜 Planned |
 | **Phase 5** | PWA & Offline Support | 🔜 Planned |
 
-## Features (Phase 1)
+## Phase 1 Details
 
-- 🎨 Weather-themed gradient background
-- 🌡️ Current weather display with temperature, condition, humidity, and wind
-- 📅 7-day forecast strip with high/low temperatures
-- 📱 Fully responsive design
-- 🔷 Type-safe with TypeScript strict mode
+- ✅ Vite + Vue 3 Composition API + TypeScript setup
+- ✅ Tailwind CSS with custom weather-themed color palette
+- ✅ Component hierarchy: App → WeatherDashboard → CurrentWeather + ForecastStrip
+- ✅ Static placeholder data (no API calls required)
+- ✅ ESLint + Prettier configuration
+- ✅ Path aliases (@/) configured
+- ✅ Responsive mobile-first design
+- ✅ TypeScript interfaces for weather data
+
+## License
+
+MIT

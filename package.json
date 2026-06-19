@@ -1,7 +1,7 @@
 {
   "name": "weather-dashboard",
   "version": "1.0.0",
-  "description": "A beautiful weather dashboard built with Vue 3, TypeScript, and Tailwind CSS",
+  "description": "A modern weather dashboard built with Vue 3, TypeScript, and Tailwind CSS",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,18 +14,19 @@
     "vue": "^3.4.0"
   },
   "devDependencies": {
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
-    "@vitejs/plugin-vue": "^5.0.0",
-    "@vue/eslint-config-typescript": "^13.0.0",
-    "autoprefixer": "^10.4.19",
-    "eslint": "^8.57.0",
-    "eslint-plugin-vue": "^9.24.0",
-    "postcss": "^8.4.38",
-    "prettier": "^3.2.5",
-    "tailwindcss": "^3.4.3",
-    "typescript": "^5.4.0",
-    "vite": "^5.2.0",
-    "vue-tsc": "^2.0.0"
+    "@types/node": "^20.11.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0",
+    "@vitejs/plugin-vue": "^5.0.3",
+    "@vue/eslint-config-typescript": "^12.0.0",
+    "autoprefixer": "^10.4.17",
+    "eslint": "^8.56.0",
+    "eslint-plugin-vue": "^9.20.0",
+    "postcss": "^8.4.33",
+    "prettier": "^3.2.4",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.11",
+    "vue-tsc": "^1.8.27"
   }
 }

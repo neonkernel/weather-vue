@@ -1,54 +1,60 @@
 <template>
-  <div
-    class="forecast-card glass-card flex flex-col items-center gap-2 px-4 py-4 min-w-[90px] flex-shrink-0 cursor-default select-none"
-    :class="{ 'ring-2 ring-white/30 ring-offset-0': isToday }"
-    :aria-label="`${dayForecast.day}: ${dayForecast.condition}, high ${dayForecast.high}${unitSymbol}, low ${dayForecast.low}${unitSymbol}`"
+  <article
+    class="forecast-card glass-card"
+    :class="{ 'forecast-card--today': isToday }"
+    :aria-label="`Forecast for ${props.day.day}: ${props.day.condition}, high of ${props.day.high}°C, low of ${props.day.low}°C`"
   >
     <!-- Day label -->
-    <span
-      class="text-xs font-semibold uppercase tracking-widest"
-      :class="isToday ? 'text-weather-accent' : 'text-white/65'"
-    >
-      {{ isToday ? 'Today' : dayForecast.day }}
-    </span>
-
-    <!-- Date -->
-    <span class="text-white/40 text-xs -mt-1">{{ dayForecast.date }}</span>
+    <div class="forecast-card__day" :class="{ 'forecast-card__day--today': isToday }">
+      {{ props.day.day }}
+    </div>
 
     <!-- Weather icon -->
-    <span
-      class="text-3xl mt-1 mb-1"
+    <div
+      class="forecast-card__icon"
       role="img"
-      :aria-label="dayForecast.condition"
+      :aria-label="props.day.condition"
     >
-      {{ dayForecast.icon }}
-    </span>
-
-    <!-- High temperature -->
-    <span class="text-white font-semibold text-sm">
-      {{ dayForecast.high }}{{ unitSymbol }}
-    </span>
-
-    <!-- Low temperature -->
-    <span class="text-white/50 text-sm font-light">
-      {{ dayForecast.low }}{{ unitSymbol }}
-    </span>
-
-    <!-- Precipitation chance bar -->
-    <div class="w-full mt-2">
-      <div class="flex items-center justify-between mb-1">
-        <span class="text-white/35 text-xs">💧</span>
-        <span class="text-white/45 text-xs">{{ dayForecast.precipitationChance }}%</span>
-      </div>
-      <div class="w-full h-1 bg-white/10 rounded-full overflow-hidden">
-        <div
-          class="h-full rounded-full transition-all duration-700"
-          :class="precipBarClass"
-          :style="{ width: `${dayForecast.precipitationChance}%` }"
-        />
-      </div>
+      {{ props.day.icon }}
     </div>
-  </div>
+
+    <!-- Precipitation chance -->
+    <div
+      v-if="props.day.precipitationChance > 0"
+      class="forecast-card__precip"
+      :title="`${props.day.precipitationChance}% chance of precipitation`"
+    >
+      <span aria-hidden="true">💧</span>
+      <span>{{ props.day.precipitationChance }}%</span>
+    </div>
+    <div v-else class="forecast-card__precip forecast-card__precip--empty" aria-hidden="true">
+      &nbsp;
+    </div>
+
+    <!-- Temperature range -->
+    <div class="forecast-card__temps">
+      <span
+        class="forecast-card__high"
+        :aria-label="`High: ${props.day.high}°C`"
+      >
+        {{ props.day.high }}°
+      </span>
+      <span
+        class="forecast-card__low"
+        :aria-label="`Low: ${props.day.low}°C`"
+      >
+        {{ props.day.low }}°
+      </span>
+    </div>
+
+    <!-- Temperature range bar -->
+    <div class="forecast-card__bar-wrapper" aria-hidden="true">
+      <div
+        class="forecast-card__bar"
+        :style="barStyle"
+      />
+    </div>
+  </article>
 </template>
 
 <script setup lang="ts">
@@ -56,29 +62,116 @@ import { computed } from 'vue'
 import type { ForecastDay } from '@/types/weather'
 
 const props = defineProps<{
-  dayForecast: ForecastDay
-  units: 'metric' | 'imperial'
-  isToday?: boolean
+  day: ForecastDay
 }>()
 
-const unitSymbol = computed(() => (props.units === 'metric' ? '°' : '°F'))
+const isToday = computed(() => props.day.day === 'Today')
 
-const precipBarClass = computed(() => {
-  const chance = props.dayForecast.precipitationChance
-  if (chance >= 70) return 'bg-blue-400'
-  if (chance >= 40) return 'bg-sky-300'
-  if (chance >= 20) return 'bg-sky-200/70'
-  return 'bg-white/30'
+/**
+ * Compute bar fill based on temperature range relative to a fixed scale.
+ * We map 0°C → 40°C to the bar width.
+ */
+const barStyle = computed(() => {
+  const scale = { min: 0, max: 40 }
+  const leftPct = ((props.day.low - scale.min) / (scale.max - scale.min)) * 100
+  const rightPct = 100 - ((props.day.high - scale.min) / (scale.max - scale.min)) * 100
+  return {
+    marginLeft: `${Math.max(0, leftPct)}%`,
+    marginRight: `${Math.max(0, rightPct)}%`,
+  }
 })
 </script>
 
 <style scoped>
 .forecast-card {
-  /* Override the hover transform from glass-card to a lighter effect for cards */
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem 0.75rem;
+  min-width: 90px;
+  cursor: default;
+  transition:
+    transform 200ms ease,
+    box-shadow 200ms ease,
+    background 200ms ease;
 }
 
-.forecast-card:hover {
-  transform: translateY(-4px) scale(1.02);
+.forecast-card--today {
+  background: rgba(86, 180, 233, 0.2);
+  border-color: rgba(86, 180, 233, 0.4);
+}
+
+.forecast-card__day {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.65);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.forecast-card__day--today {
+  color: #56b4e9;
+}
+
+.forecast-card__icon {
+  font-size: 2rem;
+  line-height: 1;
+  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.25));
+  transition: transform 200ms ease;
+}
+
+.forecast-card:hover .forecast-card__icon {
+  transform: scale(1.15);
+}
+
+.forecast-card__precip {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: rgba(168, 216, 234, 0.9);
+  min-height: 1.1rem;
+}
+
+.forecast-card__precip--empty {
+  min-height: 1.1rem;
+}
+
+.forecast-card__temps {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+}
+
+.forecast-card__high {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: white;
+}
+
+.forecast-card__low {
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* Temperature range bar */
+.forecast-card__bar-wrapper {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.forecast-card__bar {
+  height: 100%;
+  background: linear-gradient(90deg, #56b4e9, #a8d8ea);
+  border-radius: 2px;
+  min-width: 4px;
 }
 </style>

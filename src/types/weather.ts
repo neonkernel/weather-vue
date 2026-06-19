@@ -1,10 +1,10 @@
 /**
- * Represents the current weather conditions for a location.
+ * Represents current weather conditions for a location.
  */
 export interface WeatherCurrent {
-  /** City or location name */
+  /** City name */
   city: string
-  /** Country code (e.g. "US", "GB") */
+  /** Country code (e.g. "US") */
   country: string
   /** Current temperature in Celsius */
   temperature: number
@@ -18,54 +18,48 @@ export interface WeatherCurrent {
   humidity: number
   /** Wind speed in km/h */
   windSpeed: number
-  /** Wind direction as compass string (e.g. "NW") */
+  /** Wind direction (e.g. "NW") */
   windDirection: string
-  /** Visibility in kilometers */
+  /** Visibility in kilometres */
   visibility: number
-  /** UV index (0–11+) */
+  /** UV index */
   uvIndex: number
   /** Atmospheric pressure in hPa */
   pressure: number
-  /** Sunrise time as ISO string or HH:MM */
+  /** Sunrise time as "HH:MM" string */
   sunrise: string
-  /** Sunset time as ISO string or HH:MM */
+  /** Sunset time as "HH:MM" string */
   sunset: string
-  /** Timestamp of last data update */
+  /** Timestamp of last update (ISO 8601) */
   lastUpdated: string
 }
 
 /**
- * Represents a single day's weather forecast.
+ * Represents a single day in the forecast.
  */
 export interface ForecastDay {
-  /** Day label (e.g. "Mon", "Tuesday", or ISO date string) */
-  day: string
-  /** Short date string for display (e.g. "Jun 20") */
+  /** Date string (e.g. "2026-06-19") */
   date: string
+  /** Short day name (e.g. "Mon") */
+  day: string
   /** High temperature in Celsius */
   high: number
   /** Low temperature in Celsius */
   low: number
   /** Human-readable condition */
   condition: string
-  /** Emoji or icon code for the condition */
+  /** Emoji or icon code */
   icon: string
-  /** Precipitation probability percentage (0–100) */
+  /** Chance of precipitation (0–100) */
   precipitationChance: number
   /** Humidity percentage */
   humidity: number
 }
 
 /**
- * Root weather data structure combining current conditions and forecast.
+ * Top-level weather payload containing current conditions + forecast.
  */
 export interface WeatherData {
-  /** Current weather information */
   current: WeatherCurrent
-  /** Array of daily forecasts (typically 7 days) */
   forecast: ForecastDay[]
-  /** Units system in use */
-  units: 'metric' | 'imperial'
-  /** API provider name (used for attribution) */
-  provider: string
 }
