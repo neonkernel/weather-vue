@@ -6,7 +6,7 @@ A command-line tool that summarizes web pages and local files using AI.
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.10+
 - pip
 
 ### Setup
@@ -17,21 +17,21 @@ A command-line tool that summarizes web pages and local files using AI.
    cd summarizer
    ```
 
-2. Create and activate a virtual environment:
+2. Create a virtual environment:
    ```bash
    python -m venv .venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    ```
 
-3. Install the package in editable mode:
+3. Install the package in development mode:
    ```bash
    pip install -e .
    ```
 
-4. Copy the environment variables template and fill in your values:
+4. Set up environment variables:
    ```bash
    cp .env.example .env
-   # Edit .env with your API keys
+   # Edit .env with your actual API key
    ```
 
 ## Usage
@@ -43,18 +43,14 @@ summarize --url https://example.com/article
 # Summarize a local file
 summarize --file /path/to/document.txt
 
-# Choose output style
-summarize --url https://example.com --style bullet
-summarize --url https://example.com --style narrative
-summarize --url https://example.com --style tldr
+# Specify output style
+summarize --url https://example.com/article --style bullet
 
-# Choose output format
-summarize --url https://example.com --format plain
-summarize --url https://example.com --format markdown
-summarize --url https://example.com --format json
+# Specify output format
+summarize --url https://example.com/article --format markdown
 
 # Enable verbose logging
-summarize --url https://example.com --verbose
+summarize --url https://example.com/article --verbose
 
 # Show help
 summarize --help
@@ -64,22 +60,21 @@ summarize --help
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--url` | URL of the web page to summarize | — |
-| `--file` | Path to a local file to summarize | — |
-| `--style` | Summary style: `bullet`, `narrative`, `tldr` | `narrative` |
+| `--url` | URL of the web page to summarize | - |
+| `--file` | Path to a local file to summarize | - |
+| `--style` | Summary style: `paragraph`, `bullet`, `tldr` | `paragraph` |
 | `--format` | Output format: `plain`, `markdown`, `json` | `plain` |
-| `--verbose` | Enable verbose/debug logging | False |
+| `--verbose` | Enable verbose/debug logging | `False` |
 
-## Environment Variables
+## Configuration
 
-See `.env.example` for all available configuration options.
+Copy `.env.example` to `.env` and fill in the required values:
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `OPENAI_API_KEY` | Your OpenAI API key | Yes |
-| `SUMMARIZER_MODEL` | OpenAI model to use | No (default: `gpt-4o-mini`) |
-| `SUMMARIZER_MAX_TOKENS` | Maximum tokens in summary | No (default: `512`) |
-| `SUMMARIZER_TEMPERATURE` | Sampling temperature | No (default: `0.3`) |
+```env
+OPENAI_API_KEY=your_api_key_here
+SUMMARIZER_MODEL=gpt-4o-mini
+SUMMARIZER_MAX_TOKENS=1024
+```
 
 ## Development
 
@@ -96,14 +91,14 @@ pytest tests/
 summarizer/
 ├── src/
 │   └── summarizer/
-│       ├── __init__.py     # Package init & version
-│       ├── cli.py          # Click CLI entry point
-│       ├── config.py       # Configuration management
-│       └── logger.py       # Logging setup
+│       ├── __init__.py      # Package init, version
+│       ├── cli.py           # Click CLI entry point
+│       ├── config.py        # Configuration management
+│       └── logger.py        # Logging setup
 ├── tests/
 │   ├── __init__.py
-│   └── test_cli.py
-├── .env.example
-├── pyproject.toml
-└── README.md
+│   └── test_cli.py          # CLI smoke tests
+├── .env.example             # Environment variable template
+├── pyproject.toml           # Package metadata and dependencies
+└── README.md                # This file
 ```

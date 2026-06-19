@@ -26,21 +26,23 @@ ENV/
 htmlcov/
 .tox/
 
-# IDE
+# IDE / Editor
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
-
-# Node (for frontend)
+# Node (for the Vue frontend)
 node_modules/
 
 # Vite build output
 dist/
+
+# Logs
+*.log
+logs/
