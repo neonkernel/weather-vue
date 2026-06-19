@@ -1,30 +1,30 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
 build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "summarizer"
 version = "0.1.0"
-description = "A CLI tool that summarizes web pages and local files using LLMs."
+description = "A CLI tool that summarizes web pages and local files using AI"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [
-    { name = "Your Name", email = "you@example.com" },
+    { name = "Your Name", email = "you@example.com" }
 ]
-keywords = ["summarizer", "llm", "cli", "openai"]
+keywords = ["summarizer", "ai", "cli", "nlp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Utilities",
 ]
-
 dependencies = [
     "click>=8.1",
     "python-dotenv>=1.0",
@@ -50,4 +50,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["src/summarizer"]
+omit = ["tests/*"]

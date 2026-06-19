@@ -1,24 +1,37 @@
 """
-Logging configuration for the Summarizer package.
+Logging configuration for the Summarizer CLI.
 
-Call `setup_logging(verbose=True)` early in the CLI entry point to
-configure a consistent log format across the entire application.
+Provides a consistent logging format across the application and supports
+toggling between INFO and DEBUG levels via a --verbose flag.
 """
 
 import logging
 import sys
 
+# Module-level logger for this package
+logger = logging.getLogger("summarizer")
+
+# Prevent log messages from propagating to the root logger if it has handlers
+logger.propagate = False
+
 _LOG_FORMAT = "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s"
-_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
+_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def setup_logging(verbose: bool = False) -> None:
-    """Configure root logger.
+    """
+    Configure logging for the application.
+
+    Sets up a StreamHandler writing to stderr with a consistent format.
+    When ``verbose`` is True the log level is set to DEBUG; otherwise INFO.
 
     Args:
-        verbose: When *True* set the log level to DEBUG, otherwise INFO.
+        verbose: If True, enable DEBUG-level logging. Defaults to False.
     """
     level = logging.DEBUG if verbose else logging.INFO
+
+    # Remove any handlers already attached (important for test isolation)
+    logger.handlers.clear()
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(level)
@@ -26,25 +39,22 @@ def setup_logging(verbose: bool = False) -> None:
     formatter = logging.Formatter(fmt=_LOG_FORMAT, datefmt=_DATE_FORMAT)
     handler.setFormatter(formatter)
 
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    logger.setLevel(level)
+    logger.addHandler(handler)
 
-    # Avoid adding duplicate handlers when the function is called multiple times
-    # (e.g. during testing).
-    if not root_logger.handlers:
-        root_logger.addHandler(handler)
-    else:
-        root_logger.handlers.clear()
-        root_logger.addHandler(handler)
+    logger.debug("Logging initialised at level: %s", logging.getLevelName(level))
 
 
-def get_logger(name: str) -> logging.Logger:
-    """Return a named child logger.
+def get_logger(name: str | None = None) -> logging.Logger:
+    """
+    Return a child logger under the ``summarizer`` namespace.
 
     Args:
-        name: Typically ``__name__`` of the calling module.
+        name: Optional sub-name to append, e.g. ``"cli"`` → ``"summarizer.cli"``.
 
     Returns:
         A :class:`logging.Logger` instance.
     """
-    return logging.getLogger(name)
+    if name:
+        return logging.getLogger(f"summarizer.{name}")
+    return logger

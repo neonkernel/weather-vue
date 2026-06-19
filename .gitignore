@@ -20,22 +20,27 @@ venv/
 env/
 ENV/
 
-# Test artifacts
+# Testing
 .pytest_cache/
 .coverage
 htmlcov/
-*.xml
+.tox/
 
-# Editor / OS
-.DS_Store
-Thumbs.db
-.idea/
+# IDE
 .vscode/
+.idea/
 *.swp
 *.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
 
 # Node (for frontend)
 node_modules/
 
-# Logs
-*.log
+# Vite build output
+dist/

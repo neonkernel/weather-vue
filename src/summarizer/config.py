@@ -1,96 +1,162 @@
 """
-Configuration management for the Summarizer package.
+Configuration management for the Summarizer CLI.
 
-Loads environment variables from a ``.env`` file (if present) and exposes
-them as a typed :class:`Config` dataclass.  Call :func:`load_config` once at
-startup; all other modules should import and use the returned object.
+Loads environment variables from a .env file (via python-dotenv) and exposes
+them through a validated :class:`Config` dataclass.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 from summarizer.logger import get_logger
 
-logger = get_logger(__name__)
+log = get_logger("config")
 
-# Supported values for style / format options
-VALID_STYLES = ("paragraph", "bullet", "tldr")
-VALID_FORMATS = ("plain", "markdown", "json")
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
+
+_DEFAULT_MODEL = "gpt-4o-mini"
+_DEFAULT_MAX_TOKENS = 512
+_DEFAULT_TEMPERATURE = 0.3
+_DEFAULT_REQUEST_TIMEOUT = 30
 
 
 @dataclass
 class Config:
-    """Validated application configuration."""
+    """
+    Application configuration derived from environment variables.
+
+    Attributes:
+        api_key: OpenAI API key (required for LLM calls).
+        model: OpenAI model name to use for summarization.
+        max_tokens: Maximum tokens to generate per summary.
+        temperature: Sampling temperature for the model.
+        request_timeout: Timeout (seconds) for outbound HTTP requests.
+    """
 
     api_key: str
-    model: str = "gpt-4o-mini"
-    max_tokens: int = 512
-    default_style: str = "paragraph"
-    default_format: str = "plain"
+    model: str = _DEFAULT_MODEL
+    max_tokens: int = _DEFAULT_MAX_TOKENS
+    temperature: float = _DEFAULT_TEMPERATURE
+    request_timeout: int = _DEFAULT_REQUEST_TIMEOUT
+
+    # Derived / private — not part of the public interface yet
+    _raw: dict = field(default_factory=dict, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        """Validate field values after construction."""
         if not self.api_key:
-            raise ValueError(
+            raise ConfigError(
                 "OPENAI_API_KEY is not set. "
                 "Add it to your .env file or export it in your shell."
             )
         if self.max_tokens < 1:
-            raise ValueError("SUMMARIZER_MAX_TOKENS must be a positive integer.")
-        if self.default_style not in VALID_STYLES:
-            raise ValueError(
-                f"SUMMARIZER_DEFAULT_STYLE must be one of {VALID_STYLES}; "
-                f"got {self.default_style!r}."
-            )
-        if self.default_format not in VALID_FORMATS:
-            raise ValueError(
-                f"SUMMARIZER_DEFAULT_FORMAT must be one of {VALID_FORMATS}; "
-                f"got {self.default_format!r}."
-            )
+            raise ConfigError("SUMMARIZER_MAX_TOKENS must be a positive integer.")
+        if not (0.0 <= self.temperature <= 2.0):
+            raise ConfigError("SUMMARIZER_TEMPERATURE must be between 0.0 and 2.0.")
+        if self.request_timeout < 1:
+            raise ConfigError("SUMMARIZER_REQUEST_TIMEOUT must be a positive integer.")
+
+        log.debug(
+            "Config loaded: model=%s max_tokens=%d temperature=%.2f timeout=%ds",
+            self.model,
+            self.max_tokens,
+            self.temperature,
+            self.request_timeout,
+        )
 
 
-def load_config(env_file: str = ".env") -> Config:
-    """Load and validate configuration from environment / .env file.
+class ConfigError(Exception):
+    """Raised when required configuration is missing or invalid."""
+
+
+def load_config(env_file: str | os.PathLike | None = None) -> Config:
+    """
+    Load configuration from environment variables, optionally reading a .env file.
+
+    Resolution order (highest priority first):
+    1. Already-set environment variables in the process.
+    2. Variables defined in ``env_file`` (or ``.env`` in the current directory).
 
     Args:
-        env_file: Path to the dotenv file.  Defaults to ``.env`` in the
-            current working directory.  Silently ignored when the file does
-            not exist.
+        env_file: Path to a .env file. If *None*, python-dotenv searches for
+                  ``.env`` starting from the current working directory.
 
     Returns:
-        A validated :class:`Config` instance.
+        A populated and validated :class:`Config` instance.
 
     Raises:
-        ValueError: When a required variable is missing or a value is invalid.
-        TypeError: When a numeric variable cannot be parsed as an integer.
+        ConfigError: If required variables are missing or values are invalid.
     """
-    load_dotenv(dotenv_path=env_file, override=False)
-    logger.debug("Environment variables loaded from %r", env_file)
+    _load_dotenv(env_file)
+
+    raw: dict = {}
 
     api_key = os.getenv("OPENAI_API_KEY", "")
 
-    model = os.getenv("SUMMARIZER_MODEL", "gpt-4o-mini")
+    model = os.getenv("SUMMARIZER_MODEL", _DEFAULT_MODEL).strip()
 
-    raw_max_tokens = os.getenv("SUMMARIZER_MAX_TOKENS", "512")
     try:
-        max_tokens = int(raw_max_tokens)
+        max_tokens = int(os.getenv("SUMMARIZER_MAX_TOKENS", str(_DEFAULT_MAX_TOKENS)))
     except ValueError as exc:
-        raise TypeError(
-            f"SUMMARIZER_MAX_TOKENS must be an integer; got {raw_max_tokens!r}."
+        raise ConfigError(
+            f"SUMMARIZER_MAX_TOKENS must be an integer, got: "
+            f"{os.getenv('SUMMARIZER_MAX_TOKENS')!r}"
         ) from exc
 
-    default_style = os.getenv("SUMMARIZER_DEFAULT_STYLE", "paragraph")
-    default_format = os.getenv("SUMMARIZER_DEFAULT_FORMAT", "plain")
+    try:
+        temperature = float(
+            os.getenv("SUMMARIZER_TEMPERATURE", str(_DEFAULT_TEMPERATURE))
+        )
+    except ValueError as exc:
+        raise ConfigError(
+            f"SUMMARIZER_TEMPERATURE must be a float, got: "
+            f"{os.getenv('SUMMARIZER_TEMPERATURE')!r}"
+        ) from exc
 
-    config = Config(
+    try:
+        request_timeout = int(
+            os.getenv("SUMMARIZER_REQUEST_TIMEOUT", str(_DEFAULT_REQUEST_TIMEOUT))
+        )
+    except ValueError as exc:
+        raise ConfigError(
+            f"SUMMARIZER_REQUEST_TIMEOUT must be an integer, got: "
+            f"{os.getenv('SUMMARIZER_REQUEST_TIMEOUT')!r}"
+        ) from exc
+
+    return Config(
         api_key=api_key,
         model=model,
         max_tokens=max_tokens,
-        default_style=default_style,
-        default_format=default_format,
+        temperature=temperature,
+        request_timeout=request_timeout,
+        _raw=raw,
     )
-    logger.debug("Config loaded: model=%s, max_tokens=%d", config.model, config.max_tokens)
-    return config
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_dotenv(env_file: str | os.PathLike | None) -> None:
+    """Load a .env file without overriding existing environment variables."""
+    if env_file is not None:
+        dotenv_path = Path(env_file)
+        if not dotenv_path.exists():
+            log.warning(".env file not found at %s — skipping", dotenv_path)
+            return
+        load_dotenv(dotenv_path=dotenv_path, override=False)
+        log.debug("Loaded .env from %s", dotenv_path)
+    else:
+        loaded = load_dotenv(override=False)
+        if loaded:
+            log.debug("Loaded .env from current/parent directory")
+        else:
+            log.debug("No .env file found; relying on shell environment")
