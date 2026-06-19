@@ -5,22 +5,20 @@ build-backend = "setuptools.backends.legacy:build"
 [project]
 name = "summarizer"
 version = "0.1.0"
-description = "A CLI tool that summarizes web pages and local files using AI"
+description = "A CLI tool that summarizes web pages and local files using LLMs."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-    { name = "Summarizer Contributors" }
+    { name = "Your Name", email = "you@example.com" },
 ]
-keywords = ["cli", "summarizer", "ai", "nlp", "openai"]
+keywords = ["summarizer", "llm", "cli", "openai"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -53,10 +51,3 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
-
-[tool.coverage.run]
-source = ["summarizer"]
-branch = true
-
-[tool.coverage.report]
-show_missing = true

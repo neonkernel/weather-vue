@@ -1,114 +1,96 @@
 """
-Configuration management for the Summarizer CLI.
+Configuration management for the Summarizer package.
 
-Loads and validates environment variables via python-dotenv and exposes
-a Config dataclass with all necessary settings.
+Loads environment variables from a ``.env`` file (if present) and exposes
+them as a typed :class:`Config` dataclass.  Call :func:`load_config` once at
+startup; all other modules should import and use the returned object.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from dotenv import load_dotenv
 
+from summarizer.logger import get_logger
 
-def _find_dotenv() -> Path | None:
-    """Walk up from cwd looking for a .env file."""
-    current = Path.cwd()
-    for directory in [current, *current.parents]:
-        candidate = directory / ".env"
-        if candidate.is_file():
-            return candidate
-    return None
+logger = get_logger(__name__)
+
+# Supported values for style / format options
+VALID_STYLES = ("paragraph", "bullet", "tldr")
+VALID_FORMATS = ("plain", "markdown", "json")
 
 
 @dataclass
 class Config:
-    """Application configuration loaded from environment variables."""
+    """Validated application configuration."""
 
-    api_key: str = ""
+    api_key: str
     model: str = "gpt-4o-mini"
     max_tokens: int = 512
-    log_level: str = "INFO"
-
-    # Internal flag: True when the API key is present (even if not yet validated)
-    _has_api_key: bool = field(init=False, repr=False, default=False)
+    default_style: str = "paragraph"
+    default_format: str = "plain"
 
     def __post_init__(self) -> None:
-        self._has_api_key = bool(self.api_key)
-
-    @property
-    def has_api_key(self) -> bool:
-        """Return True if an API key is configured."""
-        return self._has_api_key
-
-    def validate(self, require_api_key: bool = False) -> None:
-        """
-        Validate the configuration values.
-
-        Args:
-            require_api_key: When True, raise ConfigError if no API key is set.
-
-        Raises:
-            ConfigError: If any required value is missing or invalid.
-        """
-        if require_api_key and not self.api_key:
-            raise ConfigError(
+        if not self.api_key:
+            raise ValueError(
                 "OPENAI_API_KEY is not set. "
-                "Add it to your .env file or set it as an environment variable."
+                "Add it to your .env file or export it in your shell."
             )
-
         if self.max_tokens < 1:
-            raise ConfigError(f"MAX_TOKENS must be a positive integer, got {self.max_tokens!r}.")
-
-        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-        if self.log_level.upper() not in valid_levels:
-            raise ConfigError(
-                f"LOG_LEVEL must be one of {sorted(valid_levels)}, got {self.log_level!r}."
+            raise ValueError("SUMMARIZER_MAX_TOKENS must be a positive integer.")
+        if self.default_style not in VALID_STYLES:
+            raise ValueError(
+                f"SUMMARIZER_DEFAULT_STYLE must be one of {VALID_STYLES}; "
+                f"got {self.default_style!r}."
+            )
+        if self.default_format not in VALID_FORMATS:
+            raise ValueError(
+                f"SUMMARIZER_DEFAULT_FORMAT must be one of {VALID_FORMATS}; "
+                f"got {self.default_format!r}."
             )
 
 
-class ConfigError(Exception):
-    """Raised when configuration is invalid or missing required values."""
-
-
-def load_config(env_file: str | Path | None = None) -> Config:
-    """
-    Load configuration from environment variables, optionally from a .env file.
-
-    The lookup order for each variable follows python-dotenv's standard:
-    existing environment variables take precedence over .env file values.
+def load_config(env_file: str = ".env") -> Config:
+    """Load and validate configuration from environment / .env file.
 
     Args:
-        env_file: Path to a .env file. If None, auto-discovers one by walking up
-                  from the current working directory. Pass ``False`` to skip
-                  .env loading entirely.
+        env_file: Path to the dotenv file.  Defaults to ``.env`` in the
+            current working directory.  Silently ignored when the file does
+            not exist.
 
     Returns:
-        A populated :class:`Config` instance.
+        A validated :class:`Config` instance.
+
+    Raises:
+        ValueError: When a required variable is missing or a value is invalid.
+        TypeError: When a numeric variable cannot be parsed as an integer.
     """
-    if env_file is not False:
-        dotenv_path = Path(env_file) if env_file else _find_dotenv()
-        if dotenv_path:
-            load_dotenv(dotenv_path=dotenv_path, override=False)
-        else:
-            # Still attempt a default load so DOTENV_PATH etc. work
-            load_dotenv(override=False)
+    load_dotenv(dotenv_path=env_file, override=False)
+    logger.debug("Environment variables loaded from %r", env_file)
 
-    def _int(key: str, default: int) -> int:
-        raw = os.getenv(key, "")
-        if not raw:
-            return default
-        try:
-            return int(raw)
-        except ValueError:
-            raise ConfigError(f"Environment variable {key} must be an integer, got {raw!r}.")
+    api_key = os.getenv("OPENAI_API_KEY", "")
 
-    return Config(
-        api_key=os.getenv("OPENAI_API_KEY", ""),
-        model=os.getenv("SUMMARIZER_MODEL", "gpt-4o-mini"),
-        max_tokens=_int("MAX_TOKENS", 512),
-        log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    model = os.getenv("SUMMARIZER_MODEL", "gpt-4o-mini")
+
+    raw_max_tokens = os.getenv("SUMMARIZER_MAX_TOKENS", "512")
+    try:
+        max_tokens = int(raw_max_tokens)
+    except ValueError as exc:
+        raise TypeError(
+            f"SUMMARIZER_MAX_TOKENS must be an integer; got {raw_max_tokens!r}."
+        ) from exc
+
+    default_style = os.getenv("SUMMARIZER_DEFAULT_STYLE", "paragraph")
+    default_format = os.getenv("SUMMARIZER_DEFAULT_FORMAT", "plain")
+
+    config = Config(
+        api_key=api_key,
+        model=model,
+        max_tokens=max_tokens,
+        default_style=default_style,
+        default_format=default_format,
     )
+    logger.debug("Config loaded: model=%s, max_tokens=%d", config.model, config.max_tokens)
+    return config

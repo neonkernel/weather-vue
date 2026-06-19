@@ -1,72 +1,50 @@
 """
-Logging configuration for the Summarizer CLI.
+Logging configuration for the Summarizer package.
 
-Provides a consistent log format and helpers to adjust the log level at
-runtime (e.g. when the --verbose flag is passed).
+Call `setup_logging(verbose=True)` early in the CLI entry point to
+configure a consistent log format across the entire application.
 """
-
-from __future__ import annotations
 
 import logging
 import sys
 
-# Module-level logger that other modules can import
-logger = logging.getLogger("summarizer")
-
 _LOG_FORMAT = "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s"
-_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-
-_handler_installed = False
+_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
-def setup_logging(level: str | int = "INFO", verbose: bool = False) -> None:
-    """
-    Configure the root *summarizer* logger.
-
-    This function is idempotent — calling it multiple times is safe; the
-    handler is only attached once.
+def setup_logging(verbose: bool = False) -> None:
+    """Configure root logger.
 
     Args:
-        level:   Log level string (``"DEBUG"``, ``"INFO"``, …) or an integer
-                 constant from the :mod:`logging` module.
-        verbose: When *True*, forces the level to ``DEBUG`` regardless of
-                 the *level* argument.
+        verbose: When *True* set the log level to DEBUG, otherwise INFO.
     """
-    global _handler_installed
+    level = logging.DEBUG if verbose else logging.INFO
 
-    if verbose:
-        effective_level = logging.DEBUG
-    elif isinstance(level, str):
-        effective_level = getattr(logging, level.upper(), logging.INFO)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(level)
+
+    formatter = logging.Formatter(fmt=_LOG_FORMAT, datefmt=_DATE_FORMAT)
+    handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+
+    # Avoid adding duplicate handlers when the function is called multiple times
+    # (e.g. during testing).
+    if not root_logger.handlers:
+        root_logger.addHandler(handler)
     else:
-        effective_level = level
-
-    logger.setLevel(effective_level)
-
-    if not _handler_installed:
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
-        logger.addHandler(handler)
-        # Prevent log records from propagating to the root logger
-        logger.propagate = False
-        _handler_installed = True
-    else:
-        # Update the level on all existing handlers
-        for handler in logger.handlers:
-            handler.setLevel(effective_level)
+        root_logger.handlers.clear()
+        root_logger.addHandler(handler)
 
 
-def get_logger(name: str | None = None) -> logging.Logger:
-    """
-    Return a child logger under the *summarizer* namespace.
+def get_logger(name: str) -> logging.Logger:
+    """Return a named child logger.
 
     Args:
-        name: Sub-namespace, e.g. ``"cli"`` → ``"summarizer.cli"``.
-              Pass *None* to get the root summarizer logger.
+        name: Typically ``__name__`` of the calling module.
 
     Returns:
         A :class:`logging.Logger` instance.
     """
-    if name:
-        return logging.getLogger(f"summarizer.{name}")
-    return logger
+    return logging.getLogger(name)

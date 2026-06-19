@@ -1,19 +1,12 @@
-# Summarizer CLI
+# Summarizer
 
-A command-line tool that summarizes web pages and local files using AI.
-
-## Features
-
-- Summarize content from URLs or local files
-- Multiple summary styles (brief, detailed, bullet points)
-- Multiple output formats (text, markdown, JSON)
-- Configurable via environment variables
+A command-line tool that summarizes web pages and local files using LLMs.
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.10+
 - pip
 
 ### Install from source
@@ -21,9 +14,9 @@ A command-line tool that summarizes web pages and local files using AI.
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd summarizer
+cd <repository-directory>
 
-# Create and activate a virtual environment (recommended)
+# Create a virtual environment (recommended)
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
@@ -45,34 +38,28 @@ cp .env.example .env
 summarize --url https://example.com/article
 
 # Summarize a local file
-summarize --file path/to/document.txt
+summarize --file /path/to/document.txt
 
-# Choose summary style
-summarize --url https://example.com/article --style brief
-summarize --url https://example.com/article --style detailed
-summarize --url https://example.com/article --style bullets
+# Specify output style
+summarize --url https://example.com --style bullet
 
-# Choose output format
-summarize --url https://example.com/article --format markdown
-summarize --url https://example.com/article --format json
+# Specify output format
+summarize --url https://example.com --format markdown
 
 # Enable verbose logging
-summarize --url https://example.com/article --verbose
-
-# Show help
-summarize --help
+summarize --url https://example.com --verbose
 ```
 
-## Configuration
+## Options
 
-Copy `.env.example` to `.env` and fill in your values:
-
-| Variable            | Description                          | Default         |
-|---------------------|--------------------------------------|-----------------|
-| `OPENAI_API_KEY`    | Your OpenAI API key                  | *(required)*    |
-| `SUMMARIZER_MODEL`  | OpenAI model to use                  | `gpt-4o-mini`   |
-| `MAX_TOKENS`        | Maximum tokens for the summary       | `512`           |
-| `LOG_LEVEL`         | Logging level (DEBUG/INFO/WARNING)   | `INFO`          |
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--url` | URL of the web page to summarize | - |
+| `--file` | Path to a local file to summarize | - |
+| `--style` | Summary style: `paragraph`, `bullet`, `tldr` | `paragraph` |
+| `--format` | Output format: `plain`, `markdown`, `json` | `plain` |
+| `--verbose` | Enable verbose/debug logging | `False` |
+| `--help` | Show help message and exit | - |
 
 ## Development
 
@@ -81,31 +68,17 @@ Copy `.env.example` to `.env` and fill in your values:
 pip install -e ".[dev]"
 
 # Run tests
-pytest
-
-# Run tests with coverage
-pytest --cov=summarizer
+pytest tests/
 ```
 
-## Project Structure
+## Environment Variables
 
-```
-summarizer/
-├── src/
-│   └── summarizer/
-│       ├── __init__.py     # Package init & version
-│       ├── cli.py          # CLI entry point (click)
-│       ├── config.py       # Configuration management
-│       └── logger.py       # Logging setup
-├── tests/
-│   ├── __init__.py
-│   └── test_cli.py
-├── .env.example
-├── .gitignore
-├── pyproject.toml
-└── README.md
-```
+See `.env.example` for all supported environment variables.
 
-## License
-
-MIT
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `OPENAI_API_KEY` | Your OpenAI API key | Yes |
+| `SUMMARIZER_MODEL` | Model to use for summarization | No (default: `gpt-4o-mini`) |
+| `SUMMARIZER_MAX_TOKENS` | Maximum tokens in the summary | No (default: `512`) |
+| `SUMMARIZER_DEFAULT_STYLE` | Default summary style | No (default: `paragraph`) |
+| `SUMMARIZER_DEFAULT_FORMAT` | Default output format | No (default: `plain`) |
