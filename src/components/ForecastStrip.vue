@@ -1,39 +1,36 @@
-<script setup lang="ts">
-import type { ForecastDay } from '@/types/weather'
-import ForecastCard from '@/components/ForecastCard.vue'
-
-interface Props {
-  forecast: ForecastDay[]
-}
-
-const props = defineProps<Props>()
-</script>
-
 <template>
-  <div class="relative">
-    <!-- Horizontal scrollable strip -->
+  <div class="forecast-strip">
+    <!-- Scrollable container for mobile -->
     <div
-      class="flex gap-3 overflow-x-auto scrollbar-hide pb-2 snap-x snap-mandatory"
+      class="flex gap-3 overflow-x-auto scrollbar-hide pb-2 -mx-1 px-1"
       role="list"
-      aria-label="7-day weather forecast"
+      aria-label="Weekly forecast"
     >
-      <div
-        v-for="(day, index) in props.forecast"
+      <ForecastCard
+        v-for="(day, index) in forecast"
         :key="day.date"
-        class="snap-start flex-shrink-0"
+        :day-forecast="day"
+        :units="units"
+        :is-today="index === 0"
+        :style="{ animationDelay: `${index * 60}ms` }"
+        class="animate-slide-up"
         role="listitem"
-      >
-        <ForecastCard
-          :day="day"
-          :is-today="index === 0"
-        />
-      </div>
+      />
     </div>
 
-    <!-- Right fade gradient — indicates scrollability on mobile -->
-    <div
-      class="absolute top-0 right-0 h-full w-10 pointer-events-none sm:hidden"
-      style="background: linear-gradient(to left, rgba(0,0,0,0.15), transparent)"
-    />
+    <!-- Precipitation legend -->
+    <div class="flex items-center gap-2 mt-3 px-1">
+      <span class="text-white/35 text-xs">💧 Precip. chance shown below each card</span>
+    </div>
   </div>
 </template>
+
+<script setup lang="ts">
+import ForecastCard from '@/components/ForecastCard.vue'
+import type { ForecastDay } from '@/types/weather'
+
+defineProps<{
+  forecast: ForecastDay[]
+  units: 'metric' | 'imperial'
+}>()
+</script>

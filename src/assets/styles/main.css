@@ -1,41 +1,20 @@
-/* Tailwind CSS directives */
+/* Tailwind CSS Directives */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Google Fonts — Inter */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-
-/* ============================================================
-   CSS Custom Properties (Design Tokens)
-   ============================================================ */
+/* Custom CSS Variables */
 :root {
-  /* Typography */
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-
-  /* Spacing scale */
-  --space-xs: 0.25rem;
-  --space-sm: 0.5rem;
-  --space-md: 1rem;
-  --space-lg: 1.5rem;
-  --space-xl: 2rem;
-  --space-2xl: 3rem;
-
-  /* Glass morphism tokens */
-  --glass-bg: rgba(255, 255, 255, 0.15);
-  --glass-bg-hover: rgba(255, 255, 255, 0.22);
-  --glass-border: rgba(255, 255, 255, 0.25);
-  --glass-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.25);
-
-  /* Animation */
-  --transition-fast: 150ms ease;
-  --transition-base: 250ms ease;
-  --transition-slow: 400ms ease;
+  --color-weather-primary: #1e3a5f;
+  --color-weather-secondary: #2d6a9f;
+  --color-weather-accent: #4fc3f7;
+  --color-glass-bg: rgba(255, 255, 255, 0.12);
+  --color-glass-border: rgba(255, 255, 255, 0.2);
+  --blur-glass: 12px;
+  --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* ============================================================
-   Base Reset & Defaults
-   ============================================================ */
+/* Base Styles */
 @layer base {
   *,
   *::before,
@@ -44,91 +23,128 @@
   }
 
   html {
-    font-family: var(--font-sans);
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+    -webkit-text-size-adjust: 100%;
     scroll-behavior: smooth;
   }
 
   body {
-    @apply m-0 p-0 min-h-screen;
-    font-family: var(--font-sans);
+    @apply font-sans antialiased;
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    background: linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 40%, #4a90d9 70%, #87ceeb 100%);
+    background-attachment: fixed;
   }
 
   #app {
-    @apply min-h-screen;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
   }
 }
 
-/* ============================================================
-   Component Utilities
-   ============================================================ */
+/* Component Styles */
 @layer components {
-  /* Glass card effect */
+  /* Glassmorphism card */
   .glass-card {
-    background: var(--glass-bg);
-    border: 1px solid var(--glass-border);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    box-shadow: var(--glass-shadow);
-    @apply rounded-2xl transition-all duration-300;
+    background: var(--color-glass-bg);
+    backdrop-filter: blur(var(--blur-glass));
+    -webkit-backdrop-filter: blur(var(--blur-glass));
+    border: 1px solid var(--color-glass-border);
+    border-radius: 1.5rem;
+    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    transition: var(--transition-smooth);
   }
 
   .glass-card:hover {
-    background: var(--glass-bg-hover);
+    background: rgba(255, 255, 255, 0.18);
+    transform: translateY(-2px);
+    box-shadow: 0 12px 40px 0 rgba(31, 38, 135, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.25);
   }
 
-  /* Stat pill badge */
+  /* Stat pill */
   .stat-pill {
-    background: rgba(255, 255, 255, 0.12);
+    @apply flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium;
+    background: rgba(255, 255, 255, 0.15);
     border: 1px solid rgba(255, 255, 255, 0.2);
-    backdrop-filter: blur(8px);
-    @apply rounded-full px-4 py-2 flex items-center gap-2 text-white text-sm font-medium;
+    color: rgba(255, 255, 255, 0.9);
+    transition: var(--transition-smooth);
   }
 
-  /* Temperature display */
-  .temp-display {
-    @apply font-bold text-white leading-none;
-    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+  .stat-pill:hover {
+    background: rgba(255, 255, 255, 0.22);
   }
 
-  /* Section heading */
-  .section-label {
-    @apply text-xs font-semibold tracking-widest uppercase text-white/60;
-  }
-}
-
-/* ============================================================
-   Utilities
-   ============================================================ */
-@layer utilities {
-  /* Text shadow helpers */
-  .text-shadow-sm {
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  /* Divider */
+  .glass-divider {
+    border-color: rgba(255, 255, 255, 0.15);
   }
 
-  .text-shadow-md {
-    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  /* Scrollbar styling */
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
   }
 
-  .text-shadow-lg {
-    text-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  }
-
-  /* Scrollbar hiding for forecast strip */
   .scrollbar-hide {
     -ms-overflow-style: none;
     scrollbar-width: none;
   }
 
-  .scrollbar-hide::-webkit-scrollbar {
-    display: none;
+  /* Temperature display */
+  .temp-display {
+    font-size: 5rem;
+    font-weight: 200;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: #ffffff;
   }
 
-  /* Gradient text */
-  .gradient-text {
-    background-clip: text;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+  @media (min-width: 768px) {
+    .temp-display {
+      font-size: 7rem;
+    }
   }
 }
+
+/* Utility Styles */
+@layer utilities {
+  .text-shadow {
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .text-shadow-sm {
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.6s ease-in-out both;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.5s ease-out both;
+  }
+}
+
+/* Keyframes */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Import Inter font */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;500;600;700&display=swap');

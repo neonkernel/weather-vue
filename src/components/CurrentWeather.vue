@@ -1,118 +1,123 @@
-<script setup lang="ts">
-import type { WeatherCurrent } from '@/types/weather'
-import { CONDITION_ICONS } from '@/types/weather'
-import { computed } from 'vue'
-
-interface Props {
-  current: WeatherCurrent
-}
-
-const props = defineProps<Props>()
-
-const conditionIcon = computed(() => CONDITION_ICONS[props.current.conditionCode] ?? '🌡️')
-
-// Derive temperature color hint
-const tempColorClass = computed(() => {
-  const t = props.current.temperature
-  if (t >= 30) return 'text-orange-200'
-  if (t >= 20) return 'text-yellow-100'
-  if (t >= 10) return 'text-sky-100'
-  return 'text-blue-200'
-})
-</script>
-
 <template>
-  <div class="glass-card p-6 sm:p-8">
-    <!-- Location row -->
-    <div class="flex items-center justify-between mb-6">
+  <div class="glass-card p-6 md:p-8 animate-slide-up">
+    <!-- Location -->
+    <div class="flex items-start justify-between flex-wrap gap-4 mb-6">
       <div>
-        <h2 class="text-white text-2xl sm:text-3xl font-bold text-shadow-md leading-tight">
-          {{ current.city }}
-        </h2>
-        <p class="text-white/70 text-sm font-medium mt-0.5">
-          {{ current.country }}
-        </p>
-      </div>
-      <!-- Condition icon (large) -->
-      <div class="text-5xl sm:text-6xl select-none" role="img" :aria-label="current.condition">
-        {{ conditionIcon }}
-      </div>
-    </div>
-
-    <!-- Temperature block -->
-    <div class="flex items-end gap-4 mb-6">
-      <div>
-        <div class="temp-display text-7xl sm:text-8xl" :class="tempColorClass">
-          {{ current.temperature }}<span class="text-4xl sm:text-5xl align-top mt-2 inline-block text-white/80">°C</span>
+        <div class="flex items-center gap-2 mb-1">
+          <span class="text-white/60 text-sm">📍</span>
+          <h2 class="text-white font-semibold text-xl text-shadow">
+            {{ current.city }},
+            <span class="text-white/70 font-normal">{{ current.country }}</span>
+          </h2>
         </div>
-        <p class="text-white/70 text-sm mt-1">
-          Feels like {{ current.feelsLike }}°C &nbsp;·&nbsp; {{ current.condition }}
+        <p class="text-white/50 text-sm ml-6">{{ formattedDate }}</p>
+      </div>
+
+      <!-- UV Index badge -->
+      <div class="flex flex-col items-end gap-1">
+        <span
+          class="px-3 py-1 rounded-full text-xs font-semibold"
+          :class="uvBadgeClass"
+        >
+          UV {{ current.uvIndex }} · {{ uvLabel }}
+        </span>
+        <span class="text-white/40 text-xs">Pressure: {{ current.pressure }} hPa</span>
+      </div>
+    </div>
+
+    <!-- Main temperature display -->
+    <div class="flex items-center gap-6 md:gap-10 mb-6">
+      <!-- Icon -->
+      <div class="text-7xl md:text-8xl select-none" role="img" :aria-label="current.condition">
+        {{ current.icon }}
+      </div>
+
+      <!-- Temp + condition -->
+      <div>
+        <div class="temp-display">
+          {{ current.temperature }}<span class="text-4xl md:text-5xl font-thin text-white/70">{{ unitSymbol }}</span>
+        </div>
+        <p class="text-white/80 text-lg font-light mt-1 text-shadow-sm">{{ current.condition }}</p>
+        <p class="text-white/50 text-sm mt-0.5">
+          Feels like {{ current.feelsLike }}{{ unitSymbol }}
         </p>
       </div>
     </div>
 
-    <!-- Stats grid -->
+    <!-- Divider -->
+    <hr class="glass-divider border-t mb-5" />
+
+    <!-- Weather stats grid -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
       <!-- Humidity -->
-      <div class="stat-pill">
-        <span class="text-lg" role="img" aria-label="Humidity">💧</span>
-        <div>
-          <p class="text-white/60 text-xs leading-none mb-0.5">Humidity</p>
-          <p class="font-semibold">{{ current.humidity }}%</p>
-        </div>
+      <div class="stat-pill flex-col items-start gap-1 py-3">
+        <span class="text-white/50 text-xs uppercase tracking-wider">💧 Humidity</span>
+        <span class="text-white font-semibold text-base">{{ current.humidity }}%</span>
       </div>
 
       <!-- Wind -->
-      <div class="stat-pill">
-        <span class="text-lg" role="img" aria-label="Wind">💨</span>
-        <div>
-          <p class="text-white/60 text-xs leading-none mb-0.5">Wind</p>
-          <p class="font-semibold">{{ current.windSpeed }} <span class="text-white/70 font-normal">km/h {{ current.windDirection }}</span></p>
-        </div>
-      </div>
-
-      <!-- UV Index -->
-      <div class="stat-pill">
-        <span class="text-lg" role="img" aria-label="UV Index">☀️</span>
-        <div>
-          <p class="text-white/60 text-xs leading-none mb-0.5">UV Index</p>
-          <p class="font-semibold">{{ current.uvIndex }}</p>
-        </div>
+      <div class="stat-pill flex-col items-start gap-1 py-3">
+        <span class="text-white/50 text-xs uppercase tracking-wider">💨 Wind</span>
+        <span class="text-white font-semibold text-base">
+          {{ current.windSpeed }} {{ speedUnit }}
+          <span class="text-white/60 text-sm font-normal">{{ current.windDirection }}</span>
+        </span>
       </div>
 
       <!-- Visibility -->
-      <div class="stat-pill">
-        <span class="text-lg" role="img" aria-label="Visibility">👁️</span>
-        <div>
-          <p class="text-white/60 text-xs leading-none mb-0.5">Visibility</p>
-          <p class="font-semibold">{{ current.visibility }} <span class="text-white/70 font-normal">km</span></p>
-        </div>
+      <div class="stat-pill flex-col items-start gap-1 py-3">
+        <span class="text-white/50 text-xs uppercase tracking-wider">👁️ Visibility</span>
+        <span class="text-white font-semibold text-base">{{ current.visibility }} km</span>
       </div>
-    </div>
 
-    <!-- Sunrise / Sunset -->
-    <div class="flex items-center gap-6 mt-5 pt-5 border-t border-white/15">
-      <div class="flex items-center gap-2 text-white/80">
-        <span class="text-xl" role="img" aria-label="Sunrise">🌅</span>
-        <div>
-          <p class="text-white/50 text-xs">Sunrise</p>
-          <p class="text-sm font-semibold">{{ current.sunrise }}</p>
-        </div>
-      </div>
-      <div class="flex items-center gap-2 text-white/80">
-        <span class="text-xl" role="img" aria-label="Sunset">🌇</span>
-        <div>
-          <p class="text-white/50 text-xs">Sunset</p>
-          <p class="text-sm font-semibold">{{ current.sunset }}</p>
-        </div>
-      </div>
-      <div class="ml-auto flex items-center gap-2 text-white/80">
-        <span class="text-xl" role="img" aria-label="Pressure">🌡️</span>
-        <div>
-          <p class="text-white/50 text-xs">Pressure</p>
-          <p class="text-sm font-semibold">{{ current.pressure }} <span class="text-white/60 font-normal text-xs">hPa</span></p>
-        </div>
+      <!-- Sunrise / Sunset -->
+      <div class="stat-pill flex-col items-start gap-1 py-3">
+        <span class="text-white/50 text-xs uppercase tracking-wider">🌅 Sun</span>
+        <span class="text-white font-semibold text-sm leading-snug">
+          ↑ {{ current.sunrise }}<br />
+          <span class="text-white/75">↓ {{ current.sunset }}</span>
+        </span>
       </div>
     </div>
   </div>
 </template>
+
+<script setup lang="ts">
+import { computed } from 'vue'
+import type { WeatherCurrent } from '@/types/weather'
+
+const props = defineProps<{
+  current: WeatherCurrent
+  units: 'metric' | 'imperial'
+}>()
+
+const unitSymbol = computed(() => (props.units === 'metric' ? '°C' : '°F'))
+const speedUnit = computed(() => (props.units === 'metric' ? 'km/h' : 'mph'))
+
+const formattedDate = computed(() => {
+  return new Date().toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  })
+})
+
+const uvLabel = computed(() => {
+  const uv = props.current.uvIndex
+  if (uv <= 2) return 'Low'
+  if (uv <= 5) return 'Moderate'
+  if (uv <= 7) return 'High'
+  if (uv <= 10) return 'Very High'
+  return 'Extreme'
+})
+
+const uvBadgeClass = computed(() => {
+  const uv = props.current.uvIndex
+  if (uv <= 2) return 'bg-green-500/30 text-green-200 border border-green-400/30'
+  if (uv <= 5) return 'bg-yellow-500/30 text-yellow-200 border border-yellow-400/30'
+  if (uv <= 7) return 'bg-orange-500/30 text-orange-200 border border-orange-400/30'
+  if (uv <= 10) return 'bg-red-500/30 text-red-200 border border-red-400/30'
+  return 'bg-purple-500/30 text-purple-200 border border-purple-400/30'
+})
+</script>
