@@ -7,41 +7,63 @@ export default {
   theme: {
     extend: {
       colors: {
+        sky: {
+          50: '#f0f9ff',
+          100: '#e0f2fe',
+          200: '#bae6fd',
+          300: '#7dd3fc',
+          400: '#38bdf8',
+          500: '#0ea5e9',
+          600: '#0284c7',
+          700: '#0369a1',
+          800: '#075985',
+          900: '#0c4a6e',
+          950: '#082f49',
+        },
         weather: {
-          primary: '#1e3a5f',
-          secondary: '#2d6a9f',
-          accent: '#4fc3f7',
-          warm: '#ff8f00',
-          hot: '#f4511e',
-          cold: '#80d8ff',
-          cloud: '#b0bec5',
-          storm: '#455a64',
-          snow: '#e3f2fd',
-          night: '#0d1b2a',
+          'sunny': '#f59e0b',
+          'cloudy': '#94a3b8',
+          'rainy': '#60a5fa',
+          'stormy': '#6366f1',
+          'snowy': '#e2e8f0',
+          'clear-night': '#1e1b4b',
+          'warm': '#ef4444',
+          'cool': '#06b6d4',
+          'card-bg': 'rgba(255, 255, 255, 0.15)',
+          'card-border': 'rgba(255, 255, 255, 0.25)',
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
         display: ['Inter', 'system-ui', 'sans-serif'],
       },
       backgroundImage: {
-        'sky-day': 'linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 50%, #4fc3f7 100%)',
-        'sky-sunset': 'linear-gradient(135deg, #1a237e 0%, #b71c1c 50%, #ff8f00 100%)',
-        'sky-night': 'linear-gradient(135deg, #0d1b2a 0%, #1a237e 100%)',
-        'sky-cloudy': 'linear-gradient(135deg, #455a64 0%, #607d8b 100%)',
-      },
-      animation: {
-        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-        'float': 'float 6s ease-in-out infinite',
-      },
-      keyframes: {
-        float: {
-          '0%, 100%': { transform: 'translateY(0px)' },
-          '50%': { transform: 'translateY(-10px)' },
-        },
+        'gradient-sky': 'linear-gradient(135deg, #0ea5e9 0%, #0369a1 50%, #075985 100%)',
+        'gradient-sunset': 'linear-gradient(135deg, #f59e0b 0%, #ef4444 50%, #7c3aed 100%)',
+        'gradient-storm': 'linear-gradient(135deg, #374151 0%, #1f2937 50%, #111827 100%)',
+        'gradient-night': 'linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e3a5f 100%)',
       },
       backdropBlur: {
         xs: '2px',
+      },
+      boxShadow: {
+        'glass': '0 8px 32px 0 rgba(31, 38, 135, 0.37)',
+        'card': '0 4px 24px 0 rgba(0, 0, 0, 0.12)',
+      },
+      animation: {
+        'fade-in': 'fadeIn 0.5s ease-in-out',
+        'slide-up': 'slideUp 0.4s ease-out',
+        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+      },
+      keyframes: {
+        fadeIn: {
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' },
+        },
+        slideUp: {
+          '0%': { transform: 'translateY(20px)', opacity: '0' },
+          '100%': { transform: 'translateY(0)', opacity: '1' },
+        },
       },
     },
   },

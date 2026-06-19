@@ -6,19 +6,36 @@
 /* Google Fonts — Inter */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
-/* ─── CSS Custom Properties ─────────────────────────────────────────── */
+/* ============================================================
+   CSS Custom Properties (Design Tokens)
+   ============================================================ */
 :root {
-  --color-weather-primary: #1e3a5f;
-  --color-weather-secondary: #2d6a9f;
-  --color-weather-accent: #4fc3f7;
-  --color-weather-warm: #ff8f00;
-  --color-card-bg: rgba(255, 255, 255, 0.12);
-  --color-card-border: rgba(255, 255, 255, 0.2);
-  --blur-card: 16px;
-  --transition-base: 200ms ease;
+  /* Typography */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+
+  /* Spacing scale */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+
+  /* Glass morphism tokens */
+  --glass-bg: rgba(255, 255, 255, 0.15);
+  --glass-bg-hover: rgba(255, 255, 255, 0.22);
+  --glass-border: rgba(255, 255, 255, 0.25);
+  --glass-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.25);
+
+  /* Animation */
+  --transition-fast: 150ms ease;
+  --transition-base: 250ms ease;
+  --transition-slow: 400ms ease;
 }
 
-/* ─── Base Resets ───────────────────────────────────────────────────── */
+/* ============================================================
+   Base Reset & Defaults
+   ============================================================ */
 @layer base {
   *,
   *::before,
@@ -27,7 +44,7 @@
   }
 
   html {
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     scroll-behavior: smooth;
@@ -35,6 +52,7 @@
 
   body {
     @apply m-0 p-0 min-h-screen;
+    font-family: var(--font-sans);
   }
 
   #app {
@@ -42,44 +60,62 @@
   }
 }
 
-/* ─── Component Utilities ───────────────────────────────────────────── */
+/* ============================================================
+   Component Utilities
+   ============================================================ */
 @layer components {
-  /* Glass-morphism card style */
+  /* Glass card effect */
   .glass-card {
-    background: var(--color-card-bg);
-    border: 1px solid var(--color-card-border);
-    backdrop-filter: blur(var(--blur-card));
-    -webkit-backdrop-filter: blur(var(--blur-card));
-    @apply rounded-2xl;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: var(--glass-shadow);
+    @apply rounded-2xl transition-all duration-300;
   }
 
-  /* Stat item layout */
-  .stat-item {
-    @apply flex flex-col items-center gap-1 p-3 rounded-xl;
-    background: rgba(255, 255, 255, 0.08);
+  .glass-card:hover {
+    background: var(--glass-bg-hover);
+  }
+
+  /* Stat pill badge */
+  .stat-pill {
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    backdrop-filter: blur(8px);
+    @apply rounded-full px-4 py-2 flex items-center gap-2 text-white text-sm font-medium;
   }
 
   /* Temperature display */
   .temp-display {
-    @apply font-display font-bold tracking-tight leading-none;
+    @apply font-bold text-white leading-none;
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
   }
 
-  /* Forecast day card hover */
-  .forecast-card-hover {
-    @apply transition-all duration-200 hover:scale-105 hover:bg-white/20 cursor-default;
+  /* Section heading */
+  .section-label {
+    @apply text-xs font-semibold tracking-widest uppercase text-white/60;
   }
 }
 
-/* ─── Utility Overrides ─────────────────────────────────────────────── */
+/* ============================================================
+   Utilities
+   ============================================================ */
 @layer utilities {
-  .text-shadow {
+  /* Text shadow helpers */
+  .text-shadow-sm {
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+
+  .text-shadow-md {
     text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   }
 
   .text-shadow-lg {
-    text-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    text-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   }
 
+  /* Scrollbar hiding for forecast strip */
   .scrollbar-hide {
     -ms-overflow-style: none;
     scrollbar-width: none;
@@ -87,5 +123,12 @@
 
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Gradient text */
+  .gradient-text {
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
   }
 }

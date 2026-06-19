@@ -1,29 +1,39 @@
 <script setup lang="ts">
-  import type { ForecastDay } from '@/types/weather'
-  import ForecastCard from '@/components/ForecastCard.vue'
+import type { ForecastDay } from '@/types/weather'
+import ForecastCard from '@/components/ForecastCard.vue'
 
-  interface Props {
-    forecast: ForecastDay[]
-  }
+interface Props {
+  forecast: ForecastDay[]
+}
 
-  const props = defineProps<Props>()
+const props = defineProps<Props>()
 </script>
 
 <template>
-  <div class="w-full">
-    <!-- Scrollable strip on small screens, flex wrap on larger -->
+  <div class="relative">
+    <!-- Horizontal scrollable strip -->
     <div
-      class="flex gap-2 overflow-x-auto scrollbar-hide pb-1 md:grid md:grid-cols-7 md:overflow-visible"
+      class="flex gap-3 overflow-x-auto scrollbar-hide pb-2 snap-x snap-mandatory"
       role="list"
-      aria-label="7-day forecast"
+      aria-label="7-day weather forecast"
     >
-      <ForecastCard
+      <div
         v-for="(day, index) in props.forecast"
         :key="day.date"
-        :day="day"
-        :is-today="index === 0"
+        class="snap-start flex-shrink-0"
         role="listitem"
-      />
+      >
+        <ForecastCard
+          :day="day"
+          :is-today="index === 0"
+        />
+      </div>
     </div>
+
+    <!-- Right fade gradient — indicates scrollability on mobile -->
+    <div
+      class="absolute top-0 right-0 h-full w-10 pointer-events-none sm:hidden"
+      style="background: linear-gradient(to left, rgba(0,0,0,0.15), transparent)"
+    />
   </div>
 </template>

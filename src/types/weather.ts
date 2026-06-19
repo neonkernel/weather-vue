@@ -6,56 +6,56 @@ export interface WeatherCurrent {
   city: string
   /** Country code (e.g. "US", "GB") */
   country: string
-  /** Temperature in Celsius */
+  /** Current temperature in Celsius */
   temperature: number
   /** "Feels like" temperature in Celsius */
   feelsLike: number
-  /** Short description (e.g. "Partly Cloudy") */
+  /** Human-readable weather condition (e.g. "Partly Cloudy") */
   condition: string
   /** Weather condition code for icon mapping */
   conditionCode: WeatherConditionCode
-  /** Humidity percentage (0–100) */
+  /** Relative humidity percentage (0–100) */
   humidity: number
   /** Wind speed in km/h */
   windSpeed: number
-  /** Wind direction (e.g. "NW") */
+  /** Wind direction (e.g. "NW", "SE") */
   windDirection: string
-  /** Visibility in km */
-  visibility: number
-  /** UV Index */
-  uvIndex: number
   /** Atmospheric pressure in hPa */
   pressure: number
-  /** Sunrise time as ISO string or HH:MM */
+  /** Visibility in kilometres */
+  visibility: number
+  /** UV index (0–11+) */
+  uvIndex: number
+  /** Sunrise time as locale string (e.g. "6:23 AM") */
   sunrise: string
-  /** Sunset time as ISO string or HH:MM */
+  /** Sunset time as locale string (e.g. "8:14 PM") */
   sunset: string
-  /** Last updated timestamp */
-  updatedAt: string
+  /** Last updated ISO timestamp */
+  lastUpdated: string
 }
 
 /**
- * Represents a single day's forecast.
+ * Represents weather data for a single forecast day.
  */
 export interface ForecastDay {
-  /** Date as ISO string (YYYY-MM-DD) */
+  /** ISO date string (e.g. "2026-06-20") */
   date: string
-  /** Day of week label (e.g. "Mon", "Tuesday") */
-  dayLabel: string
+  /** Short day label (e.g. "Mon", "Tue") */
+  day: string
   /** High temperature in Celsius */
-  tempHigh: number
+  high: number
   /** Low temperature in Celsius */
-  tempLow: number
-  /** Short description */
+  low: number
+  /** Human-readable condition */
   condition: string
   /** Weather condition code for icon mapping */
   conditionCode: WeatherConditionCode
   /** Chance of precipitation (0–100) */
-  precipChance: number
+  precipitationChance: number
 }
 
 /**
- * Aggregated weather payload returned from the data layer.
+ * Top-level weather data payload.
  */
 export interface WeatherData {
   current: WeatherCurrent
@@ -63,57 +63,54 @@ export interface WeatherData {
 }
 
 /**
- * Supported weather condition codes used for icon/color mapping.
+ * Supported weather condition codes for icon/color mapping.
  */
 export type WeatherConditionCode =
-  | 'clear-day'
-  | 'clear-night'
-  | 'partly-cloudy-day'
-  | 'partly-cloudy-night'
+  | 'sunny'
+  | 'partly-cloudy'
   | 'cloudy'
-  | 'rain'
-  | 'drizzle'
+  | 'overcast'
+  | 'rainy'
+  | 'heavy-rain'
   | 'thunderstorm'
-  | 'snow'
-  | 'sleet'
-  | 'wind'
-  | 'fog'
-  | 'hail'
+  | 'snowy'
+  | 'foggy'
+  | 'windy'
+  | 'clear-night'
+  | 'partly-cloudy-night'
 
 /**
  * Maps a WeatherConditionCode to a display emoji icon.
  */
 export const CONDITION_ICONS: Record<WeatherConditionCode, string> = {
-  'clear-day': '☀️',
+  'sunny': '☀️',
+  'partly-cloudy': '⛅',
+  'cloudy': '🌥️',
+  'overcast': '☁️',
+  'rainy': '🌧️',
+  'heavy-rain': '⛈️',
+  'thunderstorm': '🌩️',
+  'snowy': '❄️',
+  'foggy': '🌫️',
+  'windy': '💨',
   'clear-night': '🌙',
-  'partly-cloudy-day': '⛅',
-  'partly-cloudy-night': '🌙',
-  cloudy: '☁️',
-  rain: '🌧️',
-  drizzle: '🌦️',
-  thunderstorm: '⛈️',
-  snow: '❄️',
-  sleet: '🌨️',
-  wind: '💨',
-  fog: '🌫️',
-  hail: '🌩️',
+  'partly-cloudy-night': '🌤️',
 }
 
 /**
- * Maps a WeatherConditionCode to a Tailwind background gradient class.
+ * Maps a WeatherConditionCode to a Tailwind gradient class.
  */
 export const CONDITION_GRADIENTS: Record<WeatherConditionCode, string> = {
-  'clear-day': 'from-sky-400 via-blue-500 to-indigo-600',
-  'clear-night': 'from-indigo-950 via-slate-900 to-slate-800',
-  'partly-cloudy-day': 'from-sky-300 via-blue-400 to-slate-500',
-  'partly-cloudy-night': 'from-slate-800 via-indigo-900 to-slate-900',
-  cloudy: 'from-slate-400 via-slate-500 to-slate-600',
-  rain: 'from-slate-600 via-blue-800 to-slate-700',
-  drizzle: 'from-slate-500 via-blue-600 to-slate-600',
-  thunderstorm: 'from-slate-800 via-slate-900 to-indigo-950',
-  snow: 'from-slate-100 via-blue-100 to-slate-200',
-  sleet: 'from-slate-300 via-blue-300 to-slate-400',
-  wind: 'from-teal-400 via-cyan-500 to-blue-500',
-  fog: 'from-slate-300 via-gray-400 to-slate-400',
-  hail: 'from-slate-600 via-gray-700 to-slate-800',
+  'sunny': 'from-amber-400 via-orange-400 to-yellow-500',
+  'partly-cloudy': 'from-sky-400 via-sky-500 to-blue-600',
+  'cloudy': 'from-slate-400 via-slate-500 to-slate-600',
+  'overcast': 'from-gray-500 via-gray-600 to-gray-700',
+  'rainy': 'from-blue-500 via-blue-600 to-indigo-700',
+  'heavy-rain': 'from-blue-700 via-indigo-700 to-slate-800',
+  'thunderstorm': 'from-gray-700 via-slate-800 to-gray-900',
+  'snowy': 'from-sky-200 via-blue-200 to-slate-300',
+  'foggy': 'from-gray-400 via-slate-400 to-gray-500',
+  'windy': 'from-teal-400 via-cyan-500 to-sky-600',
+  'clear-night': 'from-indigo-900 via-blue-950 to-slate-900',
+  'partly-cloudy-night': 'from-indigo-800 via-slate-800 to-blue-900',
 }

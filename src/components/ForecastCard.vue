@@ -1,55 +1,63 @@
 <script setup lang="ts">
-  import type { ForecastDay } from '@/types/weather'
-  import { CONDITION_ICONS } from '@/types/weather'
-  import { computed } from 'vue'
+import type { ForecastDay } from '@/types/weather'
+import { CONDITION_ICONS } from '@/types/weather'
+import { computed } from 'vue'
 
-  interface Props {
-    day: ForecastDay
-    /** Whether this card represents today */
-    isToday?: boolean
-  }
+interface Props {
+  day: ForecastDay
+  /** Whether this card represents today */
+  isToday?: boolean
+}
 
-  const props = defineProps<Props>()
+const props = defineProps<Props>()
 
-  const icon = computed(() => CONDITION_ICONS[props.day.conditionCode])
+const icon = computed(() => CONDITION_ICONS[props.day.conditionCode] ?? '🌡️')
 
-  const precipLabel = computed(() =>
-    props.day.precipChance > 0 ? `${props.day.precipChance}%` : null
-  )
+// Precipitation badge colour
+const precipClass = computed(() => {
+  const p = props.day.precipitationChance
+  if (p >= 70) return 'text-blue-200 bg-blue-500/30'
+  if (p >= 40) return 'text-sky-200 bg-sky-500/20'
+  return 'text-white/50 bg-white/10'
+})
 </script>
 
 <template>
-  <article
-    class="glass-card forecast-card-hover flex flex-col items-center gap-2 px-3 py-4 min-w-[80px] flex-1"
-    :class="{ 'ring-2 ring-white/40 bg-white/20': isToday }"
-    :aria-label="`${day.dayLabel}: ${day.condition}, high ${day.tempHigh}°, low ${day.tempLow}°`"
+  <div
+    class="glass-card flex flex-col items-center px-3 py-4 min-w-[88px] sm:min-w-[100px] cursor-default select-none"
+    :class="isToday ? 'ring-2 ring-white/40' : ''"
+    role="article"
+    :aria-label="`${day.day} forecast: ${day.condition}, high ${day.high}°, low ${day.low}°`"
   >
     <!-- Day label -->
-    <span
-      class="text-xs font-semibold uppercase tracking-wide"
-      :class="isToday ? 'text-white' : 'text-white/70'"
-    >
-      {{ day.dayLabel }}
-    </span>
+    <p class="text-xs font-bold tracking-wider uppercase text-white/80 mb-2">
+      {{ day.day }}
+    </p>
 
-    <!-- Condition icon -->
-    <span class="text-2xl leading-none select-none" role="img" :aria-label="day.condition">
+    <!-- Weather icon -->
+    <div class="text-3xl mb-2" role="img" :aria-hidden="true">
       {{ icon }}
-    </span>
+    </div>
 
     <!-- Precipitation chance -->
-    <span
-      v-if="precipLabel"
-      class="text-xs text-blue-200/80 font-medium flex items-center gap-0.5"
+    <div
+      class="text-xs font-semibold rounded-full px-2 py-0.5 mb-3"
+      :class="precipClass"
     >
-      <span>💧</span>{{ precipLabel }}
-    </span>
-    <span v-else class="text-xs text-transparent select-none">—</span>
-
-    <!-- High / Low -->
-    <div class="flex flex-col items-center gap-0.5 mt-1">
-      <span class="text-sm font-bold text-white">{{ day.tempHigh }}°</span>
-      <span class="text-xs text-white/50">{{ day.tempLow }}°</span>
+      {{ day.precipitationChance }}%
     </div>
-  </article>
+
+    <!-- High temp -->
+    <p class="text-white font-bold text-base leading-none">
+      {{ day.high }}°
+    </p>
+
+    <!-- Divider -->
+    <div class="w-6 h-px bg-white/20 my-1.5" />
+
+    <!-- Low temp -->
+    <p class="text-white/55 text-sm font-medium">
+      {{ day.low }}°
+    </p>
+  </div>
 </template>
