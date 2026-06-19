@@ -1,60 +1,65 @@
 """
-Logging configuration for the summarizer CLI.
+Logging configuration for the Summarizer CLI.
 
-Provides a consistent log format across all modules and supports
-enabling DEBUG-level output via a --verbose flag.
+Provides a consistent log format across the application and supports
+toggling between INFO and DEBUG levels via a --verbose flag.
 """
 
 import logging
 import sys
 
-_LOG_FORMAT = "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s"
-_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+# Logger name used throughout the application
+LOGGER_NAME = "summarizer"
 
-# Top-level logger for the entire package
-logger = logging.getLogger("summarizer")
+# Log format: timestamp | level | logger name | message
+LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
-def setup_logging(verbose: bool = False) -> None:
+def get_logger(name: str | None = None) -> logging.Logger:
     """
-    Configure the root 'summarizer' logger.
+    Return a logger under the 'summarizer' namespace.
 
     Args:
-        verbose: When True, sets the log level to DEBUG.
-                 Otherwise INFO is used.
+        name: Optional sub-logger name (e.g. 'summarizer.cli').
+              If None, returns the root 'summarizer' logger.
+
+    Returns:
+        A configured logging.Logger instance.
+    """
+    logger_name = f"{LOGGER_NAME}.{name}" if name else LOGGER_NAME
+    return logging.getLogger(logger_name)
+
+
+def configure_logging(verbose: bool = False) -> None:
+    """
+    Configure application-wide logging.
+
+    Sets up a StreamHandler on stdout with a consistent format.
+    If verbose is True, the log level is set to DEBUG; otherwise INFO.
+
+    Args:
+        verbose: When True, enables DEBUG-level logging.
     """
     level = logging.DEBUG if verbose else logging.INFO
+
+    root_logger = logging.getLogger(LOGGER_NAME)
+    root_logger.setLevel(level)
+
+    # Avoid adding duplicate handlers if called more than once
+    if root_logger.handlers:
+        root_logger.handlers.clear()
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(level)
 
-    formatter = logging.Formatter(fmt=_LOG_FORMAT, datefmt=_DATE_FORMAT)
+    formatter = logging.Formatter(fmt=LOG_FORMAT, datefmt=DATE_FORMAT)
     handler.setFormatter(formatter)
 
-    logger.setLevel(level)
-    # Avoid duplicate handlers if setup_logging is called more than once
-    logger.handlers.clear()
-    logger.addHandler(handler)
-    # Prevent log records from propagating to the root logger
-    logger.propagate = False
+    root_logger.addHandler(handler)
 
-    logger.debug("Logging initialised (level=%s)", logging.getLevelName(level))
+    # Prevent log records from propagating to the root Python logger
+    root_logger.propagate = False
 
-
-def get_logger(name: str) -> logging.Logger:
-    """
-    Return a child logger under the 'summarizer' namespace.
-
-    Usage::
-
-        from summarizer.logger import get_logger
-        log = get_logger(__name__)
-        log.info("hello")
-
-    Args:
-        name: Typically ``__name__`` of the calling module.
-
-    Returns:
-        A :class:`logging.Logger` instance.
-    """
-    return logging.getLogger(name)
+    logger = get_logger()
+    logger.debug("Logging configured at level: %s", logging.getLevelName(level))

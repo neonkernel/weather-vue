@@ -1,6 +1,10 @@
 # Summarizer CLI
 
-A command-line tool that summarizes web pages and local files using LLMs.
+A command-line tool to summarize web pages and local files using AI.
+
+## Overview
+
+`summarize` is a CLI tool that accepts a URL or local file path and returns an AI-generated summary. It supports multiple output styles and formats.
 
 ## Installation
 
@@ -9,30 +13,27 @@ A command-line tool that summarizes web pages and local files using LLMs.
 - Python 3.9+
 - pip
 
-### Setup
+### Install from source
 
-1. Clone the repository:
-   ```bash
-   git clone <repository-url>
-   cd summarizer
-   ```
+```bash
+# Clone the repository
+git clone <repo-url>
+cd <repo-dir>
 
-2. Create and activate a virtual environment:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
+# Create and activate a virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-3. Install the package in editable mode:
-   ```bash
-   pip install -e .
-   ```
+# Install in editable mode
+pip install -e .
+```
 
-4. Configure environment variables:
-   ```bash
-   cp .env.example .env
-   # Edit .env and add your API keys
-   ```
+### Configure environment variables
+
+```bash
+cp .env.example .env
+# Edit .env and add your OpenAI API key
+```
 
 ## Usage
 
@@ -61,44 +62,33 @@ summarize --help
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--url` | URL of the web page to summarize | — |
-| `--file` | Path to local file to summarize | — |
+| `--file` | Path to a local file to summarize | — |
 | `--style` | Summary style: `paragraph`, `bullet`, `tldr` | `paragraph` |
 | `--format` | Output format: `plain`, `markdown`, `json` | `plain` |
-| `--verbose` | Enable debug logging | `False` |
+| `--verbose` | Enable verbose/debug logging | False |
 
 ## Development
 
-### Running Tests
-
 ```bash
+# Install with dev dependencies
 pip install -e ".[dev]"
-pytest tests/
-```
 
-### Project Structure
+# Run tests
+pytest
 
-```
-summarizer/
-├── src/
-│   └── summarizer/
-│       ├── __init__.py     # Package init, version
-│       ├── cli.py          # Click CLI entry point
-│       ├── config.py       # Environment/config management
-│       └── logger.py       # Logging setup
-├── tests/
-│   ├── __init__.py
-│   └── test_cli.py         # CLI smoke tests
-├── .env.example            # Environment variable template
-├── pyproject.toml          # Package metadata & dependencies
-└── README.md
+# Run a specific test
+pytest tests/test_cli.py -v
 ```
 
 ## Environment Variables
 
-See `.env.example` for all available configuration options.
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `OPENAI_API_KEY` | Your OpenAI API key | Yes |
+| `SUMMARIZER_MODEL` | OpenAI model to use | No (default: `gpt-4o-mini`) |
+| `SUMMARIZER_MAX_TOKENS` | Maximum tokens in response | No (default: `512`) |
+| `SUMMARIZER_TIMEOUT` | HTTP request timeout in seconds | No (default: `30`) |
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `OPENAI_API_KEY` | Yes | Your OpenAI API key |
-| `SUMMARIZER_MODEL` | No | Model to use (default: `gpt-4o-mini`) |
-| `SUMMARIZER_MAX_TOKENS` | No | Max tokens for response (default: `512`) |
+## License
+
+MIT
