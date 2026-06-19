@@ -1,92 +1,108 @@
-# 🌤️ Weather Dashboard
+# AI Content Summarizer
 
-A beautiful, responsive weather dashboard built with Vue 3, TypeScript, and Tailwind CSS.
+A command-line tool that summarizes web pages and local files using AI (OpenAI GPT models).
 
-## Tech Stack
+## Features
 
-- **Vue 3** — Composition API with `<script setup>`
-- **TypeScript** — Strict mode for type safety
-- **Vite** — Lightning-fast build tool and dev server
-- **Tailwind CSS** — Utility-first styling with custom weather theme
-- **ESLint + Prettier** — Code quality and formatting
+- Summarize content from URLs or local files
+- Multiple summary styles (brief, detailed, bullet points)
+- Multiple output formats (text, markdown, JSON)
+- Configurable AI model and parameters
+- Verbose logging support
 
-## Getting Started
+## Installation
 
 ### Prerequisites
 
-- Node.js >= 18
-- npm >= 9
+- Python 3.9 or higher
+- An OpenAI API key
 
-### Installation
+### Install from source
 
 ```bash
-npm install
+# Clone the repository
+git clone <repository-url>
+cd ai-summarizer
+
+# Create and activate a virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install in editable mode
+pip install -e .
 ```
 
-### Development
+### Configure environment variables
 
 ```bash
-npm run dev
+# Copy the example environment file
+cp .env.example .env
+
+# Edit .env and add your OpenAI API key
+nano .env
 ```
 
-The app will be available at `http://localhost:5173`
-
-### Build
+## Usage
 
 ```bash
-npm run build
+# Summarize a URL
+summarize --url https://example.com/article
+
+# Summarize a local file
+summarize --file /path/to/document.txt
+
+# Choose summary style (brief, detailed, bullets)
+summarize --url https://example.com --style detailed
+
+# Choose output format (text, markdown, json)
+summarize --url https://example.com --format markdown
+
+# Enable verbose logging
+summarize --url https://example.com --verbose
+
+# Show help
+summarize --help
 ```
 
-### Preview Production Build
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OPENAI_API_KEY` | Your OpenAI API key (required) | — |
+| `SUMMARIZER_MODEL` | OpenAI model to use | `gpt-4o-mini` |
+| `SUMMARIZER_MAX_TOKENS` | Maximum tokens for summary | `1024` |
+| `SUMMARIZER_TEMPERATURE` | Model temperature (0.0–2.0) | `0.7` |
+
+## Development
 
 ```bash
-npm run preview
-```
+# Install with dev dependencies
+pip install -e ".[dev]"
 
-### Lint & Format
+# Run tests
+pytest
 
-```bash
-npm run lint
-npm run format
+# Run tests with coverage
+pytest --cov=summarizer
 ```
 
 ## Project Structure
 
 ```
-src/
-├── assets/
-│   └── styles/
-│       └── main.css        # Global styles + Tailwind directives
-├── components/
-│   ├── CurrentWeather.vue  # Current conditions display
-│   ├── ForecastCard.vue    # Single forecast day card
-│   ├── ForecastStrip.vue   # 7-day horizontal forecast strip
-│   └── WeatherDashboard.vue # Main dashboard container
-├── data/
-│   └── mockWeather.ts      # Hardcoded mock weather data
-├── types/
-│   └── weather.ts          # TypeScript interfaces
-├── App.vue                 # Root component
-└── main.ts                 # App bootstrap
+.
+├── src/
+│   └── summarizer/
+│       ├── __init__.py      # Package init & version
+│       ├── cli.py           # Click CLI entry point
+│       ├── config.py        # Configuration management
+│       └── logger.py        # Logging setup
+├── tests/
+│   ├── __init__.py
+│   └── test_cli.py          # CLI smoke tests
+├── .env.example             # Environment variable template
+├── pyproject.toml           # Package metadata & dependencies
+└── README.md
 ```
-
-## Phase Roadmap
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| **Phase 1** | Project Foundation & Static UI Shell | ✅ Complete |
-| **Phase 2** | API Integration & Live Data | 🔜 Planned |
-| **Phase 3** | Search & Geolocation | 🔜 Planned |
-| **Phase 4** | Enhanced UX (animations, themes) | 🔜 Planned |
-| **Phase 5** | PWA & Offline Support | 🔜 Planned |
-
-## Features (Phase 1)
-
-- 🌡️ Current temperature, condition, and "feels like"
-- 💧 Humidity and 💨 wind speed display
-- 📅 7-day forecast strip with high/low temperatures
-- 📱 Fully responsive mobile-first layout
-- 🎨 Weather-themed gradient background
 
 ## License
 
