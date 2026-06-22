@@ -17,8 +17,8 @@ MANIFEST
 # Virtual environments
 .venv/
 venv/
-ENV/
 env/
+ENV/
 
 # Testing
 .pytest_cache/
@@ -26,15 +26,19 @@ env/
 htmlcov/
 .tox/
 
-# IDE
-.vscode/
+# IDE / editor files
 .idea/
+.vscode/
 *.swp
 *.swo
-
-# OS
+*~
 .DS_Store
-Thumbs.db
 
 # Logs
 *.log
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyright/

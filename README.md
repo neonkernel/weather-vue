@@ -1,90 +1,112 @@
-# 🌤️ Weather Dashboard
+# Web Summarizer CLI
 
-A modern, responsive weather dashboard built with Vue 3, TypeScript, and Tailwind CSS.
+A command-line tool that summarizes web pages and local files using OpenAI's language models.
 
-## Tech Stack
+## Features
 
-- **Frontend Framework:** Vue 3 (Composition API)
-- **Build Tool:** Vite
-- **Language:** TypeScript
-- **Styling:** Tailwind CSS
-- **Code Quality:** ESLint + Prettier
+- Summarize content from URLs or local files
+- Multiple summary styles (brief, detailed, bullet points)
+- Multiple output formats (text, markdown, JSON)
+- Configurable via environment variables
 
-## Setup Instructions
+## Installation
 
 ### Prerequisites
 
-- Node.js >= 18.0.0
-- npm >= 9.0.0
+- Python 3.9+
+- pip
 
-### Installation
+### Install from source
 
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd weather-dashboard
+cd <repository-directory>
 
-# Install dependencies
-npm install
+# Create and activate a virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Start development server
-npm run dev
-
-# Build for production
-npm run build
-
-# Preview production build
-npm run preview
-
-# Run linting
-npm run lint
-
-# Format code
-npm run format
+# Install in editable mode
+pip install -e .
 ```
 
-The app will be available at `http://localhost:5173`
+### Configuration
 
-## Project Structure
+Copy the example environment file and fill in your credentials:
 
-```
-src/
-├── assets/
-│   └── styles/
-│       └── main.css          # Global styles & Tailwind directives
-├── components/
-│   ├── WeatherDashboard.vue  # Main dashboard container
-│   ├── CurrentWeather.vue    # Current conditions display
-│   ├── ForecastStrip.vue     # 7-day forecast strip
-│   └── ForecastCard.vue      # Individual forecast day card
-├── data/
-│   └── mockWeather.ts        # Hardcoded mock weather data
-├── types/
-│   └── weather.ts            # TypeScript interfaces
-├── App.vue                   # Root component
-└── main.ts                   # App entry point
+```bash
+cp .env.example .env
 ```
 
-## Phase Roadmap
+Edit `.env` with your OpenAI API key:
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| **Phase 1** | Project Foundation & Static UI Shell | ✅ Complete |
-| **Phase 2** | Weather API Integration | 🔜 Planned |
-| **Phase 3** | Geolocation & Search | 🔜 Planned |
-| **Phase 4** | Animations & Polish | 🔜 Planned |
-| **Phase 5** | PWA & Offline Support | 🔜 Planned |
+```
+OPENAI_API_KEY=your-api-key-here
+```
 
-## Phase 1 Details
+## Usage
 
-- ✅ Vite + Vue 3 Composition API + TypeScript setup
-- ✅ Tailwind CSS with custom weather-themed color palette
-- ✅ Component hierarchy: App → WeatherDashboard → CurrentWeather + ForecastStrip
-- ✅ Static placeholder data (no API calls required)
-- ✅ ESLint + Prettier configuration
-- ✅ Path aliases (@/) configured
-- ✅ Responsive mobile-first design
-- ✅ TypeScript interfaces for weather data
+```bash
+# Summarize a URL
+summarize --url https://example.com/article
+
+# Summarize a local file
+summarize --file path/to/document.txt
+
+# Choose a summary style
+summarize --url https://example.com --style brief
+summarize --url https://example.com --style detailed
+summarize --url https://example.com --style bullets
+
+# Choose an output format
+summarize --url https://example.com --format text
+summarize --url https://example.com --format markdown
+summarize --url https://example.com --format json
+
+# Enable verbose logging
+summarize --url https://example.com --verbose
+
+# Show help
+summarize --help
+```
+
+## Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--url` | URL to summarize | - |
+| `--file` | Local file path to summarize | - |
+| `--style` | Summary style: `brief`, `detailed`, `bullets` | `brief` |
+| `--format` | Output format: `text`, `markdown`, `json` | `text` |
+| `--verbose` | Enable verbose/debug logging | `False` |
+
+## Development
+
+### Running Tests
+
+```bash
+pip install -e ".[dev]"
+pytest tests/
+```
+
+### Project Structure
+
+```
+.
+├── src/
+│   └── summarizer/
+│       ├── __init__.py   # Package init and version
+│       ├── cli.py        # CLI entry point (Click)
+│       ├── config.py     # Configuration management
+│       └── logger.py     # Logging setup
+├── tests/
+│   ├── __init__.py
+│   └── test_cli.py
+├── pyproject.toml
+├── .env.example
+└── README.md
+```
 
 ## License
 
