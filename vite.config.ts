@@ -12,10 +12,11 @@ export default defineConfig({
   server: {
     port: 5173,
     open: true,
-    cors: true,
+    host: true,
   },
   build: {
     target: 'esnext',
+    outDir: 'dist',
     sourcemap: true,
   },
 })

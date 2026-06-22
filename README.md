@@ -4,7 +4,7 @@ A beautiful, responsive weather dashboard built with Vue 3, TypeScript, and Tail
 
 ## Tech Stack
 
-- **Frontend Framework**: Vue 3 (Composition API)
+- **Framework**: Vue 3 (Composition API)
 - **Build Tool**: Vite
 - **Language**: TypeScript
 - **Styling**: Tailwind CSS
@@ -19,9 +19,9 @@ src/
 │       └── main.css        # Global styles & Tailwind directives
 ├── components/
 │   ├── WeatherDashboard.vue # Main dashboard container
-│   ├── CurrentWeather.vue   # Current weather display
+│   ├── CurrentWeather.vue   # Current conditions display
 │   ├── ForecastStrip.vue    # 7-day forecast strip
-│   └── ForecastCard.vue     # Single forecast day card
+│   └── ForecastCard.vue     # Individual forecast day card
 ├── data/
 │   └── mockWeather.ts       # Hardcoded mock weather data
 ├── types/
@@ -40,27 +40,26 @@ src/
 ### Installation
 
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd weather-dashboard
-
 # Install dependencies
 npm install
 
 # Start development server
 npm run dev
+
+# Build for production
+npm run build
+
+# Preview production build
+npm run preview
+
+# Lint code
+npm run lint
+
+# Format code
+npm run format
 ```
 
-### Available Scripts
-
-```bash
-npm run dev        # Start Vite dev server (http://localhost:5173)
-npm run build      # Build for production
-npm run preview    # Preview production build
-npm run lint       # Run ESLint
-npm run format     # Run Prettier
-npm run type-check # Run TypeScript type checking
-```
+The app will be available at `http://localhost:5173`
 
 ## Phase Roadmap
 
@@ -72,15 +71,11 @@ npm run type-check # Run TypeScript type checking
 | **Phase 4** | Animations & Polish | 🔜 Planned |
 | **Phase 5** | PWA & Offline Support | 🔜 Planned |
 
-## Phase 1 Details
+## Features (Phase 1)
 
-- Vite + Vue 3 Composition API with TypeScript
-- Tailwind CSS with custom weather-themed color palette
-- Static UI shell with hardcoded placeholder data
-- Component hierarchy: `App.vue` → `WeatherDashboard` → `CurrentWeather` + `ForecastStrip` → `ForecastCard`
-- ESLint + Prettier configured for code quality
-- Path aliases (`@/`) configured in Vite and TypeScript
-
-## License
-
-MIT
+- 📍 City name and current conditions display
+- 🌡️ Temperature with feels-like reading
+- 💧 Humidity and wind speed indicators
+- 📅 7-day forecast strip with high/low temps
+- 🎨 Weather-themed gradient background
+- 📱 Fully responsive mobile-first design
