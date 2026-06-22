@@ -1,14 +1,15 @@
 {
   "name": "weather-dashboard",
   "version": "1.0.0",
-  "private": true,
+  "description": "A modern weather dashboard built with Vue 3, TypeScript, and Tailwind CSS",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint . --ext .vue,.ts,.tsx --fix",
-    "format": "prettier --write \"src/**/*.{vue,ts,tsx,css}\""
+    "format": "prettier --write \"src/**/*.{vue,ts,css}\"",
+    "type-check": "vue-tsc --noEmit"
   },
   "dependencies": {
     "vue": "^3.4.0"
@@ -18,14 +19,14 @@
     "@typescript-eslint/parser": "^7.0.0",
     "@vitejs/plugin-vue": "^5.0.0",
     "@vue/eslint-config-typescript": "^13.0.0",
-    "autoprefixer": "^10.4.17",
+    "autoprefixer": "^10.4.19",
     "eslint": "^8.57.0",
-    "eslint-plugin-vue": "^9.21.0",
-    "postcss": "^8.4.35",
+    "eslint-plugin-vue": "^9.23.0",
+    "postcss": "^8.4.38",
     "prettier": "^3.2.5",
-    "tailwindcss": "^3.4.1",
-    "typescript": "^5.3.3",
-    "vite": "^5.1.0",
+    "tailwindcss": "^3.4.3",
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0",
     "vue-tsc": "^2.0.0"
   }
 }

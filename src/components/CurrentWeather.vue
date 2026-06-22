@@ -1,113 +1,146 @@
+<script setup lang="ts">
+import type { WeatherCurrent } from '@/types/weather'
+
+defineProps<{
+  current: WeatherCurrent
+}>()
+
+/**
+ * Returns a Tailwind color class based on UV index severity.
+ */
+function uvColor(uvIndex: number): string {
+  if (uvIndex <= 2) return 'text-green-400'
+  if (uvIndex <= 5) return 'text-yellow-400'
+  if (uvIndex <= 7) return 'text-orange-400'
+  if (uvIndex <= 10) return 'text-red-400'
+  return 'text-purple-400'
+}
+
+/**
+ * Returns a human-readable UV index label.
+ */
+function uvLabel(uvIndex: number): string {
+  if (uvIndex <= 2) return 'Low'
+  if (uvIndex <= 5) return 'Moderate'
+  if (uvIndex <= 7) return 'High'
+  if (uvIndex <= 10) return 'Very High'
+  return 'Extreme'
+}
+</script>
+
 <template>
-  <div class="glass-card p-6 sm:p-8 animate-slide-up">
-    <div class="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-      <!-- Location & Condition -->
-      <div class="space-y-1">
-        <div class="flex items-center gap-2">
-          <span class="text-lg" aria-hidden="true">📍</span>
-          <h2 class="text-2xl font-bold tracking-tight text-white">
-            {{ data.city }},
-            <span class="font-normal text-white/70">{{ data.country }}</span>
+  <div class="glass-card p-6 animate-fade-in">
+
+    <!-- Location & Condition -->
+    <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+
+      <!-- Left: Temperature & Location -->
+      <div class="flex flex-col gap-1">
+        <div class="flex items-baseline gap-1">
+          <h2 class="text-5xl sm:text-7xl font-bold text-white leading-none tracking-tighter">
+            {{ current.temperature }}°
           </h2>
+          <span class="text-2xl font-light text-secondary mt-2">C</span>
         </div>
-        <p class="pl-7 text-sm text-white/60">{{ data.condition }}</p>
+
+        <p class="text-lg text-secondary mt-1">
+          Feels like <span class="font-medium text-white">{{ current.feelsLike }}°C</span>
+        </p>
+
+        <div class="flex items-center gap-2 mt-2">
+          <span class="text-3xl" role="img" :aria-label="current.condition">
+            {{ current.icon }}
+          </span>
+          <div>
+            <p class="text-xl font-semibold text-white">{{ current.condition }}</p>
+            <p class="text-sm text-secondary">
+              {{ current.city }}, {{ current.country }}
+            </p>
+          </div>
+        </div>
       </div>
 
-      <!-- Temperature Block -->
-      <div class="flex items-end gap-4">
-        <div class="text-right">
-          <div class="flex items-start justify-end">
-            <span class="text-7xl font-extrabold leading-none tracking-tighter text-white">
-              {{ data.temperature }}
-            </span>
-            <span class="mt-3 text-3xl font-light text-white/70">°C</span>
+      <!-- Right: Sun Times -->
+      <div class="flex gap-4 sm:flex-col sm:items-end sm:gap-2">
+        <div class="flex items-center gap-2">
+          <span class="text-yellow-400 text-lg">🌅</span>
+          <div>
+            <p class="text-xs text-muted uppercase tracking-wide">Sunrise</p>
+            <p class="text-sm font-semibold text-white">{{ current.sunrise }}</p>
           </div>
-          <p class="text-sm text-white/50">
-            Feels like {{ data.feelsLike }}°C
-          </p>
         </div>
-        <span class="text-6xl leading-none" role="img" :aria-label="data.condition">
-          {{ data.icon }}
-        </span>
+        <div class="flex items-center gap-2">
+          <span class="text-orange-400 text-lg">🌇</span>
+          <div>
+            <p class="text-xs text-muted uppercase tracking-wide">Sunset</p>
+            <p class="text-sm font-semibold text-white">{{ current.sunset }}</p>
+          </div>
+        </div>
       </div>
+
     </div>
 
+    <!-- Divider -->
+    <hr class="my-5 border-white/10" />
+
     <!-- Stats Grid -->
-    <div class="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+
       <!-- Humidity -->
-      <div class="glass-card p-4 text-center">
-        <div class="mb-1 text-2xl" aria-hidden="true">💧</div>
-        <p class="stat-label">Humidity</p>
-        <p class="stat-value">{{ data.humidity }}%</p>
+      <div class="stat-badge">
+        <span class="text-xl" role="img" aria-label="Humidity">💧</span>
+        <span class="text-xs text-muted uppercase tracking-wide">Humidity</span>
+        <span class="text-sm font-bold text-white">{{ current.humidity }}%</span>
       </div>
 
       <!-- Wind -->
-      <div class="glass-card p-4 text-center">
-        <div class="mb-1 text-2xl" aria-hidden="true">💨</div>
-        <p class="stat-label">Wind</p>
-        <p class="stat-value">{{ data.windSpeed }} km/h</p>
-        <p class="text-xs text-white/40">{{ data.windDirection }}</p>
+      <div class="stat-badge">
+        <span class="text-xl" role="img" aria-label="Wind">💨</span>
+        <span class="text-xs text-muted uppercase tracking-wide">Wind</span>
+        <span class="text-sm font-bold text-white">
+          {{ current.windSpeed }} <span class="font-normal text-secondary text-xs">km/h</span>
+        </span>
+        <span class="text-xs text-secondary">{{ current.windDirection }}</span>
       </div>
 
       <!-- Visibility -->
-      <div class="glass-card p-4 text-center">
-        <div class="mb-1 text-2xl" aria-hidden="true">👁️</div>
-        <p class="stat-label">Visibility</p>
-        <p class="stat-value">{{ data.visibility }} km</p>
+      <div class="stat-badge">
+        <span class="text-xl" role="img" aria-label="Visibility">👁️</span>
+        <span class="text-xs text-muted uppercase tracking-wide">Visibility</span>
+        <span class="text-sm font-bold text-white">
+          {{ current.visibility }} <span class="font-normal text-secondary text-xs">km</span>
+        </span>
       </div>
 
       <!-- UV Index -->
-      <div class="glass-card p-4 text-center">
-        <div class="mb-1 text-2xl" aria-hidden="true">☀️</div>
-        <p class="stat-label">UV Index</p>
-        <p class="stat-value">{{ data.uvIndex }}</p>
-        <p class="text-xs text-white/40">{{ uvLabel }}</p>
+      <div class="stat-badge">
+        <span class="text-xl" role="img" aria-label="UV Index">☀️</span>
+        <span class="text-xs text-muted uppercase tracking-wide">UV Index</span>
+        <span class="text-sm font-bold text-white">{{ current.uvIndex }}</span>
+        <span class="text-xs font-medium" :class="uvColor(current.uvIndex)">
+          {{ uvLabel(current.uvIndex) }}
+        </span>
       </div>
+
+      <!-- Pressure -->
+      <div class="stat-badge">
+        <span class="text-xl" role="img" aria-label="Pressure">🔵</span>
+        <span class="text-xs text-muted uppercase tracking-wide">Pressure</span>
+        <span class="text-sm font-bold text-white">
+          {{ current.pressure }} <span class="font-normal text-secondary text-xs">hPa</span>
+        </span>
+      </div>
+
+      <!-- Cloud / Condition Badge -->
+      <div class="stat-badge">
+        <span class="text-xl" role="img" aria-label="Condition">🌡️</span>
+        <span class="text-xs text-muted uppercase tracking-wide">Condition</span>
+        <span class="text-xs font-semibold text-white text-center leading-tight">
+          {{ current.condition }}
+        </span>
+      </div>
+
     </div>
 
-    <!-- Sunrise / Sunset -->
-    <div class="mt-4 flex items-center justify-around rounded-xl border border-white/10 bg-white/5 px-4 py-3">
-      <div class="flex items-center gap-2">
-        <span class="text-xl" aria-hidden="true">🌅</span>
-        <div>
-          <p class="stat-label">Sunrise</p>
-          <p class="text-sm font-semibold text-white">{{ data.sunrise }}</p>
-        </div>
-      </div>
-      <div class="h-8 w-px bg-white/15" aria-hidden="true" />
-      <div class="flex items-center gap-2">
-        <span class="text-xl" aria-hidden="true">🌇</span>
-        <div>
-          <p class="stat-label">Sunset</p>
-          <p class="text-sm font-semibold text-white">{{ data.sunset }}</p>
-        </div>
-      </div>
-      <div class="h-8 w-px bg-white/15" aria-hidden="true" />
-      <div class="flex items-center gap-2">
-        <span class="text-xl" aria-hidden="true">🔵</span>
-        <div>
-          <p class="stat-label">Pressure</p>
-          <p class="text-sm font-semibold text-white">{{ data.pressure }} hPa</p>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
-
-<script setup lang="ts">
-import { computed } from 'vue'
-import type { WeatherCurrent } from '@/types/weather'
-
-const props = defineProps<{
-  data: WeatherCurrent
-}>()
-
-const uvLabel = computed(() => {
-  const uv = props.data.uvIndex
-  if (uv <= 2) return 'Low'
-  if (uv <= 5) return 'Moderate'
-  if (uv <= 7) return 'High'
-  if (uv <= 10) return 'Very High'
-  return 'Extreme'
-})
-</script>

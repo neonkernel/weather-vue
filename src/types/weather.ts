@@ -2,15 +2,15 @@
  * Represents current weather conditions for a location.
  */
 export interface WeatherCurrent {
-  /** City or location name */
+  /** City name */
   city: string
-  /** Country code, e.g. "US" */
+  /** Country code (ISO 3166-1 alpha-2) */
   country: string
-  /** Current temperature in Celsius */
+  /** Temperature in Celsius */
   temperature: number
-  /** Feels-like temperature in Celsius */
+  /** "Feels like" temperature in Celsius */
   feelsLike: number
-  /** Short condition description, e.g. "Partly Cloudy" */
+  /** Weather condition description (e.g. "Partly Cloudy") */
   condition: string
   /** Emoji or icon code representing the condition */
   icon: string
@@ -18,46 +18,58 @@ export interface WeatherCurrent {
   humidity: number
   /** Wind speed in km/h */
   windSpeed: number
-  /** Wind direction, e.g. "NW" */
+  /** Wind direction (e.g. "NW") */
   windDirection: string
-  /** Visibility in kilometres */
+  /** Visibility in kilometers */
   visibility: number
-  /** UV index (0–11+) */
+  /** UV Index (0–11+) */
   uvIndex: number
   /** Atmospheric pressure in hPa */
   pressure: number
-  /** Sunrise time, e.g. "06:14 AM" */
+  /** Sunrise time as locale string */
   sunrise: string
-  /** Sunset time, e.g. "08:32 PM" */
+  /** Sunset time as locale string */
   sunset: string
-  /** Last updated timestamp (ISO 8601) */
-  updatedAt: string
+  /** Last updated timestamp */
+  lastUpdated: string
 }
 
 /**
  * Represents a single day in the forecast.
  */
 export interface ForecastDay {
-  /** ISO date string, e.g. "2026-06-22" */
+  /** ISO date string (YYYY-MM-DD) */
   date: string
-  /** Short day label, e.g. "Mon" */
-  dayLabel: string
-  /** High temperature for the day in Celsius */
-  high: number
-  /** Low temperature for the day in Celsius */
-  low: number
-  /** Short condition description */
+  /** Short day name (e.g. "Mon") */
+  day: string
+  /** Weather condition description */
   condition: string
   /** Emoji or icon code */
   icon: string
-  /** Precipitation chance (0–100) */
-  precipChance: number
+  /** High temperature in Celsius */
+  high: number
+  /** Low temperature in Celsius */
+  low: number
+  /** Precipitation probability (0–100) */
+  precipProbability: number
+  /** Expected precipitation amount in mm */
+  precipAmount: number
+  /** Humidity percentage */
+  humidity: number
+  /** Wind speed in km/h */
+  windSpeed: number
 }
 
 /**
- * Top-level shape of all weather data used by the app.
+ * Root weather data object combining current and forecast.
  */
 export interface WeatherData {
   current: WeatherCurrent
   forecast: ForecastDay[]
+  /** Timezone name (e.g. "America/New_York") */
+  timezone: string
+  /** Latitude of the location */
+  lat: number
+  /** Longitude of the location */
+  lon: number
 }

@@ -1,54 +1,51 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import CurrentWeather from '@/components/CurrentWeather.vue'
+import ForecastStrip from '@/components/ForecastStrip.vue'
+import { mockWeatherData } from '@/data/mockWeather'
+import type { WeatherData } from '@/types/weather'
+
+const weatherData = ref<WeatherData>(mockWeatherData)
+</script>
+
 <template>
-  <main class="min-h-screen w-full px-4 py-8 sm:px-6 lg:px-8 animate-fade-in">
+  <main class="min-h-dvh w-full px-4 py-6 sm:px-6 lg:px-8">
     <div class="mx-auto max-w-4xl space-y-6">
+
       <!-- Header -->
       <header class="flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <span class="text-3xl" aria-hidden="true">🌤️</span>
-          <h1 class="text-xl font-semibold tracking-tight text-white/90">
-            Weather Dashboard
-          </h1>
+        <div class="flex items-center gap-2">
+          <span class="text-2xl">🌤️</span>
+          <h1 class="text-xl font-semibold text-white tracking-tight">WeatherBoard</h1>
         </div>
-        <p class="text-sm text-white/50">
-          Updated {{ formattedTime }}
-        </p>
+        <span class="text-sm text-muted">
+          {{ weatherData.current.lastUpdated }}
+        </span>
       </header>
 
-      <!-- Current Weather -->
+      <!-- Current Weather Section -->
       <section aria-label="Current weather conditions">
-        <CurrentWeather :data="weatherData.current" />
+        <CurrentWeather :current="weatherData.current" />
       </section>
 
-      <!-- 7-Day Forecast -->
-      <section aria-label="7-day weather forecast">
-        <h2 class="mb-3 text-sm font-medium uppercase tracking-widest text-white/50">
-          7-Day Forecast
-        </h2>
+      <!-- 7-Day Forecast Section -->
+      <section aria-label="7-day forecast">
+        <div class="mb-3 flex items-center gap-2">
+          <span class="text-xs font-semibold uppercase tracking-widest text-muted">
+            📅 7-Day Forecast
+          </span>
+        </div>
         <ForecastStrip :forecast="weatherData.forecast" />
       </section>
 
       <!-- Footer -->
-      <footer class="pt-2 text-center text-xs text-white/30">
-        Weather data is for demonstration purposes only.
+      <footer class="text-center">
+        <p class="text-xs text-muted">
+          Coordinates: {{ weatherData.lat }}°N, {{ Math.abs(weatherData.lon) }}°W
+          · {{ weatherData.timezone }}
+        </p>
       </footer>
+
     </div>
   </main>
 </template>
-
-<script setup lang="ts">
-import { computed } from 'vue'
-import CurrentWeather from '@/components/CurrentWeather.vue'
-import ForecastStrip from '@/components/ForecastStrip.vue'
-import { mockWeatherData } from '@/data/mockWeather'
-
-const weatherData = mockWeatherData
-
-const formattedTime = computed(() => {
-  const date = new Date(weatherData.current.updatedAt)
-  return date.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  })
-})
-</script>

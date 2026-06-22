@@ -1,15 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
   <defs>
-    <linearGradient id="sky" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#4fc3f7;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#0277bd;stop-opacity:1" />
+    <linearGradient id="skyGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e3a5f;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#3182ce;stop-opacity:1" />
     </linearGradient>
   </defs>
-  <circle cx="50" cy="50" r="50" fill="url(#sky)" />
+  <!-- Background circle -->
+  <circle cx="50" cy="50" r="48" fill="url(#skyGrad)" />
   <!-- Sun -->
-  <circle cx="62" cy="38" r="14" fill="#fdcb6e" />
-  <!-- Cloud -->
-  <ellipse cx="42" cy="58" rx="22" ry="13" fill="white" opacity="0.95" />
-  <ellipse cx="54" cy="54" rx="16" ry="12" fill="white" opacity="0.95" />
-  <ellipse cx="30" cy="60" rx="14" ry="10" fill="white" opacity="0.95" />
+  <circle cx="38" cy="38" r="14" fill="#FFD700" />
+  <!-- Cloud body -->
+  <ellipse cx="58" cy="56" rx="20" ry="12" fill="white" opacity="0.9"/>
+  <circle cx="46" cy="52" r="10" fill="white" opacity="0.9"/>
+  <circle cx="64" cy="50" r="9" fill="white" opacity="0.9"/>
 </svg>

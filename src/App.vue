@@ -1,15 +1,12 @@
-<template>
-  <div class="app-wrapper min-h-screen w-full">
-    <WeatherDashboard />
-  </div>
-</template>
-
 <script setup lang="ts">
+// Root component — provides global layout shell.
+// All weather UI lives inside WeatherDashboard.
 import WeatherDashboard from '@/components/WeatherDashboard.vue'
 </script>
 
-<style scoped>
-.app-wrapper {
-  background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
-}
-</style>
+<template>
+  <div class="min-h-dvh w-full">
+    <!-- Global background gradient is applied via body in main.css -->
+    <WeatherDashboard />
+  </div>
+</template>
