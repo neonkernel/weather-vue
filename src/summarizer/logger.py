@@ -1,54 +1,62 @@
-"""Logging configuration for the Summarizer CLI.
-
-Configures stdlib logging with a consistent format.
-Supports a --verbose flag to enable DEBUG-level output.
 """
+Logging configuration for the summarizer package.
 
-from __future__ import annotations
+Provides a consistent log format across all modules and supports
+a --verbose flag to elevate the log level to DEBUG.
+"""
 
 import logging
 import sys
 
-# Module-level logger for the summarizer package
-logger = logging.getLogger("summarizer")
-
+# Module-level logger for the package
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+# Sentinel to ensure we only configure the root logger once
+_configured = False
+
 
 def configure_logging(verbose: bool = False) -> None:
-    """Configure the root summarizer logger.
+    """
+    Configure the root 'summarizer' logger.
 
     Args:
         verbose: If True, set the log level to DEBUG; otherwise INFO.
     """
+    global _configured
+
     level = logging.DEBUG if verbose else logging.INFO
 
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setLevel(level)
-
-    formatter = logging.Formatter(fmt=_LOG_FORMAT, datefmt=_DATE_FORMAT)
-    handler.setFormatter(formatter)
-
-    # Configure the package-level logger so we don't pollute the root logger
+    logger = logging.getLogger("summarizer")
     logger.setLevel(level)
-    logger.handlers.clear()
-    logger.addHandler(handler)
-    logger.propagate = False
 
-    logger.debug("Verbose logging enabled.")
+    # Avoid adding duplicate handlers if called more than once
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setLevel(level)
+        formatter = logging.Formatter(fmt=_LOG_FORMAT, datefmt=_DATE_FORMAT)
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    else:
+        # Update existing handler levels if reconfigured
+        for handler in logger.handlers:
+            handler.setLevel(level)
+
+    logger.debug("Logging initialised at %s level.", logging.getLevelName(level))
+    _configured = True
 
 
-def get_logger(name: str | None = None) -> logging.Logger:
-    """Return a child logger under the summarizer namespace.
+def get_logger(name: str) -> logging.Logger:
+    """
+    Return a child logger under the 'summarizer' namespace.
 
     Args:
-        name: Optional sub-name (e.g. 'cli', 'config'). If omitted,
-              returns the top-level 'summarizer' logger.
+        name: Typically __name__ of the calling module.
 
     Returns:
-        A :class:`logging.Logger` instance.
+        A Logger instance named 'summarizer.<name>'.
     """
-    if name:
-        return logging.getLogger(f"summarizer.{name}")
-    return logger
+    # Strip the package prefix if already present to avoid double-nesting
+    if name.startswith("summarizer."):
+        return logging.getLogger(name)
+    return logging.getLogger(f"summarizer.{name}")

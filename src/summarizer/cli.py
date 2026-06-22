@@ -1,9 +1,9 @@
-"""CLI entry point for the Summarizer tool.
+"""
+CLI entry point for the summarizer tool.
 
-Defines the `summarize` command with input options (--url / --file),
-output options (--style / --format), and a --verbose flag.
-
-Phase 1: No LLM integration yet — validates input and prints a placeholder.
+Defines the `summarize` command using Click.  In this initial phase
+no actual summarization takes place — the tool validates its input
+and prints a placeholder response.
 """
 
 from __future__ import annotations
@@ -16,43 +16,56 @@ from urllib.parse import urlparse
 import click
 
 from summarizer import __version__
-from summarizer.config import VALID_FORMATS, VALID_STYLES, load_config
+from summarizer.config import load_config
 from summarizer.logger import configure_logging, get_logger
 
-log = get_logger("cli")
+logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Supported option values
+# ---------------------------------------------------------------------------
+
+STYLES = ("brief", "detailed", "bullets")
+FORMATS = ("text", "markdown", "json")
+
+
+# ---------------------------------------------------------------------------
+# Input validation helpers
+# ---------------------------------------------------------------------------
 
 
 def _is_valid_url(value: str) -> bool:
-    """Return True if *value* looks like a plausible HTTP/HTTPS URL."""
+    """Return True if *value* looks like a plausible HTTP(S) URL."""
     try:
-        result = urlparse(value)
-        return result.scheme in ("http", "https") and bool(result.netloc)
+        parsed = urlparse(value)
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
     except Exception:
         return False
 
 
 def _is_readable_file(value: str) -> bool:
-    """Return True if *value* is an existing, readable file path."""
+    """Return True if *value* is a path to an existing, readable file."""
     path = Path(value)
     return path.is_file() and os.access(path, os.R_OK)
 
 
 # ---------------------------------------------------------------------------
-# CLI definition
+# Click command
 # ---------------------------------------------------------------------------
 
 
-@click.command("summarize")
+@click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(version=__version__, prog_name="summarize")
 @click.option(
     "--url",
-    "url",
+    "-u",
     default=None,
     metavar="URL",
     help="URL of the web page to summarize.",
 )
 @click.option(
     "--file",
+    "-f",
     "file_path",
     default=None,
     metavar="PATH",
@@ -60,115 +73,153 @@ def _is_readable_file(value: str) -> bool:
 )
 @click.option(
     "--style",
-    "style",
-    default=None,
-    type=click.Choice(VALID_STYLES, case_sensitive=False),
-    help=(
-        "Summarization style. "
-        f"Choices: {', '.join(VALID_STYLES)}. "
-        "Defaults to the value of SUMMARIZER_DEFAULT_STYLE (or 'brief')."
-    ),
+    "-s",
+    default="brief",
+    show_default=True,
+    type=click.Choice(STYLES, case_sensitive=False),
+    help="Summary style.",
 )
 @click.option(
     "--format",
     "output_format",
-    default=None,
-    type=click.Choice(VALID_FORMATS, case_sensitive=False),
-    help=(
-        "Output format. "
-        f"Choices: {', '.join(VALID_FORMATS)}. "
-        "Defaults to the value of SUMMARIZER_DEFAULT_FORMAT (or 'text')."
-    ),
+    default="text",
+    show_default=True,
+    type=click.Choice(FORMATS, case_sensitive=False),
+    help="Output format.",
 )
 @click.option(
     "--verbose",
+    "-v",
     is_flag=True,
     default=False,
-    help="Enable verbose (DEBUG) logging output.",
+    help="Enable verbose/debug logging.",
+)
+@click.option(
+    "--env-file",
+    default=None,
+    metavar="PATH",
+    help="Path to a .env file (defaults to .env in the current directory).",
 )
 def main(
     url: str | None,
     file_path: str | None,
-    style: str | None,
-    output_format: str | None,
+    style: str,
+    output_format: str,
     verbose: bool,
+    env_file: str | None,
 ) -> None:
-    """Summarize a web page URL or a local file using AI.
+    """Summarize a web page or local file using AI.
 
-    Exactly one of --url or --file must be provided.
+    Provide exactly one of --url or --file as the input source.
 
     \b
     Examples:
       summarize --url https://example.com/article
-      summarize --file ./document.txt --style bullet --format markdown
+      summarize --file report.txt --style detailed --format markdown
     """
-    # ---- Logging setup ----
+    # 1. Configure logging first so all subsequent messages are formatted.
     configure_logging(verbose=verbose)
-    log.debug("summarize CLI starting (version %s)", __version__)
+    logger.debug("summarize %s starting", __version__)
 
-    # ---- Load config ----
+    # 2. Load configuration (reads .env / env vars).
     try:
-        config = load_config()
+        config = load_config(env_file=env_file)
     except ValueError as exc:
-        raise click.ClickException(f"Configuration error: {exc}") from exc
+        click.echo(f"Configuration error: {exc}", err=True)
+        sys.exit(1)
 
-    log.debug(
-        "Config loaded: model=%s, max_tokens=%d, default_style=%s, default_format=%s",
-        config.model,
-        config.max_tokens,
-        config.default_style,
-        config.default_format,
-    )
-
-    # ---- Input validation: exactly one of --url / --file ----
-    if url is None and file_path is None:
-        raise click.UsageError(
-            "You must provide either --url <URL> or --file <PATH>."
+    # 3. Validate that exactly one input source was provided.
+    if url and file_path:
+        click.echo(
+            "Error: Please provide either --url or --file, not both.", err=True
         )
+        sys.exit(1)
 
-    if url is not None and file_path is not None:
-        raise click.UsageError(
-            "Provide only one of --url or --file, not both."
+    if not url and not file_path:
+        click.echo(
+            "Error: You must provide an input source via --url or --file.\n"
+            "Run 'summarize --help' for usage information.",
+            err=True,
         )
+        sys.exit(1)
 
-    # ---- Validate the chosen input ----
-    if url is not None:
+    # 4. Validate the individual input source.
+    if url:
         if not _is_valid_url(url):
-            raise click.BadParameter(
-                f"'{url}' does not look like a valid HTTP/HTTPS URL.",
-                param_hint="--url",
+            click.echo(
+                f"Error: '{url}' does not look like a valid HTTP/HTTPS URL.",
+                err=True,
             )
-        input_description = f"URL: {url}"
-        log.info("Input accepted as URL: %s", url)
+            sys.exit(1)
+        input_type = "url"
+        input_value = url
+        logger.debug("Input validated as URL: %s", url)
+
+    else:  # file_path is set
+        if not _is_readable_file(file_path):
+            click.echo(
+                f"Error: '{file_path}' is not a readable file.",
+                err=True,
+            )
+            sys.exit(1)
+        input_type = "file"
+        input_value = file_path
+        logger.debug("Input validated as file: %s", file_path)
+
+    # 5. Placeholder response (no LLM integration yet).
+    logger.info(
+        "Would summarize %s=%r with style=%r, format=%r, model=%s",
+        input_type,
+        input_value,
+        style,
+        output_format,
+        config.model,
+    )
+
+    _print_placeholder(
+        input_type=input_type,
+        input_value=input_value,
+        style=style,
+        output_format=output_format,
+        config_model=config.model,
+    )
+
+
+def _print_placeholder(
+    input_type: str,
+    input_value: str,
+    style: str,
+    output_format: str,
+    config_model: str,
+) -> None:
+    """Emit a placeholder summary response to stdout."""
+    lines = [
+        "[PLACEHOLDER] Summarization not yet implemented.",
+        f"  Input type : {input_type}",
+        f"  Input value: {input_value}",
+        f"  Style      : {style}",
+        f"  Format     : {output_format}",
+        f"  Model      : {config_model}",
+    ]
+
+    if output_format == "json":
+        import json
+
+        payload = {
+            "status": "placeholder",
+            "input_type": input_type,
+            "input_value": input_value,
+            "style": style,
+            "format": output_format,
+            "model": config_model,
+            "summary": None,
+        }
+        click.echo(json.dumps(payload, indent=2))
+    elif output_format == "markdown":
+        click.echo("## Summary\n")
+        click.echo("> **[PLACEHOLDER]** Summarization not yet implemented.\n")
+        for line in lines[1:]:
+            key, _, val = line.partition(":")
+            click.echo(f"- **{key.strip()}**: {val.strip()}")
     else:
-        if not _is_readable_file(file_path):  # type: ignore[arg-type]
-            raise click.BadParameter(
-                f"'{file_path}' is not a readable file.",
-                param_hint="--file",
-            )
-        input_description = f"File: {file_path}"
-        log.info("Input accepted as file: %s", file_path)
-
-    # ---- Resolve style / format (CLI flag overrides config default) ----
-    effective_style = style or config.default_style
-    effective_format = output_format or config.default_format
-
-    log.debug(
-        "Effective style=%s, format=%s", effective_style, effective_format
-    )
-
-    # ---- Warn if no API key is configured (won't matter in Phase 1) ----
-    if not config.has_api_key:
-        log.warning(
-            "OPENAI_API_KEY is not set. Summarization will not work until "
-            "you add it to your .env file."
-        )
-
-    # ---- Placeholder output (Phase 1 — no LLM yet) ----
-    click.echo(f"[summarize] Input   : {input_description}")
-    click.echo(f"[summarize] Style   : {effective_style}")
-    click.echo(f"[summarize] Format  : {effective_format}")
-    click.echo(
-        "[summarize] Summary : (placeholder) LLM integration coming in Phase 2."
-    )
-    log.debug("summarize CLI finished successfully.")
+        click.echo("\n".join(lines))

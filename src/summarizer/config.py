@@ -1,7 +1,9 @@
-"""Configuration management for the Summarizer CLI.
+"""
+Configuration management for the summarizer package.
 
-Loads and validates environment variables via python-dotenv.
-Exposes a Config dataclass with all runtime configuration.
+Loads and validates environment variables via python-dotenv and exposes
+them through a frozen Config dataclass so the rest of the application
+treats configuration as immutable.
 """
 
 from __future__ import annotations
@@ -9,70 +11,107 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
-# Load .env from the current working directory or any parent directory
-load_dotenv()
+from summarizer.logger import get_logger
+
+logger = get_logger(__name__)
+
+# Default values
+_DEFAULT_MODEL = "gpt-4o-mini"
+_DEFAULT_MAX_TOKENS = 512
+_DEFAULT_TEMPERATURE = 0.3
 
 
-VALID_STYLES = ("brief", "detailed", "bullet")
-VALID_FORMATS = ("text", "markdown", "json")
-
-
-@dataclass
+@dataclass(frozen=True)
 class Config:
-    """Runtime configuration loaded from environment variables."""
+    """
+    Immutable configuration object populated from environment variables.
 
-    api_key: str = field(default="")
-    model: str = field(default="gpt-4o-mini")
-    max_tokens: int = field(default=512)
-    default_style: str = field(default="brief")
-    default_format: str = field(default="text")
+    Attributes:
+        api_key:     OpenAI API key (required for summarization).
+        model:       Model identifier to use (e.g. 'gpt-4o-mini').
+        max_tokens:  Maximum number of tokens in the model response.
+        temperature: Sampling temperature passed to the model.
+    """
 
-    def __post_init__(self) -> None:
-        if self.default_style not in VALID_STYLES:
-            raise ValueError(
-                f"Invalid SUMMARIZER_DEFAULT_STYLE '{self.default_style}'. "
-                f"Must be one of: {', '.join(VALID_STYLES)}"
-            )
-        if self.default_format not in VALID_FORMATS:
-            raise ValueError(
-                f"Invalid SUMMARIZER_DEFAULT_FORMAT '{self.default_format}'. "
-                f"Must be one of: {', '.join(VALID_FORMATS)}"
-            )
-        if self.max_tokens < 1:
-            raise ValueError(
-                f"SUMMARIZER_MAX_TOKENS must be a positive integer, got {self.max_tokens}"
-            )
+    api_key: Optional[str]
+    model: str
+    max_tokens: int
+    temperature: float
 
-    @property
-    def has_api_key(self) -> bool:
+    def is_api_key_set(self) -> bool:
         """Return True if an API key has been configured."""
         return bool(self.api_key and self.api_key.strip())
 
 
-def load_config() -> Config:
-    """Load configuration from environment variables.
+def load_config(env_file: Optional[str | Path] = None) -> Config:
+    """
+    Load configuration from environment variables (and an optional .env file).
+
+    Resolution order (highest priority first):
+        1. Existing environment variables (set before the process started)
+        2. Variables defined in *env_file* (defaults to '.env' in the CWD)
+
+    Args:
+        env_file: Path to a .env file. Pass ``None`` to use the default
+                  discovery logic of python-dotenv (looks for '.env' in
+                  the current directory and its parents).
 
     Returns:
-        A populated Config dataclass instance.
+        A fully populated :class:`Config` instance.
 
     Raises:
-        ValueError: If any environment variable has an invalid value.
+        ValueError: If any value fails type coercion (e.g. a non-numeric
+                    MAX_TOKENS).
     """
-    raw_max_tokens = os.getenv("SUMMARIZER_MAX_TOKENS", "512")
+    # Load .env — override=False means real env vars take precedence
+    if env_file is not None:
+        load_dotenv(dotenv_path=env_file, override=False)
+        logger.debug("Loaded environment from %s", env_file)
+    else:
+        load_dotenv(override=False)
+        logger.debug("Loaded environment from default .env discovery")
+
+    api_key = os.getenv("OPENAI_API_KEY") or None
+
+    model = os.getenv("SUMMARIZER_MODEL", _DEFAULT_MODEL).strip()
+
+    raw_max_tokens = os.getenv("SUMMARIZER_MAX_TOKENS", str(_DEFAULT_MAX_TOKENS))
     try:
         max_tokens = int(raw_max_tokens)
-    except ValueError:
+        if max_tokens <= 0:
+            raise ValueError("must be positive")
+    except ValueError as exc:
         raise ValueError(
-            f"SUMMARIZER_MAX_TOKENS must be an integer, got '{raw_max_tokens}'"
-        )
+            f"Invalid SUMMARIZER_MAX_TOKENS={raw_max_tokens!r}: {exc}"
+        ) from exc
 
-    return Config(
-        api_key=os.getenv("OPENAI_API_KEY", ""),
-        model=os.getenv("SUMMARIZER_MODEL", "gpt-4o-mini"),
+    raw_temperature = os.getenv("SUMMARIZER_TEMPERATURE", str(_DEFAULT_TEMPERATURE))
+    try:
+        temperature = float(raw_temperature)
+        if not (0.0 <= temperature <= 2.0):
+            raise ValueError("must be between 0.0 and 2.0")
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid SUMMARIZER_TEMPERATURE={raw_temperature!r}: {exc}"
+        ) from exc
+
+    config = Config(
+        api_key=api_key,
+        model=model,
         max_tokens=max_tokens,
-        default_style=os.getenv("SUMMARIZER_DEFAULT_STYLE", "brief"),
-        default_format=os.getenv("SUMMARIZER_DEFAULT_FORMAT", "text"),
+        temperature=temperature,
     )
+
+    logger.debug(
+        "Config loaded: model=%s, max_tokens=%d, temperature=%.2f, api_key_set=%s",
+        config.model,
+        config.max_tokens,
+        config.temperature,
+        config.is_api_key_set(),
+    )
+
+    return config
