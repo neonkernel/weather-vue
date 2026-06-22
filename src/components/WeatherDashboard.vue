@@ -1,104 +1,52 @@
-<template>
-  <div class="dashboard">
-    <div class="dashboard__container">
-      <!-- Header -->
-      <header class="dashboard__header">
-        <div class="flex items-center gap-2">
-          <span class="text-2xl" aria-hidden="true">🌤️</span>
-          <h1 class="text-white/80 text-lg font-semibold tracking-wide">Weather Dashboard</h1>
-        </div>
-        <div class="flex items-center gap-2 text-white/50 text-sm">
-          <span>🕐</span>
-          <time :datetime="props.weather.current.lastUpdated">
-            Updated {{ formattedUpdateTime }}
-          </time>
-        </div>
-      </header>
-
-      <!-- Current Weather Section -->
-      <section aria-label="Current weather conditions" class="dashboard__section">
-        <CurrentWeather :current="props.weather.current" />
-      </section>
-
-      <!-- 7-Day Forecast Section -->
-      <section aria-label="7-day weather forecast" class="dashboard__section">
-        <h2 class="section-title">7-Day Forecast</h2>
-        <ForecastStrip :forecast="props.weather.forecast" />
-      </section>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { computed } from 'vue'
+import type { WeatherData } from '@/types/weather'
 import CurrentWeather from '@/components/CurrentWeather.vue'
 import ForecastStrip from '@/components/ForecastStrip.vue'
-import type { WeatherData } from '@/types/weather'
 
 const props = defineProps<{
-  weather: WeatherData
+  data: WeatherData
 }>()
-
-const formattedUpdateTime = computed(() => {
-  try {
-    const date = new Date(props.weather.current.lastUpdated)
-    return date.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    })
-  } catch {
-    return 'just now'
-  }
-})
 </script>
 
-<style scoped>
-.dashboard {
-  width: 100%;
-  padding: 1rem;
-}
+<template>
+  <div class="weather-dashboard max-w-4xl mx-auto px-4 py-8 sm:px-6 lg:px-8 animate-fade-in">
+    <!-- Dashboard Header -->
+    <header class="mb-8 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="text-3xl" aria-hidden="true">🌤️</span>
+        <h1 class="text-xl font-semibold text-white/90 text-shadow-sm tracking-wide">
+          Weather Dashboard
+        </h1>
+      </div>
+      <span class="text-sm text-white/60 font-medium">
+        Phase 1 — Static UI
+      </span>
+    </header>
 
-.dashboard__container {
-  max-width: 900px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-  padding: 1rem 0;
-}
+    <!-- Current Weather Section -->
+    <section
+      aria-label="Current weather conditions"
+      class="mb-6 animate-slide-up"
+      style="animation-delay: 0.05s"
+    >
+      <CurrentWeather :current="props.data.current" />
+    </section>
 
-.dashboard__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 0.25rem;
-}
+    <!-- 7-Day Forecast Section -->
+    <section
+      aria-label="7-day forecast"
+      class="animate-slide-up"
+      style="animation-delay: 0.15s"
+    >
+      <h2 class="text-sm font-semibold uppercase tracking-widest text-white/60 mb-3 pl-1">
+        7-Day Forecast
+      </h2>
+      <ForecastStrip :days="props.data.forecast" />
+    </section>
 
-.dashboard__section {
-  animation: fadeIn 0.5s ease-in-out;
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@media (min-width: 640px) {
-  .dashboard {
-    padding: 1.5rem;
-  }
-}
-
-@media (min-width: 1024px) {
-  .dashboard {
-    padding: 2rem;
-  }
-}
-</style>
+    <!-- Footer -->
+    <footer class="mt-8 text-center text-xs text-white/40">
+      <p>Data shown is placeholder · Phase 2 will connect a live weather API</p>
+    </footer>
+  </div>
+</template>

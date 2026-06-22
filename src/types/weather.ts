@@ -1,63 +1,71 @@
 /**
- * Represents current weather conditions for a location.
+ * Represents the current weather conditions for a location.
  */
 export interface WeatherCurrent {
-  /** City name */
+  /** City or location name */
   city: string
-  /** Country code (e.g. "US") */
+  /** ISO 3166-1 alpha-2 country code (e.g. "US") */
   country: string
   /** Current temperature in Celsius */
-  temperature: number
+  tempC: number
   /** "Feels like" temperature in Celsius */
-  feelsLike: number
+  feelsLikeC: number
   /** Human-readable weather condition (e.g. "Partly Cloudy") */
   condition: string
   /** Emoji or icon code representing the condition */
-  icon: string
+  conditionIcon: string
   /** Humidity percentage (0–100) */
   humidity: number
   /** Wind speed in km/h */
-  windSpeed: number
-  /** Wind direction (e.g. "NW") */
-  windDirection: string
-  /** Visibility in kilometres */
-  visibility: number
-  /** UV index */
-  uvIndex: number
+  windKph: number
+  /** Wind direction abbreviation (e.g. "NW") */
+  windDir: string
   /** Atmospheric pressure in hPa */
-  pressure: number
-  /** Sunrise time as "HH:MM" string */
-  sunrise: string
-  /** Sunset time as "HH:MM" string */
-  sunset: string
-  /** Timestamp of last update (ISO 8601) */
+  pressureHpa: number
+  /** Visibility in kilometres */
+  visibilityKm: number
+  /** UV index (0–11+) */
+  uvIndex: number
+  /** Dew point in Celsius */
+  dewPointC: number
+  /** ISO 8601 datetime string of last observation */
   lastUpdated: string
+  /** Sunrise time (local, HH:mm) */
+  sunrise: string
+  /** Sunset time (local, HH:mm) */
+  sunset: string
 }
 
 /**
- * Represents a single day in the forecast.
+ * Represents a single day in the weather forecast.
  */
 export interface ForecastDay {
-  /** Date string (e.g. "2026-06-19") */
+  /** ISO 8601 date string (YYYY-MM-DD) */
   date: string
-  /** Short day name (e.g. "Mon") */
-  day: string
-  /** High temperature in Celsius */
-  high: number
-  /** Low temperature in Celsius */
-  low: number
-  /** Human-readable condition */
+  /** Short weekday label (e.g. "Mon") */
+  dayLabel: string
+  /** Maximum temperature in Celsius */
+  maxTempC: number
+  /** Minimum temperature in Celsius */
+  minTempC: number
+  /** Human-readable weather condition */
   condition: string
-  /** Emoji or icon code */
-  icon: string
-  /** Chance of precipitation (0–100) */
-  precipitationChance: number
-  /** Humidity percentage */
+  /** Emoji or icon code representing the condition */
+  conditionIcon: string
+  /** Probability of precipitation (0–100) */
+  precipChance: number
+  /** Total precipitation in mm */
+  precipMm: number
+  /** Average humidity percentage */
   humidity: number
+  /** Maximum wind speed in km/h */
+  maxWindKph: number
+  /** UV index for the day */
+  uvIndex: number
 }
 
 /**
- * Top-level weather payload containing current conditions + forecast.
+ * Root weather data structure passed as props through the component tree.
  */
 export interface WeatherData {
   current: WeatherCurrent

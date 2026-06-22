@@ -1,128 +1,111 @@
-/* Tailwind CSS Directives */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Import Google Fonts */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-
-/* CSS Custom Properties */
+/* ── CSS Custom Properties ───────────────────────────────────────────────── */
 :root {
   --color-primary: #1e3a5f;
   --color-secondary: #2d6a9f;
-  --color-accent: #56b4e9;
-  --color-light: #a8d8ea;
-
-  --glass-bg: rgba(255, 255, 255, 0.12);
-  --glass-border: rgba(255, 255, 255, 0.2);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-
-  --radius-card: 1.25rem;
-  --transition-base: 200ms ease-in-out;
+  --color-accent: #4fc3f7;
+  --color-warm: #ff8c42;
+  --color-sunny: #ffd166;
+  --color-card-bg: rgba(255, 255, 255, 0.12);
+  --color-card-border: rgba(255, 255, 255, 0.2);
+  --blur-card: 12px;
+  --radius-card: 16px;
+  --transition-base: 200ms ease;
 }
 
-/* Base Resets */
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
+/* ── Base Resets ─────────────────────────────────────────────────────────── */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background: linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 55%, #4fc3f7 100%);
+    background-attachment: fixed;
+    color: #ffffff;
+  }
+
+  #app {
+    min-height: 100dvh;
+  }
 }
 
-html {
-  scroll-behavior: smooth;
-  -webkit-text-size-adjust: 100%;
-}
-
-body {
-  margin: 0;
-  padding: 0;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  background: var(--color-primary);
-  color: white;
-  min-height: 100vh;
-}
-
-#app {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
-
-/* Glassmorphism Utility Classes */
+/* ── Component Utilities ─────────────────────────────────────────────────── */
 @layer components {
+  /* Glassmorphism card */
   .glass-card {
-    background: var(--glass-bg);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid var(--glass-border);
-    box-shadow: var(--glass-shadow);
+    background: var(--color-card-bg);
+    backdrop-filter: blur(var(--blur-card));
+    -webkit-backdrop-filter: blur(var(--blur-card));
+    border: 1px solid var(--color-card-border);
     border-radius: var(--radius-card);
-    transition: transform var(--transition-base), box-shadow var(--transition-base);
+    transition: background var(--transition-base), transform var(--transition-base);
   }
 
   .glass-card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+    background: rgba(255, 255, 255, 0.18);
   }
 
-  .weather-stat {
-    @apply flex flex-col items-center gap-1 p-3;
+  /* Weather icon wrapper */
+  .weather-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
   }
 
-  .weather-stat-label {
-    @apply text-xs font-medium uppercase tracking-wider text-white/60;
+  /* Stat chip — small metric badge */
+  .stat-chip {
+    @apply flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.25);
   }
 
-  .weather-stat-value {
-    @apply text-lg font-semibold text-white;
+  /* Scrollbar for forecast strip */
+  .forecast-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
   }
 
-  .weather-stat-icon {
-    @apply text-2xl;
+  .forecast-scroll::-webkit-scrollbar {
+    height: 4px;
   }
 
-  .temp-display {
-    @apply font-bold tracking-tight leading-none;
-    font-size: clamp(3rem, 10vw, 6rem);
+  .forecast-scroll::-webkit-scrollbar-track {
+    background: transparent;
   }
 
-  .section-title {
-    @apply text-sm font-semibold uppercase tracking-widest text-white/60 mb-4;
+  .forecast-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.3);
+    border-radius: 999px;
   }
 }
 
-/* Scrollbar Styling */
-::-webkit-scrollbar {
-  height: 4px;
-  width: 4px;
-}
+/* ── Utility Extensions ──────────────────────────────────────────────────── */
+@layer utilities {
+  .text-shadow {
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
 
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+  .text-shadow-sm {
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  }
 
-::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.3);
-  border-radius: 2px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.5);
-}
-
-/* Selection */
-::selection {
-  background: rgba(86, 180, 233, 0.4);
-  color: white;
-}
-
-/* Focus styles for accessibility */
-:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-  border-radius: 4px;
+  .border-glass {
+    border-color: rgba(255, 255, 255, 0.2);
+  }
 }

@@ -1,88 +1,86 @@
-# Summarizer CLI
+# 🌤️ Weather Dashboard
 
-A command-line tool that summarizes web pages and local files using AI.
+A beautiful, responsive weather dashboard built with Vue 3, TypeScript, and Tailwind CSS.
 
-## Features
+## Tech Stack
 
-- Summarize content from URLs or local files
-- Multiple summarization styles (brief, detailed, bullet points)
-- Multiple output formats (text, markdown, JSON)
-- Configurable via environment variables
+- **Frontend Framework**: Vue 3 (Composition API)
+- **Build Tool**: Vite
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS
+- **Code Quality**: ESLint + Prettier
 
-## Installation
+## Project Structure
+
+```
+src/
+├── assets/
+│   └── styles/
+│       └── main.css        # Global styles & Tailwind directives
+├── components/
+│   ├── WeatherDashboard.vue # Main dashboard container
+│   ├── CurrentWeather.vue   # Current weather display
+│   ├── ForecastStrip.vue    # 7-day forecast strip
+│   └── ForecastCard.vue     # Single forecast day card
+├── data/
+│   └── mockWeather.ts       # Hardcoded mock weather data
+├── types/
+│   └── weather.ts           # TypeScript interfaces
+├── App.vue                  # Root component
+└── main.ts                  # App bootstrap
+```
+
+## Setup Instructions
 
 ### Prerequisites
 
-- Python 3.9+
-- pip
+- Node.js >= 18.x
+- npm >= 9.x
 
-### Install from source
+### Installation
 
 ```bash
 # Clone the repository
-git clone <repository-url>
-cd summarizer
+git clone <repo-url>
+cd weather-dashboard
 
-# Create and activate a virtual environment (recommended)
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+# Install dependencies
+npm install
 
-# Install in editable mode
-pip install -e .
+# Start development server
+npm run dev
 ```
 
-### Configure environment
+### Available Scripts
 
 ```bash
-cp .env.example .env
-# Edit .env and add your OpenAI API key
+npm run dev        # Start Vite dev server (http://localhost:5173)
+npm run build      # Build for production
+npm run preview    # Preview production build
+npm run lint       # Run ESLint
+npm run format     # Run Prettier
+npm run type-check # Run TypeScript type checking
 ```
 
-## Usage
+## Phase Roadmap
 
-```bash
-# Summarize a URL
-summarize --url https://example.com/article
+| Phase | Description | Status |
+|-------|-------------|--------|
+| **Phase 1** | Project Foundation & Static UI Shell | ✅ Complete |
+| **Phase 2** | Weather API Integration | 🔜 Planned |
+| **Phase 3** | Geolocation & Search | 🔜 Planned |
+| **Phase 4** | Animations & Polish | 🔜 Planned |
+| **Phase 5** | PWA & Offline Support | 🔜 Planned |
 
-# Summarize a local file
-summarize --file /path/to/document.txt
+## Phase 1 Details
 
-# Choose a summarization style
-summarize --url https://example.com/article --style bullet
+- Vite + Vue 3 Composition API with TypeScript
+- Tailwind CSS with custom weather-themed color palette
+- Static UI shell with hardcoded placeholder data
+- Component hierarchy: `App.vue` → `WeatherDashboard` → `CurrentWeather` + `ForecastStrip` → `ForecastCard`
+- ESLint + Prettier configured for code quality
+- Path aliases (`@/`) configured in Vite and TypeScript
 
-# Choose an output format
-summarize --url https://example.com/article --format markdown
+## License
 
-# Enable verbose logging
-summarize --url https://example.com/article --verbose
-```
-
-## Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--url` | URL to summarize | — |
-| `--file` | Local file path to summarize | — |
-| `--style` | Summarization style: `brief`, `detailed`, `bullet` | `brief` |
-| `--format` | Output format: `text`, `markdown`, `json` | `text` |
-| `--verbose` | Enable verbose/debug logging | `False` |
-
-## Development
-
-```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
-
-# Run tests
-pytest tests/
-```
-
-## Environment Variables
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `OPENAI_API_KEY` | Your OpenAI API key | Yes |
-| `SUMMARIZER_MODEL` | OpenAI model to use | No (default: `gpt-4o-mini`) |
-| `SUMMARIZER_MAX_TOKENS` | Maximum tokens in response | No (default: `512`) |
-| `SUMMARIZER_DEFAULT_STYLE` | Default summarization style | No (default: `brief`) |
-| `SUMMARIZER_DEFAULT_FORMAT` | Default output format | No (default: `text`) |
+MIT

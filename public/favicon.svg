@@ -1,16 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <defs>
-    <linearGradient id="skyGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#1e3a5f;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#56b4e9;stop-opacity:1" />
-    </linearGradient>
-  </defs>
-  <!-- Background circle -->
-  <circle cx="50" cy="50" r="50" fill="url(#skyGrad)" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
   <!-- Sun -->
-  <circle cx="60" cy="35" r="14" fill="#fbbf24" opacity="0.95" />
-  <!-- Cloud body -->
-  <ellipse cx="42" cy="58" rx="22" ry="13" fill="white" opacity="0.9" />
-  <ellipse cx="56" cy="55" rx="18" ry="11" fill="white" opacity="0.9" />
-  <ellipse cx="32" cy="60" rx="13" ry="9" fill="white" opacity="0.9" />
+  <circle cx="28" cy="26" r="10" fill="#FFD166"/>
+  <!-- Sun rays -->
+  <line x1="28" y1="8" x2="28" y2="12" stroke="#FFD166" stroke-width="3" stroke-linecap="round"/>
+  <line x1="28" y1="40" x2="28" y2="44" stroke="#FFD166" stroke-width="3" stroke-linecap="round"/>
+  <line x1="10" y1="26" x2="14" y2="26" stroke="#FFD166" stroke-width="3" stroke-linecap="round"/>
+  <line x1="42" y1="26" x2="46" y2="26" stroke="#FFD166" stroke-width="3" stroke-linecap="round"/>
+  <line x1="15.5" y1="11.5" x2="18.3" y2="14.3" stroke="#FFD166" stroke-width="3" stroke-linecap="round"/>
+  <line x1="37.7" y1="37.7" x2="40.5" y2="40.5" stroke="#FFD166" stroke-width="3" stroke-linecap="round"/>
+  <line x1="40.5" y1="11.5" x2="37.7" y2="14.3" stroke="#FFD166" stroke-width="3" stroke-linecap="round"/>
+  <line x1="18.3" y1="37.7" x2="15.5" y2="40.5" stroke="#FFD166" stroke-width="3" stroke-linecap="round"/>
+  <!-- Cloud -->
+  <ellipse cx="38" cy="44" rx="16" ry="10" fill="white" fill-opacity="0.9"/>
+  <ellipse cx="28" cy="46" rx="12" ry="8" fill="white" fill-opacity="0.9"/>
+  <ellipse cx="44" cy="40" rx="10" ry="8" fill="white" fill-opacity="0.9"/>
 </svg>
