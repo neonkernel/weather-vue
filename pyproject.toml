@@ -3,16 +3,16 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.backends.legacy:build"
 
 [project]
-name = "web-summarizer"
+name = "summarizer"
 version = "0.1.0"
-description = "A CLI tool that summarizes web pages and local files using OpenAI"
+description = "A CLI tool that summarizes web pages and local files using AI"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [
-    { name = "Developer", email = "dev@example.com" }
+    { name = "Summarizer Contributors" }
 ]
-keywords = ["summarizer", "cli", "openai", "nlp"]
+keywords = ["summarizer", "ai", "cli", "nlp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -22,9 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Topic :: Utilities",
 ]
-
 dependencies = [
     "click>=8.1",
     "python-dotenv>=1.0",

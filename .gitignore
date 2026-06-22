@@ -26,19 +26,15 @@ ENV/
 htmlcov/
 .tox/
 
-# IDE / editor files
-.idea/
+# IDE
 .vscode/
+.idea/
 *.swp
 *.swo
-*~
+
+# OS
 .DS_Store
+Thumbs.db
 
 # Logs
 *.log
-
-# Type checking
-.mypy_cache/
-.dmypy.json
-dmypy.json
-.pyright/

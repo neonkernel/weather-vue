@@ -1,11 +1,11 @@
-# Web Summarizer CLI
+# Summarizer CLI
 
-A command-line tool that summarizes web pages and local files using OpenAI's language models.
+A command-line tool that summarizes web pages and local files using AI.
 
 ## Features
 
 - Summarize content from URLs or local files
-- Multiple summary styles (brief, detailed, bullet points)
+- Multiple summarization styles (brief, detailed, bullet points)
 - Multiple output formats (text, markdown, JSON)
 - Configurable via environment variables
 
@@ -21,7 +21,7 @@ A command-line tool that summarizes web pages and local files using OpenAI's lan
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd <repository-directory>
+cd summarizer
 
 # Create and activate a virtual environment (recommended)
 python -m venv .venv
@@ -31,18 +31,11 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-### Configuration
-
-Copy the example environment file and fill in your credentials:
+### Configure environment
 
 ```bash
 cp .env.example .env
-```
-
-Edit `.env` with your OpenAI API key:
-
-```
-OPENAI_API_KEY=your-api-key-here
+# Edit .env and add your OpenAI API key
 ```
 
 ## Usage
@@ -52,62 +45,44 @@ OPENAI_API_KEY=your-api-key-here
 summarize --url https://example.com/article
 
 # Summarize a local file
-summarize --file path/to/document.txt
+summarize --file /path/to/document.txt
 
-# Choose a summary style
-summarize --url https://example.com --style brief
-summarize --url https://example.com --style detailed
-summarize --url https://example.com --style bullets
+# Choose a summarization style
+summarize --url https://example.com/article --style bullet
 
 # Choose an output format
-summarize --url https://example.com --format text
-summarize --url https://example.com --format markdown
-summarize --url https://example.com --format json
+summarize --url https://example.com/article --format markdown
 
 # Enable verbose logging
-summarize --url https://example.com --verbose
-
-# Show help
-summarize --help
+summarize --url https://example.com/article --verbose
 ```
 
 ## Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--url` | URL to summarize | - |
-| `--file` | Local file path to summarize | - |
-| `--style` | Summary style: `brief`, `detailed`, `bullets` | `brief` |
+| `--url` | URL to summarize | — |
+| `--file` | Local file path to summarize | — |
+| `--style` | Summarization style: `brief`, `detailed`, `bullet` | `brief` |
 | `--format` | Output format: `text`, `markdown`, `json` | `text` |
 | `--verbose` | Enable verbose/debug logging | `False` |
 
 ## Development
 
-### Running Tests
-
 ```bash
+# Install with dev dependencies
 pip install -e ".[dev]"
+
+# Run tests
 pytest tests/
 ```
 
-### Project Structure
+## Environment Variables
 
-```
-.
-├── src/
-│   └── summarizer/
-│       ├── __init__.py   # Package init and version
-│       ├── cli.py        # CLI entry point (Click)
-│       ├── config.py     # Configuration management
-│       └── logger.py     # Logging setup
-├── tests/
-│   ├── __init__.py
-│   └── test_cli.py
-├── pyproject.toml
-├── .env.example
-└── README.md
-```
-
-## License
-
-MIT
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `OPENAI_API_KEY` | Your OpenAI API key | Yes |
+| `SUMMARIZER_MODEL` | OpenAI model to use | No (default: `gpt-4o-mini`) |
+| `SUMMARIZER_MAX_TOKENS` | Maximum tokens in response | No (default: `512`) |
+| `SUMMARIZER_DEFAULT_STYLE` | Default summarization style | No (default: `brief`) |
+| `SUMMARIZER_DEFAULT_FORMAT` | Default output format | No (default: `text`) |

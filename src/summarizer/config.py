@@ -1,8 +1,7 @@
-"""
-Configuration management for the summarizer package.
+"""Configuration management for the Summarizer CLI.
 
-Loads environment variables from a .env file (if present) and exposes
-them as a validated Config dataclass.
+Loads and validates environment variables via python-dotenv.
+Exposes a Config dataclass with all runtime configuration.
 """
 
 from __future__ import annotations
@@ -13,85 +12,67 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from summarizer.logger import get_logger
+# Load .env from the current working directory or any parent directory
+load_dotenv()
 
-logger = get_logger("config")
 
-# Load .env from the current working directory (or any parent) on import.
-load_dotenv(override=False)
+VALID_STYLES = ("brief", "detailed", "bullet")
+VALID_FORMATS = ("text", "markdown", "json")
 
 
 @dataclass
 class Config:
-    """Validated runtime configuration."""
+    """Runtime configuration loaded from environment variables."""
 
-    api_key: str
-    model: str = "gpt-4o-mini"
-    max_tokens: int = 1024
-    timeout: int = 30
+    api_key: str = field(default="")
+    model: str = field(default="gpt-4o-mini")
+    max_tokens: int = field(default=512)
+    default_style: str = field(default="brief")
+    default_format: str = field(default="text")
 
-    # ------------------------------------------------------------------ #
-    # Factory                                                              #
-    # ------------------------------------------------------------------ #
-
-    @classmethod
-    def from_env(cls) -> "Config":
-        """
-        Build a Config instance from environment variables.
-
-        Environment variables:
-            OPENAI_API_KEY      — required; OpenAI secret key.
-            SUMMARIZER_MODEL    — optional; model name (default: gpt-4o-mini).
-            SUMMARIZER_MAX_TOKENS — optional; int (default: 1024).
-            SUMMARIZER_TIMEOUT  — optional; int seconds (default: 30).
-
-        Raises:
-            ConfigError: if a required variable is missing or a value is invalid.
-        """
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if not api_key:
-            raise ConfigError(
-                "OPENAI_API_KEY is not set. "
-                "Add it to your .env file or export it as an environment variable."
+    def __post_init__(self) -> None:
+        if self.default_style not in VALID_STYLES:
+            raise ValueError(
+                f"Invalid SUMMARIZER_DEFAULT_STYLE '{self.default_style}'. "
+                f"Must be one of: {', '.join(VALID_STYLES)}"
+            )
+        if self.default_format not in VALID_FORMATS:
+            raise ValueError(
+                f"Invalid SUMMARIZER_DEFAULT_FORMAT '{self.default_format}'. "
+                f"Must be one of: {', '.join(VALID_FORMATS)}"
+            )
+        if self.max_tokens < 1:
+            raise ValueError(
+                f"SUMMARIZER_MAX_TOKENS must be a positive integer, got {self.max_tokens}"
             )
 
-        model = os.getenv("SUMMARIZER_MODEL", "gpt-4o-mini").strip()
-
-        max_tokens = _parse_int("SUMMARIZER_MAX_TOKENS", default=1024, min_val=1, max_val=8192)
-        timeout = _parse_int("SUMMARIZER_TIMEOUT", default=30, min_val=1, max_val=300)
-
-        logger.debug(
-            "Config loaded — model=%s, max_tokens=%d, timeout=%d",
-            model,
-            max_tokens,
-            timeout,
-        )
-
-        return cls(api_key=api_key, model=model, max_tokens=max_tokens, timeout=timeout)
+    @property
+    def has_api_key(self) -> bool:
+        """Return True if an API key has been configured."""
+        return bool(self.api_key and self.api_key.strip())
 
 
-# ------------------------------------------------------------------ #
-# Helpers                                                              #
-# ------------------------------------------------------------------ #
+def load_config() -> Config:
+    """Load configuration from environment variables.
 
+    Returns:
+        A populated Config dataclass instance.
 
-def _parse_int(env_var: str, default: int, min_val: int, max_val: int) -> int:
-    """Parse an integer environment variable with range validation."""
-    raw = os.getenv(env_var, "").strip()
-    if not raw:
-        return default
+    Raises:
+        ValueError: If any environment variable has an invalid value.
+    """
+    raw_max_tokens = os.getenv("SUMMARIZER_MAX_TOKENS", "512")
     try:
-        value = int(raw)
+        max_tokens = int(raw_max_tokens)
     except ValueError:
-        raise ConfigError(
-            f"{env_var} must be an integer, got: {raw!r}"
+        raise ValueError(
+            f"SUMMARIZER_MAX_TOKENS must be an integer, got '{raw_max_tokens}'"
         )
-    if not (min_val <= value <= max_val):
-        raise ConfigError(
-            f"{env_var} must be between {min_val} and {max_val}, got: {value}"
-        )
-    return value
 
-
-class ConfigError(Exception):
-    """Raised when configuration is missing or invalid."""
+    return Config(
+        api_key=os.getenv("OPENAI_API_KEY", ""),
+        model=os.getenv("SUMMARIZER_MODEL", "gpt-4o-mini"),
+        max_tokens=max_tokens,
+        default_style=os.getenv("SUMMARIZER_DEFAULT_STYLE", "brief"),
+        default_format=os.getenv("SUMMARIZER_DEFAULT_FORMAT", "text"),
+    )

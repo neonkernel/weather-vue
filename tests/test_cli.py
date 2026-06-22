@@ -1,16 +1,12 @@
-"""
-Smoke tests for the summarizer CLI.
+"""Smoke tests for the Summarizer CLI (Phase 1).
 
-Uses Click's CliRunner so no real network calls or file-system side-effects
-are produced during the test run.
+Uses Click's CliRunner for isolated, in-process invocation of the CLI.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
-from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -19,199 +15,311 @@ from summarizer import __version__
 from summarizer.cli import main
 
 
-# ------------------------------------------------------------------ #
-# Fixtures                                                             #
-# ------------------------------------------------------------------ #
-
-
 @pytest.fixture()
 def runner() -> CliRunner:
-    """Return a Click CliRunner that mixes stderr into stdout."""
+    """Return a Click CliRunner with a clean environment."""
     return CliRunner(mix_stderr=False)
 
 
 @pytest.fixture()
-def tmp_text_file(tmp_path: Path) -> Path:
-    """Create a small temporary text file for --file tests."""
-    p = tmp_path / "sample.txt"
-    p.write_text("Hello, this is a sample document for testing.\n")
-    return p
+def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove OpenAI-related env vars so tests are hermetic."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("SUMMARIZER_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("SUMMARIZER_MAX_TOKENS", "512")
+    monkeypatch.setenv("SUMMARIZER_DEFAULT_STYLE", "brief")
+    monkeypatch.setenv("SUMMARIZER_DEFAULT_FORMAT", "text")
 
 
-# ------------------------------------------------------------------ #
-# Importability                                                        #
-# ------------------------------------------------------------------ #
+# ---------------------------------------------------------------------------
+# Basic importability
+# ---------------------------------------------------------------------------
 
 
-def test_package_is_importable() -> None:
-    """The summarizer package must be importable and expose a version string."""
-    import summarizer  # noqa: F401
+class TestImportability:
+    def test_package_importable(self) -> None:
+        """The summarizer package must be importable."""
+        import summarizer  # noqa: F401
 
-    assert isinstance(__version__, str)
-    assert len(__version__) > 0
+    def test_version_string_exists(self) -> None:
+        """__version__ must be a non-empty string."""
+        assert isinstance(__version__, str)
+        assert len(__version__) > 0
 
+    def test_cli_importable(self) -> None:
+        """The CLI module must be importable."""
+        from summarizer.cli import main  # noqa: F401
 
-def test_cli_is_importable() -> None:
-    """The CLI entry point must be importable."""
-    from summarizer.cli import main as cli_main  # noqa: F401
+    def test_config_importable(self) -> None:
+        """The config module must be importable."""
+        from summarizer.config import load_config  # noqa: F401
 
-
-# ------------------------------------------------------------------ #
-# --help                                                               #
-# ------------------------------------------------------------------ #
-
-
-def test_help_exits_zero(runner: CliRunner) -> None:
-    """Running `summarize --help` should exit with code 0."""
-    result = runner.invoke(main, ["--help"])
-    assert result.exit_code == 0
-
-
-def test_help_contains_expected_options(runner: CliRunner) -> None:
-    """Help text should mention key options."""
-    result = runner.invoke(main, ["--help"])
-    output = result.output
-    assert "--url" in output
-    assert "--file" in output
-    assert "--style" in output
-    assert "--format" in output
-    assert "--verbose" in output
+    def test_logger_importable(self) -> None:
+        """The logger module must be importable."""
+        from summarizer.logger import configure_logging, get_logger  # noqa: F401
 
 
-# ------------------------------------------------------------------ #
-# --version                                                            #
-# ------------------------------------------------------------------ #
+# ---------------------------------------------------------------------------
+# --help
+# ---------------------------------------------------------------------------
 
 
-def test_version_flag(runner: CliRunner) -> None:
-    """--version should print the current version and exit 0."""
-    result = runner.invoke(main, ["--version"])
-    assert result.exit_code == 0
-    assert __version__ in result.output
+class TestHelpOption:
+    def test_help_exits_zero(self, runner: CliRunner) -> None:
+        """--help should exit with code 0."""
+        result = runner.invoke(main, ["--help"])
+        assert result.exit_code == 0, result.output
+
+    def test_help_contains_usage(self, runner: CliRunner) -> None:
+        """--help output should contain 'Usage:'."""
+        result = runner.invoke(main, ["--help"])
+        assert "Usage:" in result.output
+
+    def test_help_mentions_url_option(self, runner: CliRunner) -> None:
+        """--help output should document the --url option."""
+        result = runner.invoke(main, ["--help"])
+        assert "--url" in result.output
+
+    def test_help_mentions_file_option(self, runner: CliRunner) -> None:
+        """--help output should document the --file option."""
+        result = runner.invoke(main, ["--help"])
+        assert "--file" in result.output
+
+    def test_help_mentions_style_option(self, runner: CliRunner) -> None:
+        """--help output should document the --style option."""
+        result = runner.invoke(main, ["--help"])
+        assert "--style" in result.output
+
+    def test_help_mentions_format_option(self, runner: CliRunner) -> None:
+        """--help output should document the --format option."""
+        result = runner.invoke(main, ["--help"])
+        assert "--format" in result.output
+
+    def test_version_flag(self, runner: CliRunner) -> None:
+        """--version should print the version string and exit 0."""
+        result = runner.invoke(main, ["--version"])
+        assert result.exit_code == 0
+        assert __version__ in result.output
 
 
-# ------------------------------------------------------------------ #
-# Missing / conflicting input                                          #
-# ------------------------------------------------------------------ #
+# ---------------------------------------------------------------------------
+# Missing / conflicting input
+# ---------------------------------------------------------------------------
 
 
-def test_missing_input_shows_error(runner: CliRunner) -> None:
-    """Invoking without --url or --file should exit with a non-zero code."""
-    result = runner.invoke(main, [])
-    assert result.exit_code != 0
+class TestInputValidation:
+    def test_no_input_shows_error(self, runner: CliRunner, clean_env: None) -> None:
+        """Invoking with neither --url nor --file should show a usage error."""
+        result = runner.invoke(main, [])
+        assert result.exit_code != 0
+        combined = result.output + (result.stderr or "")
+        assert "url" in combined.lower() or "file" in combined.lower() or "error" in combined.lower()
+
+    def test_both_url_and_file_shows_error(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """Providing both --url and --file should show a usage error."""
+        with runner.isolated_filesystem():
+            # Create a temporary file so --file validation passes first
+            Path = __import__("pathlib").Path
+            tmp = Path("sample.txt")
+            tmp.write_text("hello")
+            result = runner.invoke(
+                main, ["--url", "https://example.com", "--file", str(tmp)]
+            )
+        assert result.exit_code != 0
+        combined = result.output + (result.stderr or "")
+        assert "error" in combined.lower() or "not both" in combined.lower()
+
+    def test_invalid_url_shows_error(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """A malformed URL should produce a non-zero exit and an error message."""
+        result = runner.invoke(main, ["--url", "not-a-url"])
+        assert result.exit_code != 0
+        combined = result.output + (result.stderr or "")
+        assert "error" in combined.lower() or "url" in combined.lower()
+
+    def test_nonexistent_file_shows_error(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """A file path that does not exist should produce a non-zero exit."""
+        result = runner.invoke(main, ["--file", "/nonexistent/path/file.txt"])
+        assert result.exit_code != 0
+        combined = result.output + (result.stderr or "")
+        assert "error" in combined.lower() or "file" in combined.lower()
+
+    def test_invalid_style_shows_error(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """An invalid --style value should produce a non-zero exit."""
+        result = runner.invoke(
+            main, ["--url", "https://example.com", "--style", "nonsense"]
+        )
+        assert result.exit_code != 0
+
+    def test_invalid_format_shows_error(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """An invalid --format value should produce a non-zero exit."""
+        result = runner.invoke(
+            main, ["--url", "https://example.com", "--format", "xml"]
+        )
+        assert result.exit_code != 0
 
 
-def test_missing_input_error_message(runner: CliRunner) -> None:
-    """Error message should guide the user toward --url or --file."""
-    result = runner.invoke(main, [])
-    combined = (result.output or "") + (result.stderr or "")
-    assert "--url" in combined or "--file" in combined or "Usage" in combined
+# ---------------------------------------------------------------------------
+# Happy-path placeholder output
+# ---------------------------------------------------------------------------
 
 
-def test_both_url_and_file_shows_error(runner: CliRunner, tmp_text_file: Path) -> None:
-    """Providing both --url and --file should be rejected."""
-    result = runner.invoke(
-        main,
-        ["--url", "https://example.com", "--file", str(tmp_text_file)],
-    )
-    assert result.exit_code != 0
+class TestHappyPath:
+    def test_valid_url_exits_zero(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """A valid URL should exit with code 0."""
+        result = runner.invoke(main, ["--url", "https://example.com"])
+        assert result.exit_code == 0, result.output
+
+    def test_valid_url_shows_placeholder(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """A valid URL run should print the placeholder summary line."""
+        result = runner.invoke(main, ["--url", "https://example.com"])
+        assert "placeholder" in result.output.lower()
+
+    def test_valid_url_echoes_url(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """The output should echo back the provided URL."""
+        result = runner.invoke(main, ["--url", "https://example.com"])
+        assert "https://example.com" in result.output
+
+    def test_valid_file_exits_zero(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """A valid readable file should exit with code 0."""
+        with runner.isolated_filesystem():
+            from pathlib import Path
+
+            tmp = Path("sample.txt")
+            tmp.write_text("Some content here.")
+            result = runner.invoke(main, ["--file", str(tmp)])
+        assert result.exit_code == 0, result.output
+
+    def test_valid_file_shows_placeholder(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """A valid file run should print the placeholder summary line."""
+        with runner.isolated_filesystem():
+            from pathlib import Path
+
+            tmp = Path("sample.txt")
+            tmp.write_text("Some content here.")
+            result = runner.invoke(main, ["--file", str(tmp)])
+        assert "placeholder" in result.output.lower()
+
+    def test_style_option_reflected_in_output(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """The chosen --style should appear in the placeholder output."""
+        result = runner.invoke(
+            main, ["--url", "https://example.com", "--style", "detailed"]
+        )
+        assert "detailed" in result.output
+
+    def test_format_option_reflected_in_output(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """The chosen --format should appear in the placeholder output."""
+        result = runner.invoke(
+            main, ["--url", "https://example.com", "--format", "markdown"]
+        )
+        assert "markdown" in result.output
+
+    def test_verbose_flag_does_not_break_output(
+        self, runner: CliRunner, clean_env: None
+    ) -> None:
+        """Running with --verbose should still exit 0 and produce placeholder output."""
+        result = runner.invoke(
+            main, ["--url", "https://example.com", "--verbose"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "placeholder" in result.output.lower()
 
 
-# ------------------------------------------------------------------ #
-# --url validation                                                     #
-# ------------------------------------------------------------------ #
+# ---------------------------------------------------------------------------
+# Config loading
+# ---------------------------------------------------------------------------
 
 
-def test_invalid_url_shows_error(runner: CliRunner) -> None:
-    """A non-URL string passed to --url should produce an error."""
-    result = runner.invoke(main, ["--url", "not-a-url"])
-    assert result.exit_code != 0
+class TestConfig:
+    def test_load_config_returns_defaults(self, clean_env: None) -> None:
+        """load_config() should return sensible defaults when env vars are set."""
+        from summarizer.config import load_config
 
+        cfg = load_config()
+        assert cfg.model == "gpt-4o-mini"
+        assert cfg.max_tokens == 512
+        assert cfg.default_style == "brief"
+        assert cfg.default_format == "text"
 
-def test_valid_url_exits_zero(runner: CliRunner) -> None:
-    """A valid https URL should be accepted and produce a placeholder output."""
-    result = runner.invoke(main, ["--url", "https://example.com/article"])
-    assert result.exit_code == 0
-    assert "PLACEHOLDER" in result.output or "placeholder" in result.output.lower()
+    def test_load_config_respects_env_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """load_config() should pick up custom env var values."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+        monkeypatch.setenv("SUMMARIZER_MODEL", "gpt-4o")
+        monkeypatch.setenv("SUMMARIZER_MAX_TOKENS", "1024")
+        monkeypatch.setenv("SUMMARIZER_DEFAULT_STYLE", "bullet")
+        monkeypatch.setenv("SUMMARIZER_DEFAULT_FORMAT", "json")
 
+        from summarizer.config import load_config
 
-def test_http_url_is_accepted(runner: CliRunner) -> None:
-    """http:// URLs should also be accepted (not just https://)."""
-    result = runner.invoke(main, ["--url", "http://example.com"])
-    assert result.exit_code == 0
+        cfg = load_config()
+        assert cfg.api_key == "sk-test-key"
+        assert cfg.model == "gpt-4o"
+        assert cfg.max_tokens == 1024
+        assert cfg.default_style == "bullet"
+        assert cfg.default_format == "json"
 
+    def test_has_api_key_false_when_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """has_api_key should be False when OPENAI_API_KEY is not set."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("SUMMARIZER_DEFAULT_STYLE", "brief")
+        monkeypatch.setenv("SUMMARIZER_DEFAULT_FORMAT", "text")
+        monkeypatch.setenv("SUMMARIZER_MAX_TOKENS", "512")
 
-# ------------------------------------------------------------------ #
-# --file validation                                                    #
-# ------------------------------------------------------------------ #
+        from summarizer.config import load_config
 
+        cfg = load_config()
+        assert cfg.has_api_key is False
 
-def test_nonexistent_file_shows_error(runner: CliRunner) -> None:
-    """A path that does not exist should be rejected."""
-    result = runner.invoke(main, ["--file", "/nonexistent/path/to/file.txt"])
-    assert result.exit_code != 0
+    def test_has_api_key_true_when_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """has_api_key should be True when OPENAI_API_KEY is set."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")
+        monkeypatch.setenv("SUMMARIZER_DEFAULT_STYLE", "brief")
+        monkeypatch.setenv("SUMMARIZER_DEFAULT_FORMAT", "text")
+        monkeypatch.setenv("SUMMARIZER_MAX_TOKENS", "512")
 
+        from summarizer.config import load_config
 
-def test_valid_file_exits_zero(runner: CliRunner, tmp_text_file: Path) -> None:
-    """A readable file should be accepted and produce a placeholder output."""
-    result = runner.invoke(main, ["--file", str(tmp_text_file)])
-    assert result.exit_code == 0
-    assert "PLACEHOLDER" in result.output or "placeholder" in result.output.lower()
+        cfg = load_config()
+        assert cfg.has_api_key is True
 
+    def test_invalid_max_tokens_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """load_config() should raise ValueError for a non-integer SUMMARIZER_MAX_TOKENS."""
+        monkeypatch.setenv("SUMMARIZER_MAX_TOKENS", "not-a-number")
+        monkeypatch.setenv("SUMMARIZER_DEFAULT_STYLE", "brief")
+        monkeypatch.setenv("SUMMARIZER_DEFAULT_FORMAT", "text")
 
-# ------------------------------------------------------------------ #
-# --style and --format options                                         #
-# ------------------------------------------------------------------ #
+        from summarizer.config import load_config
 
-
-@pytest.mark.parametrize("style", ["brief", "detailed", "bullets"])
-def test_valid_styles(runner: CliRunner, style: str) -> None:
-    """All documented style values should be accepted."""
-    result = runner.invoke(main, ["--url", "https://example.com", "--style", style])
-    assert result.exit_code == 0
-
-
-def test_invalid_style_shows_error(runner: CliRunner) -> None:
-    """An unrecognised style value should be rejected."""
-    result = runner.invoke(main, ["--url", "https://example.com", "--style", "unknown"])
-    assert result.exit_code != 0
-
-
-@pytest.mark.parametrize("fmt", ["text", "markdown", "json"])
-def test_valid_formats(runner: CliRunner, fmt: str) -> None:
-    """All documented output format values should be accepted."""
-    result = runner.invoke(main, ["--url", "https://example.com", "--format", fmt])
-    assert result.exit_code == 0
-
-
-def test_invalid_format_shows_error(runner: CliRunner) -> None:
-    """An unrecognised format value should be rejected."""
-    result = runner.invoke(main, ["--url", "https://example.com", "--format", "xml"])
-    assert result.exit_code != 0
-
-
-# ------------------------------------------------------------------ #
-# JSON output format                                                   #
-# ------------------------------------------------------------------ #
-
-
-def test_json_output_is_valid_json(runner: CliRunner) -> None:
-    """When --format json is used the output must be valid JSON."""
-    result = runner.invoke(
-        main, ["--url", "https://example.com", "--format", "json"]
-    )
-    assert result.exit_code == 0
-    parsed = json.loads(result.output)
-    assert "status" in parsed
-    assert "summary" in parsed
-
-
-# ------------------------------------------------------------------ #
-# --verbose flag                                                       #
-# ------------------------------------------------------------------ #
-
-
-def test_verbose_flag_accepted(runner: CliRunner) -> None:
-    """The --verbose flag should be accepted without error."""
-    result = runner.invoke(main, ["--url", "https://example.com", "--verbose"])
-    assert result.exit_code == 0
+        with pytest.raises(ValueError, match="integer"):
+            load_config()
