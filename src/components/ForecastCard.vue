@@ -1,70 +1,45 @@
-<script setup lang="ts">
-import type { ForecastDay } from '@/types/weather'
-
-const props = defineProps<{
-  day: ForecastDay
-}>()
-
-/**
- * Returns a Tailwind color class based on precipitation probability.
- */
-function precipColor(prob: number): string {
-  if (prob >= 70) return 'text-blue-300'
-  if (prob >= 40) return 'text-blue-200'
-  return 'text-white/40'
-}
-
-/**
- * Returns true if this card represents today.
- */
-const isToday = props.day.day === 'Today'
-</script>
-
 <template>
-  <article
-    class="flex-shrink-0 flex flex-col items-center gap-2 px-4 py-4 rounded-xl transition-all duration-200 cursor-default select-none min-w-[90px]"
-    :class="[
-      isToday
-        ? 'bg-white/20 border border-white/30 shadow-glow'
-        : 'bg-white/06 border border-white/10 hover:bg-white/12 hover:border-white/20 hover:scale-105',
-    ]"
-    :aria-label="`${day.day}: ${day.condition}, high ${day.high}°, low ${day.low}°`"
+  <div
+    class="flex flex-col items-center gap-2 bg-white/10 hover:bg-white/20 backdrop-blur-sm border border-white/10 rounded-2xl px-4 py-4 transition-all duration-200 cursor-default min-w-[90px]"
   >
     <!-- Day label -->
-    <span
-      class="text-xs font-bold uppercase tracking-widest"
-      :class="isToday ? 'text-weather-sun' : 'text-secondary'"
-    >
-      {{ day.day }}
-    </span>
+    <span class="text-white/70 text-xs font-medium uppercase tracking-wide">{{ dayLabel }}</span>
 
-    <!-- Weather icon -->
-    <span class="text-3xl leading-none" role="img" :aria-hidden="true">
-      {{ day.icon }}
-    </span>
-
-    <!-- Condition label -->
-    <span class="text-xs text-center text-muted leading-tight max-w-[80px]">
-      {{ day.condition }}
+    <!-- Weather emoji -->
+    <span class="text-2xl" :title="weatherInfo.label" aria-label="weatherInfo.label">
+      {{ weatherInfo.emoji }}
     </span>
 
     <!-- Temp range -->
-    <div class="flex items-center gap-1.5 mt-1">
-      <span class="text-sm font-bold text-white">{{ day.high }}°</span>
-      <span class="text-xs text-muted">|</span>
-      <span class="text-sm text-secondary">{{ day.low }}°</span>
+    <div class="flex items-center gap-1 text-sm font-semibold text-white">
+      <span>{{ day.tempMax }}°</span>
+      <span class="text-white/40">/</span>
+      <span class="text-white/60">{{ day.tempMin }}°</span>
     </div>
 
     <!-- Precipitation probability -->
     <div
-      v-if="day.precipProbability > 0"
-      class="flex items-center gap-1"
-      :class="precipColor(day.precipProbability)"
+      v-if="day.precipitationProbabilityMax > 0"
+      class="flex items-center gap-1 text-xs text-blue-300"
     >
-      <span class="text-xs" aria-hidden="true">🌧️</span>
-      <span class="text-xs font-medium">{{ day.precipProbability }}%</span>
+      <span>💧</span>
+      <span>{{ day.precipitationProbabilityMax }}%</span>
     </div>
-    <div v-else class="h-4" aria-hidden="true" />
-
-  </article>
+  </div>
 </template>
+
+<script setup lang="ts">
+import { computed } from 'vue';
+import type { DailyForecastData } from '../services/weatherService';
+import { getWeatherInfo } from '../utils/weatherCodeMap';
+import { formatDay } from '../utils/unitConverters';
+
+interface Props {
+  day: DailyForecastData;
+}
+
+const props = defineProps<Props>();
+
+const weatherInfo = computed(() => getWeatherInfo(props.day.weatherCode));
+const dayLabel = computed(() => formatDay(props.day.date));
+</script>
