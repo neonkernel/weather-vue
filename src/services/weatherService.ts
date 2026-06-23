@@ -1,147 +1,102 @@
-import type { WeatherCurrent, ForecastDay, WeatherData } from '../types/weather'
-import type { GeocodingResult } from '../types/weather'
-import { getWeatherInfo } from '../utils/weatherCodeMap'
-import { formatDateRelative } from '../utils/unitConverters'
+import type { WeatherCurrent, ForecastDay } from '../types/weather';
 
-const WEATHER_API_BASE = 'https://api.open-meteo.com/v1/forecast'
+const WEATHER_BASE_URL = 'https://api.open-meteo.com/v1/forecast';
 
-export interface OpenMeteoCurrentWeather {
-  time: string
-  interval: number
-  temperature_2m: number
-  relative_humidity_2m: number
-  apparent_temperature: number
-  is_day: number
-  precipitation: number
-  weather_code: number
-  wind_speed_10m: number
-  wind_direction_10m: number
-  uv_index: number
-  visibility: number
-}
-
-export interface OpenMeteoDaily {
-  time: string[]
-  weather_code: number[]
-  temperature_2m_max: number[]
-  temperature_2m_min: number[]
-  precipitation_sum: number[]
-  wind_speed_10m_max: number[]
-  uv_index_max: number[]
-}
-
-export interface OpenMeteoApiResponse {
-  latitude: number
-  longitude: number
-  generationtime_ms: number
-  utc_offset_seconds: number
-  timezone: string
-  timezone_abbreviation: string
-  current: OpenMeteoCurrentWeather
-  daily: OpenMeteoDaily
+export interface OpenMeteoResponse {
+  latitude: number;
+  longitude: number;
+  timezone: string;
+  current: {
+    time: string;
+    temperature_2m: number;
+    apparent_temperature: number;
+    relative_humidity_2m: number;
+    wind_speed_10m: number;
+    wind_direction_10m: number;
+    weather_code: number;
+    is_day: number;
+    precipitation: number;
+  };
+  daily: {
+    time: string[];
+    temperature_2m_max: number[];
+    temperature_2m_min: number[];
+    precipitation_sum: number[];
+    wind_speed_10m_max: number[];
+    weather_code: number[];
+    uv_index_max: number[];
+  };
 }
 
 /**
- * Fetch weather data from Open-Meteo API
+ * Fetch raw weather data from Open-Meteo for a given lat/lon.
  */
-export async function fetchWeatherData(
-  lat: number,
-  lon: number,
-): Promise<OpenMeteoApiResponse> {
+export async function fetchWeatherData(lat: number, lon: number): Promise<OpenMeteoResponse> {
   const params = new URLSearchParams({
-    latitude: String(lat),
-    longitude: String(lon),
+    latitude: lat.toString(),
+    longitude: lon.toString(),
     current: [
       'temperature_2m',
-      'relative_humidity_2m',
       'apparent_temperature',
-      'is_day',
-      'precipitation',
-      'weather_code',
+      'relative_humidity_2m',
       'wind_speed_10m',
       'wind_direction_10m',
-      'uv_index',
-      'visibility',
+      'weather_code',
+      'is_day',
+      'precipitation',
     ].join(','),
     daily: [
-      'weather_code',
       'temperature_2m_max',
       'temperature_2m_min',
       'precipitation_sum',
       'wind_speed_10m_max',
+      'weather_code',
       'uv_index_max',
     ].join(','),
-    forecast_days: '7',
     wind_speed_unit: 'kmh',
     timezone: 'auto',
-  })
+    forecast_days: '7',
+  });
 
-  const url = `${WEATHER_API_BASE}?${params.toString()}`
-  const response = await fetch(url)
+  const response = await fetch(`${WEATHER_BASE_URL}?${params.toString()}`);
 
   if (!response.ok) {
-    throw new Error(`Weather API error: ${response.status} ${response.statusText}`)
+    throw new Error(`Weather API error: ${response.status} ${response.statusText}`);
   }
 
-  const data: OpenMeteoApiResponse = await response.json()
-  return data
+  return response.json();
 }
 
 /**
- * Transform raw Open-Meteo response into our WeatherData shape
+ * Transform raw Open-Meteo current weather into our WeatherCurrent type.
  */
-export function transformWeatherData(
-  raw: OpenMeteoApiResponse,
-  location: GeocodingResult,
-): WeatherData {
-  const { current, daily } = raw
-
-  const currentWeatherInfo = getWeatherInfo(current.weather_code)
-
-  const weatherCurrent: WeatherCurrent = {
-    temperature: Math.round(current.temperature_2m),
-    feelsLike: Math.round(current.apparent_temperature),
-    humidity: current.relative_humidity_2m,
-    windSpeed: Math.round(current.wind_speed_10m),
-    windDirection: current.wind_direction_10m,
-    weatherCode: current.weather_code,
-    weatherLabel: currentWeatherInfo.label,
-    weatherEmoji: currentWeatherInfo.emoji,
-    isDay: current.is_day === 1,
-    uvIndex: current.uv_index ?? 0,
-    visibility: Math.round((current.visibility ?? 0) / 1000), // convert m to km
-    precipitation: current.precipitation,
-  }
-
-  const forecast: ForecastDay[] = daily.time.map((date, index) => {
-    const forecastWeatherInfo = getWeatherInfo(daily.weather_code[index])
-    return {
-      date,
-      dateFormatted: formatDateRelative(date),
-      tempMax: Math.round(daily.temperature_2m_max[index]),
-      tempMin: Math.round(daily.temperature_2m_min[index]),
-      weatherCode: daily.weather_code[index],
-      weatherLabel: forecastWeatherInfo.label,
-      weatherEmoji: forecastWeatherInfo.emoji,
-      precipitationSum: daily.precipitation_sum[index],
-      windSpeedMax: Math.round(daily.wind_speed_10m_max[index]),
-      uvIndexMax: daily.uv_index_max[index] ?? 0,
-    }
-  })
-
+export function transformCurrentWeather(raw: OpenMeteoResponse): WeatherCurrent {
+  const c = raw.current;
   return {
-    current: weatherCurrent,
-    forecast,
-    city: location.displayName,
-    country: location.country,
-    lastUpdated: new Date().toISOString(),
-  }
+    temperature: Math.round(c.temperature_2m),
+    feelsLike: Math.round(c.apparent_temperature),
+    humidity: c.relative_humidity_2m,
+    windSpeed: Math.round(c.wind_speed_10m),
+    windDirection: c.wind_direction_10m,
+    weatherCode: c.weather_code,
+    isDay: c.is_day,
+    precipitation: c.precipitation,
+    uvIndex: 0, // Not available in current endpoint; use daily[0]
+  };
 }
 
 /**
- * High-level function: fetch and transform weather for a given location
+ * Transform raw Open-Meteo daily forecast into our ForecastDay[] type.
  */
-export async function getWeatherForLocation(location: GeocodingResult): Promise<WeatherData> {
-  const raw = await fetchWeatherData(location.lat, location.lon)
-  return transformWeatherData(raw, location)
+export function transformForecast(raw: OpenMeteoResponse): ForecastDay[] {
+  const d = raw.daily;
+  return d.time.map((date, i) => ({
+    date,
+    temperatureMax: Math.round(d.temperature_2m_max[i]),
+    temperatureMin: Math.round(d.temperature_2m_min[i]),
+    precipitationSum: d.precipitation_sum[i] ?? 0,
+    windSpeedMax: Math.round(d.wind_speed_10m_max[i]),
+    weatherCode: d.weather_code[i],
+    uvIndexMax: d.uv_index_max[i] ?? 0,
+  }));
 }

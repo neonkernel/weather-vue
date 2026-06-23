@@ -1,34 +1,48 @@
 <template>
   <div
-    class="
-      flex flex-col items-center gap-2 p-4 rounded-2xl
-      bg-white/10 backdrop-blur-sm border border-white/10
-      hover:bg-white/15 transition-colors duration-200
-      min-w-[100px]
-    "
+    class="bg-white/10 backdrop-blur-sm border border-white/15 rounded-2xl p-4 flex flex-col items-center gap-2 text-white min-w-[100px] flex-1"
   >
-    <p class="text-white/60 text-xs font-medium uppercase tracking-wide text-center">
-      {{ day.dateFormatted }}
-    </p>
-    <span class="text-3xl" :title="day.weatherLabel" aria-hidden="true">{{ day.weatherEmoji }}</span>
-    <p class="text-white/70 text-xs text-center">{{ day.weatherLabel }}</p>
-    <div class="flex gap-2 items-baseline mt-1">
-      <span class="text-white font-bold text-sm">{{ day.tempMax }}°</span>
-      <span class="text-white/40 text-xs">{{ day.tempMin }}°</span>
+    <!-- Day label -->
+    <div class="text-white/60 text-xs font-medium uppercase tracking-wider">{{ dayLabel }}</div>
+
+    <!-- Weather emoji -->
+    <div class="text-3xl select-none" aria-hidden="true">{{ weatherInfo.emoji }}</div>
+
+    <!-- Condition label -->
+    <div class="text-xs text-white/70 text-center leading-tight">{{ weatherInfo.label }}</div>
+
+    <!-- Temp range -->
+    <div class="flex items-center gap-1.5 text-sm font-medium mt-1">
+      <span class="text-white">{{ day.temperatureMax }}°</span>
+      <span class="text-white/40">/</span>
+      <span class="text-white/60">{{ day.temperatureMin }}°</span>
     </div>
-    <div v-if="day.precipitationSum > 0" class="flex items-center gap-1 text-blue-300">
-      <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
-        <path fill-rule="evenodd" d="M10 2a1 1 0 00-.832.445l-7 10A1 1 0 003 14h4v4a1 1 0 002 0v-4h2v4a1 1 0 002 0v-4h4a1 1 0 00.832-1.555l-7-10A1 1 0 0010 2z" clip-rule="evenodd" />
-      </svg>
-      <span class="text-xs">{{ day.precipitationSum.toFixed(1) }}mm</span>
+
+    <!-- Precipitation -->
+    <div v-if="day.precipitationSum > 0" class="text-xs text-blue-300/80 flex items-center gap-1">
+      <span>💧</span>
+      <span>{{ day.precipitationSum.toFixed(1) }}mm</span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import type { ForecastDay } from '../types/weather'
+import { computed } from 'vue';
+import { getWeatherInfo } from '../utils/weatherCodeMap';
+import { formatDate } from '../utils/unitConverters';
+import type { ForecastDay } from '../types/weather';
 
-defineProps<{
-  day: ForecastDay
-}>()
+const props = defineProps<{
+  day: ForecastDay;
+  isToday?: boolean;
+}>();
+
+const weatherInfo = computed(() => getWeatherInfo(props.day.weatherCode));
+
+const dayLabel = computed(() => {
+  if (props.isToday) return 'Today';
+  // Parse as local date to avoid off-by-one from UTC
+  const date = new Date(props.day.date + 'T00:00:00');
+  return date.toLocaleDateString('en-US', { weekday: 'short' });
+});
 </script>

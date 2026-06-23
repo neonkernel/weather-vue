@@ -1,67 +1,69 @@
-import type { GeocodingResult } from '../types/weather'
+import type { GeoLocation } from '../types/weather';
 
-const GEOCODING_API_BASE = 'https://geocoding-api.open-meteo.com/v1/search'
+const GEOCODING_BASE_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 
-export interface RawGeocodingResult {
-  id: number
-  name: string
-  latitude: number
-  longitude: number
-  country: string
-  country_code: string
-  admin1?: string
-  admin2?: string
+export interface GeocodingResult {
+  id: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  country: string;
+  country_code: string;
+  admin1?: string;
 }
 
-export interface GeocodingApiResponse {
-  results?: RawGeocodingResult[]
-  generationtime_ms: number
+export interface GeocodingResponse {
+  results?: GeocodingResult[];
+  error?: boolean;
+  reason?: string;
 }
 
 /**
- * Search for a city using the Open-Meteo Geocoding API
- * @param cityName - The name of the city to search for
- * @param count - Number of results to return (default 1)
+ * Search for a city by name and return geocoding results.
  */
-export async function searchCity(cityName: string, count = 1): Promise<GeocodingResult[]> {
-  if (!cityName.trim()) {
-    throw new Error('City name cannot be empty')
-  }
-
+export async function searchCity(cityName: string): Promise<GeocodingResult[]> {
   const params = new URLSearchParams({
     name: cityName.trim(),
-    count: String(count),
+    count: '5',
     language: 'en',
     format: 'json',
-  })
+  });
 
-  const url = `${GEOCODING_API_BASE}?${params.toString()}`
-
-  const response = await fetch(url)
+  const response = await fetch(`${GEOCODING_BASE_URL}?${params.toString()}`);
 
   if (!response.ok) {
-    throw new Error(`Geocoding API error: ${response.status} ${response.statusText}`)
+    throw new Error(`Geocoding API error: ${response.status} ${response.statusText}`);
   }
 
-  const data: GeocodingApiResponse = await response.json()
+  const data: GeocodingResponse = await response.json();
 
-  if (!data.results || data.results.length === 0) {
-    throw new Error(`No results found for "${cityName}". Please check the city name and try again.`)
+  if (data.error) {
+    throw new Error(data.reason ?? 'Geocoding API returned an error');
   }
 
-  return data.results.map((r) => ({
-    lat: r.latitude,
-    lon: r.longitude,
-    displayName: r.admin1 ? `${r.name}, ${r.admin1}` : r.name,
-    country: r.country,
-    countryCode: r.country_code,
-  }))
+  return data.results ?? [];
 }
 
 /**
- * Get the first geocoding result for a city name
+ * Get the best matching GeoLocation for a city name string.
  */
-export async function geocodeCity(cityName: string): Promise<GeocodingResult> {
-  const results = await searchCity(cityName, 1)
-  return results[0]
+export async function geocodeCity(cityName: string): Promise<GeoLocation> {
+  const results = await searchCity(cityName);
+
+  if (results.length === 0) {
+    throw new Error(`City not found: "${cityName}". Please check the spelling and try again.`);
+  }
+
+  const best = results[0];
+  const displayName = best.admin1
+    ? `${best.name}, ${best.admin1}, ${best.country}`
+    : `${best.name}, ${best.country}`;
+
+  return {
+    lat: best.latitude,
+    lon: best.longitude,
+    displayName,
+    country: best.country,
+    countryCode: best.country_code,
+  };
 }

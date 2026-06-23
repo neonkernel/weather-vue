@@ -1,49 +1,39 @@
-import { ref } from 'vue'
-import type { Ref } from 'vue'
-import type { GeocodingResult } from '../types/weather'
-import { geocodeCity } from '../services/geocodingService'
+import { ref } from 'vue';
+import { geocodeCity } from '../services/geocodingService';
+import type { GeoLocation } from '../types/weather';
 
-export interface UseGeocodingReturn {
-  result: Ref<GeocodingResult | null>
-  loading: Ref<boolean>
-  error: Ref<string | null>
-  geocode: (cityName: string) => Promise<GeocodingResult | null>
-  reset: () => void
-}
+export function useGeocoding() {
+  const location = ref<GeoLocation | null>(null);
+  const loading = ref(false);
+  const error = ref<string | null>(null);
 
-export function useGeocoding(): UseGeocodingReturn {
-  const result = ref<GeocodingResult | null>(null)
-  const loading = ref(false)
-  const error = ref<string | null>(null)
-
-  async function geocode(cityName: string): Promise<GeocodingResult | null> {
+  async function resolveCity(cityName: string): Promise<GeoLocation | null> {
     if (!cityName.trim()) {
-      error.value = 'Please enter a city name.'
-      return null
+      error.value = 'Please enter a city name.';
+      return null;
     }
 
-    loading.value = true
-    error.value = null
-    result.value = null
+    loading.value = true;
+    error.value = null;
+    location.value = null;
 
     try {
-      const location = await geocodeCity(cityName)
-      result.value = location
-      return location
+      const result = await geocodeCity(cityName);
+      location.value = result;
+      return result;
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to find city location.'
-      error.value = message
-      return null
+      error.value = err instanceof Error ? err.message : 'Failed to find the city.';
+      return null;
     } finally {
-      loading.value = false
+      loading.value = false;
     }
   }
 
   function reset() {
-    result.value = null
-    loading.value = false
-    error.value = null
+    location.value = null;
+    error.value = null;
+    loading.value = false;
   }
 
-  return { result, loading, error, geocode, reset }
+  return { location, loading, error, resolveCity, reset };
 }
