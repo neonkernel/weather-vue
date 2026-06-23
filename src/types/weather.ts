@@ -1,20 +1,43 @@
-// Re-export service types for backward compatibility
-export type { CurrentWeatherData, DailyForecastData, WeatherApiResponse } from '../services/weatherService';
-export type { GeocodingResult } from '../services/geocodingService';
+export interface GeocodingResult {
+  lat: number
+  lon: number
+  displayName: string
+  country: string
+  countryCode: string
+}
 
-// Legacy mock types (kept for reference)
 export interface WeatherCurrent {
-  city: string;
-  temperature: number;
-  condition: string;
-  humidity: number;
-  windSpeed: number;
-  feelsLike: number;
+  temperature: number
+  feelsLike: number
+  humidity: number
+  windSpeed: number
+  windDirection: number
+  weatherCode: number
+  weatherLabel: string
+  weatherEmoji: string
+  isDay: boolean
+  uvIndex: number
+  visibility: number
+  precipitation: number
 }
 
 export interface ForecastDay {
-  day: string;
-  high: number;
-  low: number;
-  condition: string;
+  date: string
+  dateFormatted: string
+  tempMax: number
+  tempMin: number
+  weatherCode: number
+  weatherLabel: string
+  weatherEmoji: string
+  precipitationSum: number
+  windSpeedMax: number
+  uvIndexMax: number
+}
+
+export interface WeatherData {
+  current: WeatherCurrent
+  forecast: ForecastDay[]
+  city: string
+  country: string
+  lastUpdated: string
 }

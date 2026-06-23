@@ -1,53 +1,50 @@
 <template>
-  <div class="flex flex-col items-center justify-center gap-4 py-16">
-    <!-- Animated SVG Spinner -->
+  <div class="flex flex-col items-center justify-center py-16 gap-4" role="status" aria-label="Loading weather data">
     <div class="relative">
+      <!-- Outer ring -->
       <svg
-        class="w-16 h-16 animate-spin"
-        viewBox="0 0 64 64"
+        class="w-16 h-16 animate-spin text-white/30"
         fill="none"
-        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
         aria-hidden="true"
       >
-        <!-- Background track -->
         <circle
-          cx="32"
-          cy="32"
-          r="28"
-          stroke="rgba(255,255,255,0.15)"
-          stroke-width="6"
+          class="opacity-25"
+          cx="12"
+          cy="12"
+          r="10"
+          stroke="currentColor"
+          stroke-width="3"
         />
-        <!-- Spinning arc -->
         <path
-          d="M32 4 A28 28 0 0 1 60 32"
-          stroke="white"
-          stroke-width="6"
-          stroke-linecap="round"
+          class="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
         />
       </svg>
 
       <!-- Center icon -->
       <div class="absolute inset-0 flex items-center justify-center">
-        <span class="text-2xl" aria-hidden="true">🌤️</span>
+        <span class="text-2xl animate-pulse" aria-hidden="true">🌤️</span>
       </div>
     </div>
 
-    <!-- Label -->
     <div class="text-center">
-      <p class="text-white font-semibold text-lg">{{ title }}</p>
-      <p v-if="subtitle" class="text-white/60 text-sm mt-1">{{ subtitle }}</p>
+      <p class="text-white/80 font-medium text-lg">{{ message }}</p>
+      <p v-if="subMessage" class="text-white/50 text-sm mt-1">{{ subMessage }}</p>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-interface Props {
-  title?: string;
-  subtitle?: string;
-}
-
-withDefaults(defineProps<Props>(), {
-  title: 'Fetching weather...',
-  subtitle: 'This will just take a moment',
-});
+withDefaults(
+  defineProps<{
+    message?: string
+    subMessage?: string
+  }>(),
+  {
+    message: 'Fetching weather data...',
+    subMessage: 'This may take a moment',
+  }
+)
 </script>

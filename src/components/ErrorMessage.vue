@@ -1,12 +1,12 @@
 <template>
   <div
+    class="flex flex-col items-center justify-center py-12 px-6 gap-5"
     role="alert"
-    class="flex items-start gap-3 bg-red-500/20 border border-red-400/40 backdrop-blur-sm text-white rounded-2xl px-5 py-4 shadow-lg max-w-xl mx-auto"
+    aria-live="assertive"
   >
-    <!-- Error Icon -->
-    <div class="flex-shrink-0 mt-0.5">
+    <div class="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center">
       <svg
-        class="w-5 h-5 text-red-300"
+        class="w-8 h-8 text-red-400"
         fill="none"
         stroke="currentColor"
         viewBox="0 0 24 24"
@@ -16,54 +16,54 @@
           stroke-linecap="round"
           stroke-linejoin="round"
           stroke-width="2"
-          d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
         />
       </svg>
     </div>
 
-    <!-- Message -->
-    <div class="flex-1 min-w-0">
-      <p class="font-semibold text-red-200 text-sm mb-0.5">Something went wrong</p>
-      <p class="text-white/80 text-sm leading-relaxed">{{ message }}</p>
+    <div class="text-center max-w-md">
+      <h3 class="text-white font-semibold text-lg mb-1">{{ title }}</h3>
+      <p class="text-white/60 text-sm leading-relaxed">{{ message }}</p>
     </div>
 
-    <!-- Retry Button -->
     <button
       v-if="showRetry"
-      class="flex-shrink-0 bg-white/20 hover:bg-white/30 transition-colors text-white text-xs font-medium px-3 py-1.5 rounded-lg"
       @click="emit('retry')"
+      class="
+        flex items-center gap-2 px-5 py-2.5 rounded-xl
+        bg-white/10 hover:bg-white/20 active:scale-95
+        text-white font-medium text-sm
+        border border-white/20
+        transition-all duration-150
+      "
     >
-      Retry
-    </button>
-
-    <!-- Dismiss Button -->
-    <button
-      v-if="showDismiss"
-      class="flex-shrink-0 text-white/50 hover:text-white transition-colors p-1"
-      aria-label="Dismiss error"
-      @click="emit('dismiss')"
-    >
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+        />
       </svg>
+      Try Again
     </button>
   </div>
 </template>
 
 <script setup lang="ts">
-interface Props {
-  message: string;
-  showRetry?: boolean;
-  showDismiss?: boolean;
-}
-
-withDefaults(defineProps<Props>(), {
-  showRetry: false,
-  showDismiss: true,
-});
+withDefaults(
+  defineProps<{
+    title?: string
+    message: string
+    showRetry?: boolean
+  }>(),
+  {
+    title: 'Something went wrong',
+    showRetry: true,
+  }
+)
 
 const emit = defineEmits<{
-  (e: 'retry'): void;
-  (e: 'dismiss'): void;
-}>();
+  (e: 'retry'): void
+}>()
 </script>

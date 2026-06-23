@@ -1,90 +1,147 @@
-export interface CurrentWeatherData {
-  temperature: number;
-  apparentTemperature: number;
-  weatherCode: number;
-  windSpeed: number;
-  windDirection: number;
-  humidity: number;
-  precipitation: number;
-  isDay: number;
+import type { WeatherCurrent, ForecastDay, WeatherData } from '../types/weather'
+import type { GeocodingResult } from '../types/weather'
+import { getWeatherInfo } from '../utils/weatherCodeMap'
+import { formatDateRelative } from '../utils/unitConverters'
+
+const WEATHER_API_BASE = 'https://api.open-meteo.com/v1/forecast'
+
+export interface OpenMeteoCurrentWeather {
+  time: string
+  interval: number
+  temperature_2m: number
+  relative_humidity_2m: number
+  apparent_temperature: number
+  is_day: number
+  precipitation: number
+  weather_code: number
+  wind_speed_10m: number
+  wind_direction_10m: number
+  uv_index: number
+  visibility: number
 }
 
-export interface DailyForecastData {
-  date: string;
-  weatherCode: number;
-  tempMax: number;
-  tempMin: number;
-  precipitationSum: number;
-  precipitationProbabilityMax: number;
-  windSpeedMax: number;
+export interface OpenMeteoDaily {
+  time: string[]
+  weather_code: number[]
+  temperature_2m_max: number[]
+  temperature_2m_min: number[]
+  precipitation_sum: number[]
+  wind_speed_10m_max: number[]
+  uv_index_max: number[]
 }
 
-export interface WeatherApiResponse {
-  current: CurrentWeatherData;
-  daily: DailyForecastData[];
+export interface OpenMeteoApiResponse {
+  latitude: number
+  longitude: number
+  generationtime_ms: number
+  utc_offset_seconds: number
+  timezone: string
+  timezone_abbreviation: string
+  current: OpenMeteoCurrentWeather
+  daily: OpenMeteoDaily
 }
 
-const WEATHER_BASE_URL = 'https://api.open-meteo.com/v1';
-
-export async function fetchWeatherByCoords(
+/**
+ * Fetch weather data from Open-Meteo API
+ */
+export async function fetchWeatherData(
   lat: number,
-  lon: number
-): Promise<WeatherApiResponse> {
+  lon: number,
+): Promise<OpenMeteoApiResponse> {
   const params = new URLSearchParams({
-    latitude: lat.toString(),
-    longitude: lon.toString(),
+    latitude: String(lat),
+    longitude: String(lon),
     current: [
       'temperature_2m',
+      'relative_humidity_2m',
       'apparent_temperature',
+      'is_day',
+      'precipitation',
       'weather_code',
       'wind_speed_10m',
       'wind_direction_10m',
-      'relative_humidity_2m',
-      'precipitation',
-      'is_day',
+      'uv_index',
+      'visibility',
     ].join(','),
     daily: [
       'weather_code',
       'temperature_2m_max',
       'temperature_2m_min',
       'precipitation_sum',
-      'precipitation_probability_max',
       'wind_speed_10m_max',
+      'uv_index_max',
     ].join(','),
-    timezone: 'auto',
     forecast_days: '7',
-  });
+    wind_speed_unit: 'kmh',
+    timezone: 'auto',
+  })
 
-  const response = await fetch(`${WEATHER_BASE_URL}/forecast?${params}`);
+  const url = `${WEATHER_API_BASE}?${params.toString()}`
+  const response = await fetch(url)
 
   if (!response.ok) {
-    throw new Error(`Weather API error: ${response.status} ${response.statusText}`);
+    throw new Error(`Weather API error: ${response.status} ${response.statusText}`)
   }
 
-  const data = await response.json();
+  const data: OpenMeteoApiResponse = await response.json()
+  return data
+}
 
-  const current: CurrentWeatherData = {
-    temperature: Math.round(data.current.temperature_2m),
-    apparentTemperature: Math.round(data.current.apparent_temperature),
-    weatherCode: data.current.weather_code,
-    windSpeed: Math.round(data.current.wind_speed_10m),
-    windDirection: data.current.wind_direction_10m,
-    humidity: data.current.relative_humidity_2m,
-    precipitation: data.current.precipitation,
-    isDay: data.current.is_day,
-  };
+/**
+ * Transform raw Open-Meteo response into our WeatherData shape
+ */
+export function transformWeatherData(
+  raw: OpenMeteoApiResponse,
+  location: GeocodingResult,
+): WeatherData {
+  const { current, daily } = raw
 
-  const daily: DailyForecastData[] = data.daily.time.map(
-    (date: string, i: number) => ({
+  const currentWeatherInfo = getWeatherInfo(current.weather_code)
+
+  const weatherCurrent: WeatherCurrent = {
+    temperature: Math.round(current.temperature_2m),
+    feelsLike: Math.round(current.apparent_temperature),
+    humidity: current.relative_humidity_2m,
+    windSpeed: Math.round(current.wind_speed_10m),
+    windDirection: current.wind_direction_10m,
+    weatherCode: current.weather_code,
+    weatherLabel: currentWeatherInfo.label,
+    weatherEmoji: currentWeatherInfo.emoji,
+    isDay: current.is_day === 1,
+    uvIndex: current.uv_index ?? 0,
+    visibility: Math.round((current.visibility ?? 0) / 1000), // convert m to km
+    precipitation: current.precipitation,
+  }
+
+  const forecast: ForecastDay[] = daily.time.map((date, index) => {
+    const forecastWeatherInfo = getWeatherInfo(daily.weather_code[index])
+    return {
       date,
-      weatherCode: data.daily.weather_code[i],
-      tempMax: Math.round(data.daily.temperature_2m_max[i]),
-      tempMin: Math.round(data.daily.temperature_2m_min[i]),
-      precipitationSum: data.daily.precipitation_sum[i] ?? 0,
-      precipitationProbabilityMax: data.daily.precipitation_probability_max[i] ?? 0,
-      windSpeedMax: Math.round(data.daily.wind_speed_10m_max[i]),
-    })
-  );
+      dateFormatted: formatDateRelative(date),
+      tempMax: Math.round(daily.temperature_2m_max[index]),
+      tempMin: Math.round(daily.temperature_2m_min[index]),
+      weatherCode: daily.weather_code[index],
+      weatherLabel: forecastWeatherInfo.label,
+      weatherEmoji: forecastWeatherInfo.emoji,
+      precipitationSum: daily.precipitation_sum[index],
+      windSpeedMax: Math.round(daily.wind_speed_10m_max[index]),
+      uvIndexMax: daily.uv_index_max[index] ?? 0,
+    }
+  })
 
-  return { current, daily };
+  return {
+    current: weatherCurrent,
+    forecast,
+    city: location.displayName,
+    country: location.country,
+    lastUpdated: new Date().toISOString(),
+  }
+}
+
+/**
+ * High-level function: fetch and transform weather for a given location
+ */
+export async function getWeatherForLocation(location: GeocodingResult): Promise<WeatherData> {
+  const raw = await fetchWeatherData(location.lat, location.lon)
+  return transformWeatherData(raw, location)
 }

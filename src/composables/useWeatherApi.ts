@@ -1,48 +1,54 @@
-import { ref } from 'vue';
-import { searchCity } from '../services/geocodingService';
-import { fetchWeatherByCoords, type WeatherApiResponse } from '../services/weatherService';
+import { ref } from 'vue'
+import type { Ref } from 'vue'
+import type { WeatherData } from '../types/weather'
+import { geocodeCity } from '../services/geocodingService'
+import { getWeatherForLocation } from '../services/weatherService'
 
-export interface WeatherState {
-  data: WeatherApiResponse | null;
-  cityName: string;
-  loading: boolean;
-  error: string | null;
+export interface UseWeatherApiReturn {
+  data: Ref<WeatherData | null>
+  loading: Ref<boolean>
+  error: Ref<string | null>
+  fetchByCity: (cityName: string) => Promise<void>
+  reset: () => void
 }
 
-export function useWeatherApi() {
-  const data = ref<WeatherApiResponse | null>(null);
-  const cityName = ref<string>('');
-  const loading = ref(false);
-  const error = ref<string | null>(null);
+export function useWeatherApi(): UseWeatherApiReturn {
+  const data = ref<WeatherData | null>(null)
+  const loading = ref(false)
+  const error = ref<string | null>(null)
 
-  async function fetchByCity(name: string): Promise<void> {
-    if (!name.trim()) {
-      error.value = 'Please enter a city name.';
-      return;
+  async function fetchByCity(cityName: string): Promise<void> {
+    if (!cityName.trim()) {
+      error.value = 'Please enter a city name to search.'
+      return
     }
 
-    loading.value = true;
-    error.value = null;
-    data.value = null;
+    loading.value = true
+    error.value = null
 
     try {
-      // Step 1: Geocode city → lat/lon
-      const geo = await searchCity(name.trim());
+      // Step 1: Geocode the city name to lat/lon
+      const location = await geocodeCity(cityName)
 
-      // Step 2: Fetch weather using coordinates
-      const weather = await fetchWeatherByCoords(geo.lat, geo.lon);
+      // Step 2: Fetch weather data using the coordinates
+      const weatherData = await getWeatherForLocation(location)
 
-      cityName.value = geo.displayName;
-      data.value = weather;
-    } catch (err: unknown) {
-      error.value =
-        err instanceof Error
-          ? err.message
-          : 'An unexpected error occurred. Please try again.';
+      data.value = weatherData
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'An unexpected error occurred.'
+      error.value = message
+      // Keep previous data visible if available? Clear it for a cleaner UX on new search.
+      data.value = null
     } finally {
-      loading.value = false;
+      loading.value = false
     }
   }
 
-  return { data, cityName, loading, error, fetchByCity };
+  function reset(): void {
+    data.value = null
+    loading.value = false
+    error.value = null
+  }
+
+  return { data, loading, error, fetchByCity, reset }
 }

@@ -1,8 +1,8 @@
 <template>
   <div>
-    <h2 class="text-white/70 text-sm font-semibold uppercase tracking-widest mb-4">
+    <h3 class="text-white/70 text-sm font-semibold uppercase tracking-wider mb-4">
       7-Day Forecast
-    </h2>
+    </h3>
     <div class="flex gap-3 overflow-x-auto pb-2 scrollbar-hide">
       <ForecastCard
         v-for="day in forecast"
@@ -15,14 +15,12 @@
 </template>
 
 <script setup lang="ts">
-import type { DailyForecastData } from '../services/weatherService';
-import ForecastCard from './ForecastCard.vue';
+import type { ForecastDay } from '../types/weather'
+import ForecastCard from './ForecastCard.vue'
 
-interface Props {
-  forecast: DailyForecastData[];
-}
-
-defineProps<Props>();
+defineProps<{
+  forecast: ForecastDay[]
+}>()
 </script>
 
 <style scoped>

@@ -1,45 +1,34 @@
 <template>
   <div
-    class="flex flex-col items-center gap-2 bg-white/10 hover:bg-white/20 backdrop-blur-sm border border-white/10 rounded-2xl px-4 py-4 transition-all duration-200 cursor-default min-w-[90px]"
+    class="
+      flex flex-col items-center gap-2 p-4 rounded-2xl
+      bg-white/10 backdrop-blur-sm border border-white/10
+      hover:bg-white/15 transition-colors duration-200
+      min-w-[100px]
+    "
   >
-    <!-- Day label -->
-    <span class="text-white/70 text-xs font-medium uppercase tracking-wide">{{ dayLabel }}</span>
-
-    <!-- Weather emoji -->
-    <span class="text-2xl" :title="weatherInfo.label" aria-label="weatherInfo.label">
-      {{ weatherInfo.emoji }}
-    </span>
-
-    <!-- Temp range -->
-    <div class="flex items-center gap-1 text-sm font-semibold text-white">
-      <span>{{ day.tempMax }}°</span>
-      <span class="text-white/40">/</span>
-      <span class="text-white/60">{{ day.tempMin }}°</span>
+    <p class="text-white/60 text-xs font-medium uppercase tracking-wide text-center">
+      {{ day.dateFormatted }}
+    </p>
+    <span class="text-3xl" :title="day.weatherLabel" aria-hidden="true">{{ day.weatherEmoji }}</span>
+    <p class="text-white/70 text-xs text-center">{{ day.weatherLabel }}</p>
+    <div class="flex gap-2 items-baseline mt-1">
+      <span class="text-white font-bold text-sm">{{ day.tempMax }}°</span>
+      <span class="text-white/40 text-xs">{{ day.tempMin }}°</span>
     </div>
-
-    <!-- Precipitation probability -->
-    <div
-      v-if="day.precipitationProbabilityMax > 0"
-      class="flex items-center gap-1 text-xs text-blue-300"
-    >
-      <span>💧</span>
-      <span>{{ day.precipitationProbabilityMax }}%</span>
+    <div v-if="day.precipitationSum > 0" class="flex items-center gap-1 text-blue-300">
+      <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+        <path fill-rule="evenodd" d="M10 2a1 1 0 00-.832.445l-7 10A1 1 0 003 14h4v4a1 1 0 002 0v-4h2v4a1 1 0 002 0v-4h4a1 1 0 00.832-1.555l-7-10A1 1 0 0010 2z" clip-rule="evenodd" />
+      </svg>
+      <span class="text-xs">{{ day.precipitationSum.toFixed(1) }}mm</span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-import type { DailyForecastData } from '../services/weatherService';
-import { getWeatherInfo } from '../utils/weatherCodeMap';
-import { formatDay } from '../utils/unitConverters';
+import type { ForecastDay } from '../types/weather'
 
-interface Props {
-  day: DailyForecastData;
-}
-
-const props = defineProps<Props>();
-
-const weatherInfo = computed(() => getWeatherInfo(props.day.weatherCode));
-const dayLabel = computed(() => formatDay(props.day.date));
+defineProps<{
+  day: ForecastDay
+}>()
 </script>

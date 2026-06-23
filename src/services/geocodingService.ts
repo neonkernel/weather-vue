@@ -1,41 +1,67 @@
-export interface GeocodingResult {
-  lat: number;
-  lon: number;
-  displayName: string;
-  country: string;
-  admin1?: string;
+import type { GeocodingResult } from '../types/weather'
+
+const GEOCODING_API_BASE = 'https://geocoding-api.open-meteo.com/v1/search'
+
+export interface RawGeocodingResult {
+  id: number
+  name: string
+  latitude: number
+  longitude: number
+  country: string
+  country_code: string
+  admin1?: string
+  admin2?: string
 }
 
-const GEOCODING_BASE_URL = 'https://geocoding-api.open-meteo.com/v1';
+export interface GeocodingApiResponse {
+  results?: RawGeocodingResult[]
+  generationtime_ms: number
+}
 
-export async function searchCity(cityName: string): Promise<GeocodingResult> {
+/**
+ * Search for a city using the Open-Meteo Geocoding API
+ * @param cityName - The name of the city to search for
+ * @param count - Number of results to return (default 1)
+ */
+export async function searchCity(cityName: string, count = 1): Promise<GeocodingResult[]> {
+  if (!cityName.trim()) {
+    throw new Error('City name cannot be empty')
+  }
+
   const params = new URLSearchParams({
-    name: cityName,
-    count: '1',
+    name: cityName.trim(),
+    count: String(count),
     language: 'en',
     format: 'json',
-  });
+  })
 
-  const response = await fetch(`${GEOCODING_BASE_URL}/search?${params}`);
+  const url = `${GEOCODING_API_BASE}?${params.toString()}`
+
+  const response = await fetch(url)
 
   if (!response.ok) {
-    throw new Error(`Geocoding API error: ${response.status} ${response.statusText}`);
+    throw new Error(`Geocoding API error: ${response.status} ${response.statusText}`)
   }
 
-  const data = await response.json();
+  const data: GeocodingApiResponse = await response.json()
 
   if (!data.results || data.results.length === 0) {
-    throw new Error(`City not found: "${cityName}". Please check the spelling and try again.`);
+    throw new Error(`No results found for "${cityName}". Please check the city name and try again.`)
   }
 
-  const result = data.results[0];
-  const parts = [result.name, result.admin1, result.country].filter(Boolean);
+  return data.results.map((r) => ({
+    lat: r.latitude,
+    lon: r.longitude,
+    displayName: r.admin1 ? `${r.name}, ${r.admin1}` : r.name,
+    country: r.country,
+    countryCode: r.country_code,
+  }))
+}
 
-  return {
-    lat: result.latitude,
-    lon: result.longitude,
-    displayName: parts.join(', '),
-    country: result.country ?? '',
-    admin1: result.admin1,
-  };
+/**
+ * Get the first geocoding result for a city name
+ */
+export async function geocodeCity(cityName: string): Promise<GeocodingResult> {
+  const results = await searchCity(cityName, 1)
+  return results[0]
 }

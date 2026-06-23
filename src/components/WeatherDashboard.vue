@@ -1,111 +1,127 @@
 <template>
-  <div class="min-h-screen bg-gradient-to-br from-blue-600 via-blue-500 to-indigo-600 p-4 md:p-8">
-    <div class="max-w-3xl mx-auto">
+  <div class="min-h-screen bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 p-4 sm:p-6 lg:p-8">
+    <div class="max-w-2xl mx-auto">
 
       <!-- Header -->
-      <div class="text-center mb-8">
-        <h1 class="text-white text-2xl font-bold tracking-tight mb-1">
+      <header class="text-center mb-8">
+        <h1 class="text-3xl font-bold text-white mb-1 tracking-tight">
           🌤️ Weather Dashboard
         </h1>
-        <p class="text-white/60 text-sm">Powered by Open-Meteo</p>
-      </div>
+        <p class="text-white/50 text-sm">Live weather data powered by Open-Meteo</p>
+      </header>
 
       <!-- Search Bar -->
-      <div class="mb-6">
+      <div class="mb-8">
         <SearchBar :loading="loading" @search="handleSearch" />
       </div>
 
-      <!-- Error Message -->
-      <div v-if="error" class="mb-6">
-        <ErrorMessage
-          :message="error"
-          :show-retry="!!lastQuery"
-          :show-dismiss="true"
-          @retry="handleRetry"
-          @dismiss="dismissError"
-        />
-      </div>
-
-      <!-- Loading Spinner -->
-      <div v-if="loading" class="mt-8">
-        <LoadingSpinner
-          title="Fetching weather data..."
-          :subtitle="`Looking up weather for ${lastQuery}`"
-        />
-      </div>
-
-      <!-- Weather Content -->
-      <template v-else-if="data && !error">
-        <!-- Glassmorphism card -->
-        <div class="bg-white/10 backdrop-blur-md border border-white/20 rounded-3xl p-6 md:p-8 shadow-2xl">
-          <!-- Current Weather -->
-          <CurrentWeather
-            :weather="data.current"
-            :city-name="cityName"
-            class="mb-8"
-          />
-
-          <!-- Divider -->
-          <hr class="border-white/20 mb-6" />
-
-          <!-- Forecast Strip -->
-          <ForecastStrip :forecast="data.daily" />
-        </div>
-      </template>
-
-      <!-- Empty State (initial) -->
+      <!-- Initial state: no search yet -->
       <div
-        v-else-if="!loading && !data && !error"
-        class="text-center mt-16"
+        v-if="!data && !loading && !error"
+        class="text-center py-16"
       >
-        <div class="text-6xl mb-4">🌍</div>
-        <p class="text-white text-xl font-semibold mb-2">Search for a city</p>
-        <p class="text-white/60 text-sm">Enter a city name above to see current weather and forecast</p>
-
-        <!-- Quick city suggestions -->
-        <div class="flex flex-wrap justify-center gap-2 mt-6">
+        <div class="text-6xl mb-4">🗺️</div>
+        <h2 class="text-white text-xl font-semibold mb-2">Search for a City</h2>
+        <p class="text-white/50 text-sm max-w-xs mx-auto">
+          Enter a city name above to get current weather conditions and a 7-day forecast.
+        </p>
+        <div class="mt-6 flex flex-wrap gap-2 justify-center">
           <button
-            v-for="city in suggestedCities"
-            :key="city"
-            class="bg-white/10 hover:bg-white/20 border border-white/20 text-white/80 hover:text-white text-sm px-4 py-2 rounded-full transition-all duration-200"
-            @click="handleSearch(city)"
+            v-for="suggestion in suggestedCities"
+            :key="suggestion"
+            @click="handleSearch(suggestion)"
+            class="
+              px-3 py-1.5 rounded-full text-sm
+              bg-white/10 hover:bg-white/20
+              text-white/70 hover:text-white
+              border border-white/10
+              transition-all duration-150
+            "
           >
-            {{ city }}
+            {{ suggestion }}
           </button>
         </div>
       </div>
+
+      <!-- Loading state -->
+      <LoadingSpinner
+        v-else-if="loading"
+        :message="`Fetching weather for ${lastSearchedCity}...`"
+        sub-message="Contacting Open-Meteo API"
+      />
+
+      <!-- Error state -->
+      <ErrorMessage
+        v-else-if="error"
+        :message="error"
+        title="Failed to load weather"
+        :show-retry="!!lastSearchedCity"
+        @retry="handleRetry"
+      />
+
+      <!-- Weather data -->
+      <template v-else-if="data">
+        <div class="space-y-6">
+          <!-- Current weather card -->
+          <div class="bg-white/10 backdrop-blur-sm rounded-3xl p-6 border border-white/20 shadow-xl">
+            <CurrentWeather
+              :weather="data.current"
+              :city="data.city"
+              :country="data.country"
+              :last-updated="data.lastUpdated"
+            />
+          </div>
+
+          <!-- 7-day forecast -->
+          <div class="bg-white/10 backdrop-blur-sm rounded-3xl p-6 border border-white/20 shadow-xl">
+            <ForecastStrip :forecast="data.forecast" />
+          </div>
+
+          <!-- Additional details -->
+          <div class="bg-white/5 rounded-2xl p-4 border border-white/10">
+            <p class="text-white/30 text-xs text-center">
+              Data provided by
+              <a
+                href="https://open-meteo.com/"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-white/50 hover:text-white underline transition-colors"
+              >
+                Open-Meteo
+              </a>
+              · Free & No API Key Required
+            </p>
+          </div>
+        </div>
+      </template>
 
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
-import { useWeatherApi } from '../composables/useWeatherApi';
-import SearchBar from './SearchBar.vue';
-import ErrorMessage from './ErrorMessage.vue';
-import LoadingSpinner from './LoadingSpinner.vue';
-import CurrentWeather from './CurrentWeather.vue';
-import ForecastStrip from './ForecastStrip.vue';
+import { ref } from 'vue'
+import SearchBar from './SearchBar.vue'
+import CurrentWeather from './CurrentWeather.vue'
+import ForecastStrip from './ForecastStrip.vue'
+import LoadingSpinner from './LoadingSpinner.vue'
+import ErrorMessage from './ErrorMessage.vue'
+import { useWeatherApi } from '../composables/useWeatherApi'
 
-const { data, cityName, loading, error, fetchByCity } = useWeatherApi();
+const { data, loading, error, fetchByCity } = useWeatherApi()
 
-const lastQuery = ref('');
+const lastSearchedCity = ref('')
 
-const suggestedCities = ['London', 'New York', 'Tokyo', 'Sydney', 'Paris', 'Dubai'];
+const suggestedCities = ['New York', 'London', 'Tokyo', 'Paris', 'Sydney', 'Dubai']
 
-async function handleSearch(city: string) {
-  lastQuery.value = city;
-  await fetchByCity(city);
+async function handleSearch(cityName: string) {
+  lastSearchedCity.value = cityName
+  await fetchByCity(cityName)
 }
 
 function handleRetry() {
-  if (lastQuery.value) {
-    handleSearch(lastQuery.value);
+  if (lastSearchedCity.value) {
+    handleSearch(lastSearchedCity.value)
   }
-}
-
-function dismissError() {
-  error.value = null;
 }
 </script>
