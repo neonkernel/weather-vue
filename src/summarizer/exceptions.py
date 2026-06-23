@@ -1,60 +1,52 @@
-"""Custom exception hierarchy for the summarizer application."""
+"""Custom exception hierarchy for the summarizer."""
 
 
 class SummarizerError(Exception):
     """Base exception for all summarizer errors."""
 
-    def __init__(self, message: str = "", *args):
-        super().__init__(message, *args)
-        self.message = message
+    def __init__(self, message: str, cause: Exception = None):
+        super().__init__(message)
+        self.cause = cause
 
     def __str__(self):
-        return self.message
+        base = super().__str__()
+        if self.cause:
+            return f"{base} (caused by: {type(self.cause).__name__}: {self.cause})"
+        return base
 
 
 class FetchError(SummarizerError):
-    """Raised when article fetching fails (network errors, HTTP errors, timeouts)."""
+    """Raised when an article cannot be fetched from a URL or file system."""
 
-    def __init__(self, message: str = "", url: str = "", status_code: int = None):
-        super().__init__(message)
+    def __init__(self, message: str, url: str = None, cause: Exception = None):
+        super().__init__(message, cause=cause)
         self.url = url
-        self.status_code = status_code
 
     def __str__(self):
-        parts = [self.message]
+        base = super().__str__()
         if self.url:
-            parts.append(f"URL: {self.url}")
-        if self.status_code is not None:
-            parts.append(f"Status: {self.status_code}")
-        return " | ".join(parts)
+            return f"{base} [url={self.url}]"
+        return base
 
 
 class ParseError(SummarizerError):
-    """Raised when article parsing or text extraction fails."""
+    """Raised when article content cannot be parsed or extracted."""
 
-    def __init__(self, message: str = "", source: str = ""):
-        super().__init__(message)
-        self.source = source
-
-    def __str__(self):
-        if self.source:
-            return f"{self.message} | Source: {self.source}"
-        return self.message
+    def __init__(self, message: str, cause: Exception = None):
+        super().__init__(message, cause=cause)
 
 
 class LLMError(SummarizerError):
-    """Raised when LLM API calls fail."""
+    """Raised when the LLM API call fails or returns an unexpected result."""
 
-    def __init__(self, message: str = "", model: str = ""):
-        super().__init__(message)
+    def __init__(self, message: str, model: str = None, cause: Exception = None):
+        super().__init__(message, cause=cause)
         self.model = model
-
-    def __str__(self):
-        if self.model:
-            return f"{self.message} | Model: {self.model}"
-        return self.message
 
 
 class ConfigError(SummarizerError):
-    """Raised when configuration is invalid or missing."""
-    pass
+    """Raised when configuration is missing or invalid."""
+
+    def __init__(self, message: str, key: str = None, cause: Exception = None):
+        super().__init__(message, cause=cause)
+        self.key = key

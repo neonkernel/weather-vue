@@ -1,122 +1,100 @@
-"""Local file reading for article ingestion."""
+"""Local file reading for .txt and .html files."""
 
+import logging
 import os
-from pathlib import Path
-from typing import Optional
-
-from bs4 import BeautifulSoup
+from typing import Tuple
 
 from src.summarizer.exceptions import FetchError, ParseError
-from src.summarizer.ingestion.extractor import extract_article, normalize_text
-from src.summarizer.models import Article, SourceType
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {".txt", ".html", ".htm"}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+DEFAULT_ENCODING = "utf-8"
+FALLBACK_ENCODINGS = ["latin-1", "cp1252", "iso-8859-1"]
 
 
-def read_file(file_path: str, encoding: str = "utf-8") -> Article:
+def read_file(path: str) -> Tuple[str, str]:
     """
-    Read a local file and return an Article.
-
-    Supports .txt and .html/.htm files.
+    Read a local .txt or .html file and return its content.
 
     Args:
-        file_path: Path to the local file.
-        encoding: File encoding (defaults to UTF-8).
+        path: Absolute or relative path to a .txt or .html file.
 
     Returns:
-        An Article dataclass with title, text, url (as file path), and word_count.
+        A tuple of (content: str, file_type: str) where file_type is "txt" or "html".
 
     Raises:
-        FetchError: If the file does not exist or cannot be read.
-        ParseError: If the file type is unsupported or content cannot be parsed.
+        FetchError: If the file does not exist, is not accessible, or the
+                    extension is unsupported.
+        ParseError: If the file cannot be decoded.
     """
-    path = Path(file_path)
+    # Resolve to an absolute path
+    abs_path = os.path.abspath(path)
 
-    # Validate file existence
-    if not path.exists():
+    # Check existence
+    if not os.path.exists(abs_path):
+        raise FetchError(f"File not found: '{abs_path}'")
+
+    # Check it's a regular file (not a directory or special file)
+    if not os.path.isfile(abs_path):
+        raise FetchError(f"Path is not a regular file: '{abs_path}'")
+
+    # Check extension
+    _, ext = os.path.splitext(abs_path)
+    ext = ext.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
         raise FetchError(
-            f"File not found: {file_path}",
-            url=file_path,
+            f"Unsupported file extension: '{ext}'. "
+            f"Supported extensions: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
 
-    if not path.is_file():
+    # Check file size
+    file_size = os.path.getsize(abs_path)
+    if file_size == 0:
+        raise FetchError(f"File is empty: '{abs_path}'")
+    if file_size > MAX_FILE_SIZE:
         raise FetchError(
-            f"Path is not a file: {file_path}",
-            url=file_path,
+            f"File too large: {file_size / (1024*1024):.1f} MB "
+            f"(max {MAX_FILE_SIZE // (1024*1024)} MB): '{abs_path}'"
         )
 
-    # Validate extension
-    extension = path.suffix.lower()
-    if extension not in SUPPORTED_EXTENSIONS:
-        raise ParseError(
-            f"Unsupported file type '{extension}'. Supported types: "
-            + ", ".join(sorted(SUPPORTED_EXTENSIONS)),
-            source=file_path,
-        )
+    logger.info("Reading file: %s (%d bytes)", abs_path, file_size)
 
-    # Read the file content
-    try:
-        with open(path, "r", encoding=encoding, errors="replace") as f:
-            content = f.read()
-    except PermissionError:
-        raise FetchError(
-            f"Permission denied reading file: {file_path}",
-            url=file_path,
-        )
-    except OSError as e:
-        raise FetchError(
-            f"OS error reading file '{file_path}': {e}",
-            url=file_path,
-        )
+    # Attempt to read with UTF-8, then fallback encodings
+    content = None
+    tried_encodings = [DEFAULT_ENCODING] + FALLBACK_ENCODINGS
 
-    if not content.strip():
-        raise ParseError(
-            f"File is empty: {file_path}",
-            source=file_path,
-        )
+    for encoding in tried_encodings:
+        try:
+            with open(abs_path, "r", encoding=encoding) as f:
+                content = f.read()
+            logger.debug("Successfully decoded '%s' with encoding '%s'.", abs_path, encoding)
+            break
+        except UnicodeDecodeError:
+            logger.debug("Failed to decode '%s' with encoding '%s'.", abs_path, encoding)
+            continue
+        except OSError as e:
+            raise FetchError(
+                f"Cannot read file '{abs_path}': {e}",
+                cause=e,
+            )
 
-    # Process based on file type
-    if extension == ".txt":
-        return _process_text_file(content, file_path)
-    elif extension in (".html", ".htm"):
-        return _process_html_file(content, file_path)
+    if content is None:
+        # Last resort: read with errors='replace'
+        try:
+            with open(abs_path, "r", encoding=DEFAULT_ENCODING, errors="replace") as f:
+                content = f.read()
+            logger.warning(
+                "File '%s' contained characters that could not be decoded; "
+                "replacement characters were inserted.",
+                abs_path,
+            )
+        except OSError as e:
+            raise ParseError(
+                f"Could not read or decode file '{abs_path}' with any supported encoding.",
+                cause=e,
+            )
 
-    raise ParseError(f"Unhandled file extension: {extension}", source=file_path)
-
-
-def _process_text_file(content: str, file_path: str) -> Article:
-    """Process a plain text file."""
-    text = normalize_text(content)
-
-    if not text or len(text.split()) < 5:
-        raise ParseError(
-            f"Text file contains insufficient content: {file_path}",
-            source=file_path,
-        )
-
-    # Use the filename (without extension) as the title
-    title = Path(file_path).stem.replace("_", " ").replace("-", " ").title()
-
-    return Article(
-        title=title,
-        text=text,
-        url=file_path,
-        word_count=len(text.split()),
-        source_type=SourceType.FILE,
-    )
-
-
-def _process_html_file(content: str, file_path: str) -> Article:
-    """Process a local HTML file."""
-    try:
-        article = extract_article(content, url=None)
-        article.url = file_path
-        article.source_type = SourceType.FILE
-        return article
-    except ParseError:
-        raise
-    except Exception as e:
-        raise ParseError(
-            f"Failed to parse HTML file '{file_path}': {e}",
-            source=file_path,
-        )
+    file_type = "html" if ext in {".html", ".htm"} else "txt"
+    return content, file_type

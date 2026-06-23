@@ -1,4 +1,4 @@
-"""Shared dataclasses for the summarizer application."""
+"""Shared dataclasses for the summarizer."""
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -14,22 +14,36 @@ class SourceType(str, Enum):
 @dataclass
 class Article:
     """Represents a fetched and parsed article."""
+
     title: str
     text: str
-    url: Optional[str] = None
-    word_count: int = 0
+    url: Optional[str]
+    word_count: int
     source_type: SourceType = SourceType.URL
 
-    def __post_init__(self):
-        if self.word_count == 0 and self.text:
-            self.word_count = len(self.text.split())
+    @classmethod
+    def from_text(cls, text: str, title: str = "", url: Optional[str] = None, source_type: SourceType = SourceType.URL) -> "Article":
+        word_count = len(text.split()) if text else 0
+        return cls(
+            title=title,
+            text=text,
+            url=url,
+            word_count=word_count,
+            source_type=source_type,
+        )
 
 
 @dataclass
 class Summary:
     """Represents a generated summary."""
+
     article: Article
     summary_text: str
-    model: str = ""
-    token_count: int = 0
+    model: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     bullet_points: list = field(default_factory=list)
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
