@@ -1,46 +1,63 @@
 <template>
   <div
-    class="flex items-start gap-4 bg-red-500/20 border border-red-400/40 backdrop-blur-sm rounded-2xl p-5 text-white shadow-lg max-w-xl mx-auto"
+    class="
+      flex flex-col sm:flex-row items-start sm:items-center gap-4
+      bg-red-500/15 border border-red-400/40 rounded-2xl
+      px-5 py-4 w-full max-w-lg mx-auto
+    "
     role="alert"
     aria-live="assertive"
   >
-    <!-- Error icon -->
-    <div class="flex-shrink-0 mt-0.5">
+    <!-- Icon -->
+    <div class="flex-shrink-0 text-red-400 mt-0.5" aria-hidden="true">
       <svg
-        class="w-6 h-6 text-red-300"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
         xmlns="http://www.w3.org/2000/svg"
+        class="h-6 w-6"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        stroke-width="2"
       >
         <path
           stroke-linecap="round"
           stroke-linejoin="round"
-          stroke-width="2"
-          d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+          d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
         />
       </svg>
     </div>
 
-    <!-- Message -->
+    <!-- Text -->
     <div class="flex-1 min-w-0">
-      <p class="font-semibold text-red-100 text-sm sm:text-base">{{ title }}</p>
-      <p class="text-red-200/90 text-sm mt-0.5 break-words">{{ message }}</p>
+      <p class="text-red-300 font-semibold text-sm">{{ title }}</p>
+      <p class="text-red-200/80 text-sm mt-0.5 break-words">{{ message }}</p>
     </div>
 
     <!-- Retry button -->
     <button
       v-if="showRetry"
       @click="emit('retry')"
-      class="flex-shrink-0 flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white/90 hover:text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+      class="
+        flex-shrink-0 flex items-center gap-1.5
+        text-sm font-medium text-red-300 hover:text-white
+        bg-red-400/20 hover:bg-red-400/40
+        px-3 py-1.5 rounded-lg transition-colors duration-200
+        focus:outline-none focus:ring-2 focus:ring-red-400/60
+      "
       aria-label="Retry"
     >
-      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        class="h-4 w-4"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        stroke-width="2"
+        aria-hidden="true"
+      >
         <path
           stroke-linecap="round"
           stroke-linejoin="round"
-          stroke-width="2"
-          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+          d="M4 4v5h.582M20 20v-5h-.581M5.635 19A9 9 0 1 0 4.582 9H4"
         />
       </svg>
       Retry
@@ -49,20 +66,17 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{
-  message: string;
-  title?: string;
-  showRetry?: boolean;
-}>();
-
-withDefaults(defineProps<{
-  message: string;
-  title?: string;
-  showRetry?: boolean;
-}>(), {
-  title: 'Something went wrong',
-  showRetry: true,
-});
+withDefaults(
+  defineProps<{
+    message: string;
+    title?: string;
+    showRetry?: boolean;
+  }>(),
+  {
+    title: 'Something went wrong',
+    showRetry: true,
+  }
+);
 
 const emit = defineEmits<{
   (e: 'retry'): void;

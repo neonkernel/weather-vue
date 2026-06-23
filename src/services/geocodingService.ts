@@ -1,8 +1,8 @@
 import type { GeoLocation } from '../types/weather';
 
-const GEOCODING_BASE_URL = 'https://geocoding-api.open-meteo.com/v1/search';
+const GEOCODING_BASE = 'https://geocoding-api.open-meteo.com/v1/search';
 
-export interface GeocodingResult {
+export interface GeocodeResult {
   id: number;
   name: string;
   latitude: number;
@@ -12,58 +12,55 @@ export interface GeocodingResult {
   admin1?: string;
 }
 
-export interface GeocodingResponse {
-  results?: GeocodingResult[];
-  error?: boolean;
-  reason?: string;
+export interface GeocodeResponse {
+  results?: GeocodeResult[];
+  generationtime_ms: number;
 }
 
 /**
- * Search for a city by name and return geocoding results.
+ * Fetch geocoding results for a city name.
+ * Returns up to `count` matches (default 5).
  */
-export async function searchCity(cityName: string): Promise<GeocodingResult[]> {
+export async function geocodeCity(cityName: string, count = 5): Promise<GeocodeResult[]> {
+  if (!cityName.trim()) throw new Error('City name must not be empty.');
+
   const params = new URLSearchParams({
     name: cityName.trim(),
-    count: '5',
+    count: String(count),
     language: 'en',
     format: 'json',
   });
 
-  const response = await fetch(`${GEOCODING_BASE_URL}?${params.toString()}`);
+  const response = await fetch(`${GEOCODING_BASE}?${params.toString()}`);
 
   if (!response.ok) {
-    throw new Error(`Geocoding API error: ${response.status} ${response.statusText}`);
+    throw new Error(`Geocoding request failed: ${response.status} ${response.statusText}`);
   }
 
-  const data: GeocodingResponse = await response.json();
+  const data: GeocodeResponse = await response.json();
 
-  if (data.error) {
-    throw new Error(data.reason ?? 'Geocoding API returned an error');
+  if (!data.results || data.results.length === 0) {
+    throw new Error(`No location found for "${cityName}". Please check the spelling and try again.`);
   }
 
-  return data.results ?? [];
+  return data.results;
 }
 
 /**
- * Get the best matching GeoLocation for a city name string.
+ * Resolve the first matching GeoLocation for a city name string.
  */
-export async function geocodeCity(cityName: string): Promise<GeoLocation> {
-  const results = await searchCity(cityName);
+export async function resolveCity(cityName: string): Promise<GeoLocation> {
+  const results = await geocodeCity(cityName, 1);
+  const first = results[0];
 
-  if (results.length === 0) {
-    throw new Error(`City not found: "${cityName}". Please check the spelling and try again.`);
-  }
-
-  const best = results[0];
-  const displayName = best.admin1
-    ? `${best.name}, ${best.admin1}, ${best.country}`
-    : `${best.name}, ${best.country}`;
+  const displayParts = [first.name];
+  if (first.admin1) displayParts.push(first.admin1);
+  displayParts.push(first.country);
 
   return {
-    lat: best.latitude,
-    lon: best.longitude,
-    displayName,
-    country: best.country,
-    countryCode: best.country_code,
+    lat: first.latitude,
+    lon: first.longitude,
+    displayName: displayParts.join(', '),
+    country: first.country,
   };
 }

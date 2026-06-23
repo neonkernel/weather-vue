@@ -1,10 +1,6 @@
 import { ref } from 'vue';
-import { geocodeCity } from '../services/geocodingService';
-import {
-  fetchWeatherData,
-  transformCurrentWeather,
-  transformForecast,
-} from '../services/weatherService';
+import { resolveCity } from '../services/geocodingService';
+import { fetchWeatherForLocation } from '../services/weatherService';
 import type { WeatherData } from '../types/weather';
 
 export function useWeatherApi() {
@@ -12,7 +8,11 @@ export function useWeatherApi() {
   const loading = ref(false);
   const error = ref<string | null>(null);
 
-  async function fetchByCity(cityName: string): Promise<void> {
+  /**
+   * Fetch weather by city name string.
+   * Handles geocoding → weather fetch in one call.
+   */
+  async function fetchByCity(cityName: string) {
     if (!cityName.trim()) {
       error.value = 'Please enter a city name.';
       return;
@@ -20,40 +20,23 @@ export function useWeatherApi() {
 
     loading.value = true;
     error.value = null;
-    data.value = null;
 
     try {
-      // Step 1: Geocode the city name to lat/lon
-      const location = await geocodeCity(cityName);
-
-      // Step 2: Fetch weather data for that location
-      const raw = await fetchWeatherData(location.lat, location.lon);
-
-      // Step 3: Transform and store
-      const current = transformCurrentWeather(raw);
-
-      // Inject UV index from daily data (first day = today)
-      if (raw.daily.uv_index_max && raw.daily.uv_index_max.length > 0) {
-        current.uvIndex = raw.daily.uv_index_max[0] ?? 0;
-      }
-
-      const forecast = transformForecast(raw);
-
-      data.value = {
-        location,
-        current,
-        forecast,
-        timezone: raw.timezone,
-        fetchedAt: new Date(),
-      };
+      const location = await resolveCity(cityName);
+      data.value = await fetchWeatherForLocation(location);
     } catch (err) {
       error.value =
         err instanceof Error
           ? err.message
           : 'An unexpected error occurred while fetching weather data.';
+      data.value = null;
     } finally {
       loading.value = false;
     }
+  }
+
+  function clearError() {
+    error.value = null;
   }
 
   function reset() {
@@ -62,5 +45,5 @@ export function useWeatherApi() {
     loading.value = false;
   }
 
-  return { data, loading, error, fetchByCity, reset };
+  return { data, loading, error, fetchByCity, clearError, reset };
 }

@@ -1,5 +1,5 @@
 import { ref } from 'vue';
-import { geocodeCity } from '../services/geocodingService';
+import { resolveCity } from '../services/geocodingService';
 import type { GeoLocation } from '../types/weather';
 
 export function useGeocoding() {
@@ -7,10 +7,10 @@ export function useGeocoding() {
   const loading = ref(false);
   const error = ref<string | null>(null);
 
-  async function resolveCity(cityName: string): Promise<GeoLocation | null> {
+  async function geocode(cityName: string) {
     if (!cityName.trim()) {
       error.value = 'Please enter a city name.';
-      return null;
+      return;
     }
 
     loading.value = true;
@@ -18,22 +18,13 @@ export function useGeocoding() {
     location.value = null;
 
     try {
-      const result = await geocodeCity(cityName);
-      location.value = result;
-      return result;
+      location.value = await resolveCity(cityName);
     } catch (err) {
-      error.value = err instanceof Error ? err.message : 'Failed to find the city.';
-      return null;
+      error.value = err instanceof Error ? err.message : 'Failed to find location.';
     } finally {
       loading.value = false;
     }
   }
 
-  function reset() {
-    location.value = null;
-    error.value = null;
-    loading.value = false;
-  }
-
-  return { location, loading, error, resolveCity, reset };
+  return { location, loading, error, geocode };
 }
