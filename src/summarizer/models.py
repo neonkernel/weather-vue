@@ -1,4 +1,4 @@
-"""Shared dataclasses for the summarizer pipeline."""
+"""Shared dataclasses for the summarizer package."""
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -18,7 +18,7 @@ class Article:
     text: str
     url: Optional[str] = None
     word_count: int = 0
-    source_type: SourceType = SourceType.TEXT
+    source_type: SourceType = SourceType.URL
 
     def __post_init__(self):
         if self.word_count == 0 and self.text:
@@ -31,11 +31,9 @@ class Summary:
     article: Article
     summary_text: str
     model: str = ""
-    word_count: int = 0
-    compression_ratio: float = 0.0
+    bullet_points: list = field(default_factory=list)
 
     def __post_init__(self):
-        if self.word_count == 0 and self.summary_text:
-            self.word_count = len(self.summary_text.split())
-        if self.compression_ratio == 0.0 and self.article.word_count > 0:
-            self.compression_ratio = self.word_count / self.article.word_count
+        if isinstance(self.bullet_points, list) and not self.bullet_points and self.summary_text:
+            # Auto-generate bullet points from summary if not provided
+            pass

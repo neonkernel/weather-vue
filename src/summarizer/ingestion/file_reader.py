@@ -1,107 +1,87 @@
-"""Local file reading for article ingestion."""
+"""Reads local .txt and .html files for article ingestion."""
 
-from __future__ import annotations
-
-import logging
 import os
 from typing import Tuple
 
 from src.summarizer.exceptions import FetchError, ParseError
 
-logger = logging.getLogger(__name__)
-
-_SUPPORTED_EXTENSIONS = {".txt", ".html", ".htm"}
-_DEFAULT_ENCODING = "utf-8"
-_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+SUPPORTED_EXTENSIONS = {".txt", ".html", ".htm"}
 
 
-def read_file(path: str, encoding: str = _DEFAULT_ENCODING) -> Tuple[str, str, str]:
-    """Read a local file and return its content.
+def read_file(file_path: str, encoding: str = "utf-8") -> Tuple[str, str, bool]:
+    """
+    Read a local file and return its content.
 
-    Supports .txt and .html/.htm files. For .html files, the raw HTML is
-    returned and should be passed to the extractor. For .txt files, the
-    content is returned as-is.
+    Supports .txt, .html, and .htm files.
 
     Args:
-        path: Absolute or relative path to the file.
-        encoding: File encoding (defaults to UTF-8).
+        file_path: Absolute or relative path to the file.
+        encoding: File encoding (default: utf-8).
 
     Returns:
-        A tuple of (title, content, file_uri) where:
-            - title is the filename without extension
-            - content is the raw file content string
-            - file_uri is a file:// URI string
+        A tuple of (content, title, is_html) where:
+        - content is the raw file content as a string
+        - title is derived from the filename (without extension)
+        - is_html indicates whether the content is HTML
 
     Raises:
-        FetchError: If the file does not exist, is not readable, is too large,
-            or has an unsupported extension.
-        ParseError: If the file content cannot be decoded.
+        FetchError: If the file does not exist or cannot be read.
+        ParseError: If the file extension is unsupported.
     """
-    path = os.path.abspath(path)
-    file_uri = f"file://{path}"
-    title = os.path.splitext(os.path.basename(path))[0]
+    # Normalize and resolve path
+    file_path = os.path.normpath(file_path)
 
-    # Check existence
-    if not os.path.exists(path):
+    if not os.path.exists(file_path):
         raise FetchError(
-            f"File not found: {path}",
-            source=file_uri,
+            f"File not found: '{file_path}'",
+            url=file_path,
         )
 
-    # Check it's a regular file (not a directory)
-    if not os.path.isfile(path):
+    if not os.path.isfile(file_path):
         raise FetchError(
-            f"Path is not a regular file: {path}",
-            source=file_uri,
+            f"Path is not a file: '{file_path}'",
+            url=file_path,
         )
 
-    # Check extension
-    ext = os.path.splitext(path)[1].lower()
-    if ext not in _SUPPORTED_EXTENSIONS:
-        raise FetchError(
-            f"Unsupported file extension '{ext}'. Supported: "
-            f"{', '.join(sorted(_SUPPORTED_EXTENSIONS))}",
-            source=file_uri,
+    _, ext = os.path.splitext(file_path)
+    ext = ext.lower()
+
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise ParseError(
+            f"Unsupported file extension '{ext}'. Supported types: "
+            f"{', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+            source=file_path,
         )
 
-    # Check file size
-    file_size = os.path.getsize(path)
-    if file_size > _MAX_FILE_SIZE:
-        raise FetchError(
-            f"File too large ({file_size} bytes, max {_MAX_FILE_SIZE}): {path}",
-            source=file_uri,
-        )
+    # Derive title from filename
+    basename = os.path.basename(file_path)
+    title = os.path.splitext(basename)[0].replace("_", " ").replace("-", " ").title()
 
-    # Read content
-    logger.info("Reading file: %s (%d bytes)", path, file_size)
+    # Read file content with UTF-8 default, fallback to latin-1
     try:
-        with open(path, "r", encoding=encoding, errors="strict") as fh:
-            content = fh.read()
-    except UnicodeDecodeError as exc:
-        # Retry with latin-1 as a fallback (lossless)
-        logger.warning(
-            "UTF-8 decode failed for %s; retrying with latin-1: %s", path, exc
-        )
+        with open(file_path, "r", encoding=encoding, errors="strict") as f:
+            content = f.read()
+    except UnicodeDecodeError:
+        # Fallback to latin-1, which can decode any byte sequence
         try:
-            with open(path, "r", encoding="latin-1", errors="replace") as fh:
-                content = fh.read()
-        except Exception as retry_exc:
-            raise ParseError(
-                f"Could not decode file with UTF-8 or latin-1: {path}",
-                source=file_uri,
-                cause=retry_exc,
-            ) from retry_exc
+            with open(file_path, "r", encoding="latin-1", errors="replace") as f:
+                content = f.read()
+        except OSError as exc:
+            raise FetchError(
+                f"Could not read file '{file_path}': {exc}",
+                url=file_path,
+            )
     except OSError as exc:
         raise FetchError(
-            f"Could not read file: {path}",
-            source=file_uri,
-            cause=exc,
-        ) from exc
+            f"Could not read file '{file_path}': {exc}",
+            url=file_path,
+        )
 
     if not content.strip():
         raise ParseError(
-            f"File is empty or contains only whitespace: {path}",
-            source=file_uri,
+            f"File is empty or contains only whitespace: '{file_path}'",
+            source=file_path,
         )
 
-    return title, content, file_uri
+    is_html = ext in {".html", ".htm"}
+    return content, title, is_html

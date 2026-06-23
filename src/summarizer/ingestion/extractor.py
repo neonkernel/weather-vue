@@ -1,235 +1,64 @@
-"""HTML-to-text extraction using BeautifulSoup4 with a trafilatura fallback."""
+"""HTML-to-text extraction using BeautifulSoup4 and trafilatura."""
 
-from __future__ import annotations
-
-import logging
 import re
 import unicodedata
 from typing import Optional, Tuple
 
-from bs4 import BeautifulSoup, Tag
-
 from src.summarizer.exceptions import ParseError
+from src.summarizer.models import Article, SourceType
 
-logger = logging.getLogger(__name__)
+try:
+    import trafilatura
+    HAS_TRAFILATURA = True
+except ImportError:
+    HAS_TRAFILATURA = False
 
-# Tags whose content should be removed entirely
-_NOISE_TAGS = {
-    "script", "style", "noscript", "iframe", "nav", "header", "footer",
-    "aside", "form", "button", "input", "select", "textarea", "svg",
-    "figure", "figcaption", "picture", "video", "audio", "canvas",
-    "advertisement", "ads",
+try:
+    from bs4 import BeautifulSoup, Tag
+    HAS_BS4 = True
+except ImportError:
+    HAS_BS4 = False
+
+
+# Tags that are purely structural/non-content
+NOISE_TAGS = {
+    "script", "style", "noscript", "iframe", "nav", "footer", "header",
+    "aside", "form", "button", "input", "select", "textarea", "label",
+    "svg", "canvas", "figure", "figcaption", "advertisement", "ads",
 }
 
-# CSS class/id substrings that indicate noise
-_NOISE_PATTERNS = re.compile(
-    r"(nav|navbar|navigation|menu|sidebar|footer|header|cookie|banner|"
-    r"advertisement|ad-|ads|popup|modal|subscribe|newsletter|social|share|"
-    r"comment|related|recommend|promo|widget|breadcrumb)",
-    re.IGNORECASE,
-)
-
-
-def extract_text_from_html(html: str, url: str = "") -> Tuple[str, str]:
-    """Extract the main article text and title from HTML content.
-
-    Uses a fallback chain:
-    1. trafilatura (high-quality extraction)
-    2. Heuristic BeautifulSoup extractor (article/main/largest-div)
-
-    Args:
-        html: Raw HTML string.
-        url: Source URL (used by trafilatura for context).
-
-    Returns:
-        A tuple of (title, text).
-
-    Raises:
-        ParseError: If no meaningful text could be extracted.
-    """
-    if not html or not html.strip():
-        raise ParseError("Empty HTML content provided", source=url)
-
-    title = _extract_title(html)
-
-    # Try trafilatura first (best quality)
-    text = _try_trafilatura(html, url)
-
-    # Fall back to BeautifulSoup heuristics
-    if not text or len(text.strip()) < 100:
-        logger.debug("trafilatura failed or insufficient; using BS4 heuristics")
-        text = _extract_with_bs4(html, url)
-
-    if not text or len(text.strip()) < 50:
-        raise ParseError(
-            f"Could not extract meaningful text from HTML (source: {url or 'unknown'})",
-            source=url,
-        )
-
-    text = normalize_text(text)
-    return title, text
-
-
-def _try_trafilatura(html: str, url: str = "") -> Optional[str]:
-    """Attempt extraction with trafilatura."""
-    try:
-        import trafilatura
-
-        result = trafilatura.extract(
-            html,
-            url=url or None,
-            include_comments=False,
-            include_tables=True,
-            no_fallback=False,
-            favor_precision=False,
-            favor_recall=True,
-        )
-        return result
-    except ImportError:
-        logger.debug("trafilatura not installed; skipping")
-        return None
-    except Exception as exc:
-        logger.debug("trafilatura extraction failed: %s", exc)
-        return None
-
-
-def _extract_with_bs4(html: str, url: str = "") -> str:
-    """Heuristic extraction using BeautifulSoup4."""
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-    except Exception as exc:
-        raise ParseError(f"Failed to parse HTML: {exc}", source=url, cause=exc) from exc
-
-    # Remove noise elements
-    _remove_noise(soup)
-
-    # Try semantic containers in priority order
-    for selector in ["article", "main", '[role="main"]', ".article-body",
-                     ".post-content", ".entry-content", ".story-body", "#content"]:
-        candidates = soup.select(selector)
-        if candidates:
-            text = _get_text(candidates[0])
-            if len(text.split()) > 50:
-                return text
-
-    # Fall back to largest <div> by text density
-    best = _find_largest_text_block(soup)
-    if best:
-        return _get_text(best)
-
-    # Last resort: body text
-    body = soup.find("body")
-    if body:
-        return _get_text(body)
-
-    return soup.get_text(separator="\n")
-
-
-def _remove_noise(soup: BeautifulSoup) -> None:
-    """Remove known-noise tags and elements matching noise patterns."""
-    for tag in soup.find_all(True):
-        if not isinstance(tag, Tag):
-            continue
-
-        # Remove by tag name
-        if tag.name in _NOISE_TAGS:
-            tag.decompose()
-            continue
-
-        # Remove by class or id containing noise keywords
-        classes = " ".join(tag.get("class", []))
-        tag_id = tag.get("id", "")
-        if _NOISE_PATTERNS.search(classes) or _NOISE_PATTERNS.search(tag_id):
-            tag.decompose()
-
-
-def _find_largest_text_block(soup: BeautifulSoup) -> Optional[Tag]:
-    """Find the <div> with the highest text density (text-to-tag ratio)."""
-    best_tag = None
-    best_score = 0
-
-    for div in soup.find_all("div"):
-        text = div.get_text(separator=" ", strip=True)
-        word_count = len(text.split())
-        tag_count = len(div.find_all(True)) + 1  # avoid division by zero
-
-        # Text density heuristic
-        score = word_count / tag_count
-
-        if score > best_score and word_count > 100:
-            best_score = score
-            best_tag = div
-
-    return best_tag
-
-
-def _get_text(tag: Tag) -> str:
-    """Extract clean text from a tag with sensible whitespace."""
-    return tag.get_text(separator="\n", strip=True)
-
-
-def _extract_title(html: str) -> str:
-    """Extract the page title from HTML."""
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-
-        # Try Open Graph title first
-        og_title = soup.find("meta", property="og:title")
-        if og_title and og_title.get("content"):
-            return og_title["content"].strip()
-
-        # Try Twitter title
-        tw_title = soup.find("meta", attrs={"name": "twitter:title"})
-        if tw_title and tw_title.get("content"):
-            return tw_title["content"].strip()
-
-        # Try h1
-        h1 = soup.find("h1")
-        if h1:
-            return h1.get_text(strip=True)
-
-        # Fall back to <title> tag
-        title_tag = soup.find("title")
-        if title_tag:
-            return title_tag.get_text(strip=True)
-
-    except Exception:
-        pass
-
-    return "Untitled"
+# Zero-width and invisible characters to strip
+ZERO_WIDTH_CHARS = re.compile(r"[\u200b\u200c\u200d\u200e\u200f\ufeff\u00ad]")
 
 
 def normalize_text(text: str) -> str:
-    """Normalize extracted text by cleaning whitespace and special characters.
-
-    - Removes zero-width and other invisible Unicode characters
-    - Collapses multiple spaces to single space
-    - Collapses 3+ consecutive blank lines to 2
-    - Strips leading/trailing whitespace from each line
-    - Normalizes Unicode to NFC form
+    """
+    Normalize extracted text:
+    - Remove zero-width/invisible characters
+    - Normalize Unicode to NFC
+    - Collapse multiple spaces/tabs into a single space
+    - Strip excessive blank lines (max 2 consecutive)
+    - Strip leading/trailing whitespace
     """
     if not text:
         return ""
 
-    # Normalize Unicode form
+    # Remove zero-width characters
+    text = ZERO_WIDTH_CHARS.sub("", text)
+
+    # Normalize Unicode
     text = unicodedata.normalize("NFC", text)
 
-    # Remove zero-width and invisible characters
-    invisible_chars = re.compile(
-        r"[\u200b\u200c\u200d\u200e\u200f\ufeff\u00ad\u00a0\u2028\u2029]"
-    )
-    text = invisible_chars.sub(" ", text)
+    # Normalize line endings
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-    # Replace non-breaking spaces with regular spaces
-    text = text.replace("\xa0", " ")
-
-    # Strip each line and collapse multiple internal spaces
+    # Collapse multiple spaces/tabs within lines
     lines = []
-    for line in text.splitlines():
-        line = re.sub(r" {2,}", " ", line).strip()
+    for line in text.split("\n"):
+        line = re.sub(r"[ \t]+", " ", line).strip()
         lines.append(line)
 
-    # Collapse 3+ consecutive blank lines into 2
+    # Collapse excessive blank lines (allow max 2 consecutive blank lines)
     result_lines = []
     blank_count = 0
     for line in lines:
@@ -241,7 +70,195 @@ def normalize_text(text: str) -> str:
             blank_count = 0
             result_lines.append(line)
 
-    # Strip leading/trailing blank lines from the result
-    text = "\n".join(result_lines).strip()
+    return "\n".join(result_lines).strip()
 
-    return text
+
+def _extract_title_bs4(soup: "BeautifulSoup") -> str:
+    """Extract the page title using BeautifulSoup."""
+    # Try og:title first
+    og_title = soup.find("meta", property="og:title")
+    if og_title and og_title.get("content"):
+        return og_title["content"].strip()
+
+    # Try <title> tag
+    title_tag = soup.find("title")
+    if title_tag:
+        return title_tag.get_text(strip=True)
+
+    # Try h1
+    h1 = soup.find("h1")
+    if h1:
+        return h1.get_text(strip=True)
+
+    return ""
+
+
+def _remove_noise_tags(soup: "BeautifulSoup") -> None:
+    """Remove noise/boilerplate tags from the soup in-place."""
+    for tag_name in NOISE_TAGS:
+        for tag in soup.find_all(tag_name):
+            tag.decompose()
+
+    # Remove hidden elements
+    for tag in soup.find_all(style=re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden")):
+        tag.decompose()
+
+    # Remove common ad/nav class patterns
+    noise_patterns = re.compile(
+        r"\b(ad|ads|advertisement|nav|navigation|sidebar|footer|header|"
+        r"cookie|popup|modal|banner|promo|social|share|comment|related|"
+        r"newsletter|subscribe)\b",
+        re.IGNORECASE,
+    )
+    for tag in soup.find_all(True):
+        classes = " ".join(tag.get("class", []))
+        tag_id = tag.get("id", "")
+        if noise_patterns.search(classes) or noise_patterns.search(tag_id):
+            tag.decompose()
+
+
+def _text_density(tag: "Tag") -> float:
+    """Calculate text density of a tag (text length / total HTML length)."""
+    html_len = len(str(tag))
+    if html_len == 0:
+        return 0.0
+    text_len = len(tag.get_text())
+    return text_len / html_len
+
+
+def _heuristic_extract_bs4(soup: "BeautifulSoup") -> str:
+    """
+    Heuristic extraction using BeautifulSoup:
+    1. Try <article> tag
+    2. Try <main> tag
+    3. Try largest <div> by text density
+    4. Fall back to <body>
+    """
+    _remove_noise_tags(soup)
+
+    # 1. Try <article>
+    article_tag = soup.find("article")
+    if article_tag:
+        return article_tag.get_text(separator="\n")
+
+    # 2. Try <main>
+    main_tag = soup.find("main")
+    if main_tag:
+        return main_tag.get_text(separator="\n")
+
+    # 3. Try the div with the highest text density and sufficient content
+    best_div = None
+    best_score = 0.0
+    for div in soup.find_all("div"):
+        text = div.get_text()
+        word_count = len(text.split())
+        if word_count < 50:  # Skip tiny divs
+            continue
+        density = _text_density(div)
+        score = density * word_count
+        if score > best_score:
+            best_score = score
+            best_div = div
+
+    if best_div is not None:
+        return best_div.get_text(separator="\n")
+
+    # 4. Fall back to entire body
+    body = soup.find("body")
+    if body:
+        return body.get_text(separator="\n")
+
+    return soup.get_text(separator="\n")
+
+
+def extract_article(html_content: str, url: Optional[str] = None) -> Article:
+    """
+    Extract a clean article from HTML content.
+
+    Uses trafilatura as the primary extractor (best quality), with a
+    BeautifulSoup4 heuristic fallback.
+
+    Args:
+        html_content: Raw HTML string.
+        url: Optional URL hint for trafilatura's extraction heuristics.
+
+    Returns:
+        An Article dataclass with title, text, and word_count populated.
+
+    Raises:
+        ParseError: If extraction completely fails.
+    """
+    if not html_content or not html_content.strip():
+        raise ParseError("Empty HTML content provided.", source=url or "")
+
+    title = ""
+    text = ""
+
+    # --- Primary: trafilatura ---
+    if HAS_TRAFILATURA:
+        try:
+            extracted = trafilatura.extract(
+                html_content,
+                url=url,
+                include_comments=False,
+                include_tables=True,
+                no_fallback=False,
+                favor_precision=False,
+                favor_recall=True,
+            )
+            if extracted and len(extracted.strip()) > 100:
+                text = extracted
+
+            # Extract metadata separately
+            metadata = trafilatura.extract_metadata(html_content, default_url=url)
+            if metadata:
+                title = metadata.title or ""
+        except Exception:
+            # trafilatura failed, will fall through to BeautifulSoup
+            pass
+
+    # --- Fallback: BeautifulSoup heuristics ---
+    if not text and HAS_BS4:
+        try:
+            soup = BeautifulSoup(html_content, "html.parser")
+            if not title:
+                title = _extract_title_bs4(soup)
+            text = _heuristic_extract_bs4(soup)
+        except Exception as exc:
+            raise ParseError(
+                f"BeautifulSoup extraction failed: {exc}",
+                source=url or "",
+            )
+
+    if not text:
+        # Last resort: try to get title at least from BS4
+        if HAS_BS4:
+            try:
+                soup = BeautifulSoup(html_content, "html.parser")
+                if not title:
+                    title = _extract_title_bs4(soup)
+            except Exception:
+                pass
+        raise ParseError(
+            "Could not extract article text from HTML content.",
+            source=url or "",
+        )
+
+    # Normalize extracted text
+    text = normalize_text(text)
+
+    if not text:
+        raise ParseError(
+            "Extracted text is empty after normalization.",
+            source=url or "",
+        )
+
+    word_count = len(text.split())
+
+    return Article(
+        title=normalize_text(title),
+        text=text,
+        url=url,
+        word_count=word_count,
+        source_type=SourceType.URL if url else SourceType.FILE,
+    )
