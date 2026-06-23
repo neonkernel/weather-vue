@@ -1,60 +1,31 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
-name = "web-summarizer"
+name = "summarizer"
 version = "0.1.0"
-description = "A CLI tool that summarizes web pages and local files using AI"
+description = "AI-powered article summarizer"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
-authors = [
-    { name = "Your Name", email = "you@example.com" }
-]
-keywords = ["summarizer", "cli", "openai", "nlp"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Utilities",
-]
-
 dependencies = [
-    "click>=8.1",
-    "python-dotenv>=1.0",
-    "requests>=2.31",
-    "beautifulsoup4>=4.12",
-    "openai>=1.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "trafilatura>=1.6.0",
+    "lxml>=4.9.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4",
-    "pytest-cov>=4.1",
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
 ]
-
-[project.scripts]
-summarize = "summarizer.cli:main"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-dir]
-"" = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
 
-[tool.coverage.run]
-source = ["summarizer"]
-branch = true
-
-[tool.coverage.report]
-show_missing = true
+[tool.hatch.build.targets.wheel]
+packages = ["src/summarizer"]
