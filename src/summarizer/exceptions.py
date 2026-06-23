@@ -4,37 +4,55 @@
 class SummarizerError(Exception):
     """Base exception for all summarizer errors."""
 
-    def __init__(self, message: str, *args):
-        self.message = message
+    def __init__(self, message: str = "", *args):
         super().__init__(message, *args)
+        self.message = message
 
     def __str__(self):
         return self.message
 
 
 class FetchError(SummarizerError):
-    """Raised when an article cannot be fetched from a URL or source."""
+    """Raised when article fetching fails (network errors, HTTP errors, timeouts)."""
 
-    def __init__(self, message: str, url: str = "", status_code: int = 0):
+    def __init__(self, message: str = "", url: str = "", status_code: int = None):
+        super().__init__(message)
         self.url = url
         self.status_code = status_code
-        super().__init__(message)
+
+    def __str__(self):
+        parts = [self.message]
+        if self.url:
+            parts.append(f"URL: {self.url}")
+        if self.status_code is not None:
+            parts.append(f"Status: {self.status_code}")
+        return " | ".join(parts)
 
 
 class ParseError(SummarizerError):
-    """Raised when article content cannot be parsed or extracted."""
+    """Raised when article parsing or text extraction fails."""
 
-    def __init__(self, message: str, source: str = ""):
-        self.source = source
+    def __init__(self, message: str = "", source: str = ""):
         super().__init__(message)
+        self.source = source
+
+    def __str__(self):
+        if self.source:
+            return f"{self.message} | Source: {self.source}"
+        return self.message
 
 
 class LLMError(SummarizerError):
-    """Raised when an LLM API call fails."""
+    """Raised when LLM API calls fail."""
 
-    def __init__(self, message: str, model: str = ""):
-        self.model = model
+    def __init__(self, message: str = "", model: str = ""):
         super().__init__(message)
+        self.model = model
+
+    def __str__(self):
+        if self.model:
+            return f"{self.message} | Model: {self.model}"
+        return self.message
 
 
 class ConfigError(SummarizerError):

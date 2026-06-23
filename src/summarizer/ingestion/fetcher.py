@@ -2,6 +2,7 @@
 
 import requests
 from typing import Tuple
+
 from src.summarizer.exceptions import FetchError
 
 # Realistic browser User-Agent to avoid bot detection
@@ -12,35 +13,29 @@ DEFAULT_USER_AGENT = (
 )
 
 DEFAULT_TIMEOUT = 15  # seconds
-MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10 MB
-
-VALID_CONTENT_TYPES = (
-    "text/html",
-    "application/xhtml+xml",
-    "text/xml",
-    "application/xml",
-)
+MAX_CONTENT_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 def fetch_url(url: str, timeout: int = DEFAULT_TIMEOUT) -> Tuple[str, str]:
     """
-    Fetch HTML content from a URL.
+    Fetch the HTML content of a URL.
 
     Args:
-        url: The URL to fetch
-        timeout: Request timeout in seconds
+        url: The URL to fetch.
+        timeout: Request timeout in seconds.
 
     Returns:
-        Tuple of (html_content, final_url) where final_url accounts for redirects
+        A tuple of (html_content, final_url) where final_url accounts for redirects.
 
     Raises:
-        FetchError: On network errors, HTTP errors, or invalid content type
+        FetchError: On network errors, timeouts, HTTP errors, or unsupported content types.
     """
     headers = {
         "User-Agent": DEFAULT_USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
         "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
     }
@@ -53,76 +48,64 @@ def fetch_url(url: str, timeout: int = DEFAULT_TIMEOUT) -> Tuple[str, str]:
             allow_redirects=True,
             stream=True,
         )
-    except requests.exceptions.ConnectionError as e:
-        raise FetchError(
-            f"Could not connect to '{url}': {e}",
-            url=url,
-        ) from e
     except requests.exceptions.Timeout:
         raise FetchError(
-            f"Request timed out after {timeout}s while fetching '{url}'",
+            f"Request timed out after {timeout} seconds.",
             url=url,
-        ) from None
+        )
+    except requests.exceptions.ConnectionError as e:
+        raise FetchError(
+            f"Connection error while fetching URL: {e}",
+            url=url,
+        )
     except requests.exceptions.TooManyRedirects:
         raise FetchError(
-            f"Too many redirects while fetching '{url}'",
+            "Too many redirects while following URL.",
             url=url,
-        ) from None
+        )
     except requests.exceptions.RequestException as e:
         raise FetchError(
-            f"Failed to fetch '{url}': {e}",
+            f"Unexpected request error: {e}",
             url=url,
-        ) from e
+        )
 
-    # Check HTTP status code
+    # Check HTTP status
     if not response.ok:
         raise FetchError(
-            f"HTTP {response.status_code} error fetching '{url}'",
+            f"HTTP error {response.status_code}: {response.reason}",
             url=url,
             status_code=response.status_code,
         )
 
-    # Validate content type
+    # Validate content type — we only handle HTML/text
     content_type = response.headers.get("Content-Type", "").lower()
-    if not any(ct in content_type for ct in VALID_CONTENT_TYPES):
-        # Allow unknown content types with a warning — some servers misconfigure headers
-        # but still serve valid HTML. Only reject clearly binary content.
-        binary_types = ("application/pdf", "application/zip", "image/", "audio/", "video/")
-        if any(bt in content_type for bt in binary_types):
-            raise FetchError(
-                f"Unsupported content type '{content_type}' for URL '{url}'",
-                url=url,
-            )
-
-    # Check content length if provided
-    content_length = response.headers.get("Content-Length")
-    if content_length and int(content_length) > MAX_CONTENT_LENGTH:
+    if content_type and not any(
+        ct in content_type for ct in ("text/html", "application/xhtml", "text/plain")
+    ):
         raise FetchError(
-            f"Content too large ({content_length} bytes) for URL '{url}'",
+            f"Unsupported content type: {content_type}. Expected HTML.",
             url=url,
         )
 
-    # Read content with size limit
-    chunks = []
-    total_size = 0
-    for chunk in response.iter_content(chunk_size=8192, decode_unicode=False):
-        total_size += len(chunk)
-        if total_size > MAX_CONTENT_LENGTH:
-            raise FetchError(
-                f"Content exceeded {MAX_CONTENT_LENGTH} bytes for URL '{url}'",
-                url=url,
-            )
-        chunks.append(chunk)
-
-    raw_bytes = b"".join(chunks)
+    # Read content with size cap
+    try:
+        content = response.content[:MAX_CONTENT_SIZE]
+    except Exception as e:
+        raise FetchError(f"Failed to read response content: {e}", url=url)
 
     # Detect encoding
     encoding = response.encoding or "utf-8"
-    try:
-        html_content = raw_bytes.decode(encoding, errors="replace")
-    except (LookupError, UnicodeDecodeError):
-        html_content = raw_bytes.decode("utf-8", errors="replace")
+    if encoding.lower() in ("iso-8859-1", "latin-1"):
+        # requests often defaults to latin-1; try utf-8 first
+        try:
+            html_text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            html_text = content.decode(encoding, errors="replace")
+    else:
+        try:
+            html_text = content.decode(encoding, errors="replace")
+        except (LookupError, UnicodeDecodeError):
+            html_text = content.decode("utf-8", errors="replace")
 
-    final_url = response.url  # accounts for redirects
-
-    return html_content, final_url
+    final_url = response.url  # May differ from input due to redirects
+    return html_text, final_url

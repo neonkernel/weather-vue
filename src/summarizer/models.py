@@ -1,8 +1,8 @@
 """Shared dataclasses for the summarizer application."""
 
 from dataclasses import dataclass, field
-from typing import Optional
 from enum import Enum
+from typing import Optional
 
 
 class SourceType(str, Enum):
@@ -18,7 +18,7 @@ class Article:
     text: str
     url: Optional[str] = None
     word_count: int = 0
-    source_type: SourceType = SourceType.TEXT
+    source_type: SourceType = SourceType.URL
 
     def __post_init__(self):
         if self.word_count == 0 and self.text:
@@ -27,14 +27,9 @@ class Article:
 
 @dataclass
 class Summary:
-    """Represents a generated summary of an article."""
+    """Represents a generated summary."""
     article: Article
     summary_text: str
     model: str = ""
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
+    token_count: int = 0
     bullet_points: list = field(default_factory=list)
-
-    @property
-    def total_tokens(self) -> int:
-        return self.prompt_tokens + self.completion_tokens
