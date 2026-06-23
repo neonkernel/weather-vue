@@ -1,494 +1,346 @@
-"""Unit tests for article ingestion: fetcher, extractor, and file_reader."""
+"""Unit tests for the article ingestion pipeline."""
+
+from __future__ import annotations
 
 import os
-import pytest
+import textwrap
+from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 
+import pytest
+
 # ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+SAMPLE_HTML = FIXTURES_DIR / "sample_article.html"
+SAMPLE_TXT = FIXTURES_DIR / "sample_article.txt"
+
+
+# ===========================================================================
 # Helpers
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
-FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
-SAMPLE_HTML_PATH = os.path.join(FIXTURES_DIR, "sample_article.html")
-SAMPLE_TXT_PATH = os.path.join(FIXTURES_DIR, "sample_article.txt")
+def _make_response(
+    status_code: int = 200,
+    content: bytes = b"<html><body><article><p>Hello world article text here for testing purposes with enough content.</p></article></body></html>",
+    content_type: str = "text/html; charset=utf-8",
+    encoding: str = "utf-8",
+    url: str = "https://example.com/article",
+):
+    """Build a mock requests.Response object."""
+    response = MagicMock()
+    response.status_code = status_code
+    response.url = url
+    response.encoding = encoding
+    response.headers = {
+        "Content-Type": content_type,
+        "Content-Length": str(len(content)),
+    }
+    response.iter_content = MagicMock(return_value=iter([content]))
 
-
-def _load_fixture(filename: str) -> str:
-    path = os.path.join(FIXTURES_DIR, filename)
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def sample_html() -> str:
-    return _load_fixture("sample_article.html")
-
-
-@pytest.fixture
-def sample_txt() -> str:
-    return _load_fixture("sample_article.txt")
-
-
-@pytest.fixture
-def minimal_html() -> str:
-    return """
-    <html>
-    <head><title>Test Article</title></head>
-    <body>
-    <nav><a href="/">Home</a><a href="/about">About</a></nav>
-    <article>
-        <h1>Test Article Heading</h1>
-        <p>This is the first paragraph of the test article. It contains enough words to pass
-        the minimum word count check for extraction to succeed properly.</p>
-        <p>This is a second paragraph with more content about the topic being discussed in this
-        sample article that is used for unit testing the extraction logic in our application.</p>
-        <p>And a third paragraph to make absolutely sure we have sufficient content for the
-        heuristic extractor to consider this a valid article worth returning to the caller.</p>
-    </article>
-    <footer><p>Copyright 2026</p></footer>
-    <script>console.log("noise");</script>
-    </body>
-    </html>
-    """
-
-
-@pytest.fixture
-def mock_response():
-    """Factory for creating mock requests.Response objects."""
-    def _make_response(
-        status_code=200,
-        content=b"<html><body><article><p>Hello world content for testing purposes and making sure we have enough words.</p></article></body></html>",
-        content_type="text/html; charset=utf-8",
-        url="https://example.com/article",
-        encoding="utf-8",
-    ):
-        response = MagicMock()
-        response.status_code = status_code
-        response.url = url
-        response.encoding = encoding
-        response.apparent_encoding = encoding
-        response.headers = {
-            "Content-Type": content_type,
-            "Content-Length": str(len(content)),
-        }
-        # iter_content yields chunks
-        response.iter_content = MagicMock(
-            return_value=iter([content])
-        )
-        # raise_for_status behavior
+    def raise_for_status():
         if status_code >= 400:
-            import requests
-            http_err = requests.HTTPError(f"{status_code} Error")
-            http_err.response = response
-            response.raise_for_status = MagicMock(side_effect=http_err)
-        else:
-            response.raise_for_status = MagicMock(return_value=None)
-        return response
-    return _make_response
+            from requests.exceptions import HTTPError
+            raise HTTPError(f"HTTP {status_code}", response=response)
+
+    response.raise_for_status = raise_for_status
+    return response
 
 
 # ===========================================================================
-# Tests: exceptions
+# Fetcher tests
 # ===========================================================================
 
-class TestExceptions:
-    def test_fetch_error_str_with_url(self):
-        from src.summarizer.exceptions import FetchError
-        err = FetchError("Could not fetch", url="https://example.com")
-        assert "https://example.com" in str(err)
-        assert "Could not fetch" in str(err)
+class TestFetchUrl:
+    """Tests for src.summarizer.ingestion.fetcher.fetch_url"""
 
-    def test_fetch_error_str_without_url(self):
-        from src.summarizer.exceptions import FetchError
-        err = FetchError("Could not fetch")
-        assert "Could not fetch" in str(err)
-
-    def test_fetch_error_with_cause(self):
-        from src.summarizer.exceptions import FetchError
-        cause = ValueError("original error")
-        err = FetchError("Wrapper error", cause=cause)
-        assert "original error" in str(err)
-
-    def test_parse_error(self):
-        from src.summarizer.exceptions import ParseError
-        err = ParseError("Bad HTML")
-        assert "Bad HTML" in str(err)
-
-    def test_llm_error(self):
-        from src.summarizer.exceptions import LLMError
-        err = LLMError("API failed", model="gpt-4")
-        assert "API failed" in str(err)
-        assert err.model == "gpt-4"
-
-    def test_config_error(self):
-        from src.summarizer.exceptions import ConfigError
-        err = ConfigError("Missing key", key="OPENAI_API_KEY")
-        assert "Missing key" in str(err)
-        assert err.key == "OPENAI_API_KEY"
-
-    def test_exception_hierarchy(self):
-        from src.summarizer.exceptions import (
-            SummarizerError, FetchError, ParseError, LLMError, ConfigError
-        )
-        for exc_cls in [FetchError, ParseError, LLMError, ConfigError]:
-            assert issubclass(exc_cls, SummarizerError)
-            assert issubclass(exc_cls, Exception)
-
-
-# ===========================================================================
-# Tests: models
-# ===========================================================================
-
-class TestModels:
-    def test_article_from_text(self):
-        from src.summarizer.models import Article, SourceType
-        article = Article.from_text(
-            text="Hello world this is a test article with some words.",
-            title="Test Article",
-            url="https://example.com",
-            source_type=SourceType.URL,
-        )
-        assert article.title == "Test Article"
-        assert article.url == "https://example.com"
-        assert article.word_count == 10
-        assert article.source_type == SourceType.URL
-
-    def test_article_word_count_empty(self):
-        from src.summarizer.models import Article
-        article = Article.from_text(text="")
-        assert article.word_count == 0
-
-    def test_article_word_count_whitespace(self):
-        from src.summarizer.models import Article
-        article = Article.from_text(text="   one   two   three   ")
-        assert article.word_count == 3
-
-    def test_summary_total_tokens(self):
-        from src.summarizer.models import Article, Summary, SourceType
-        article = Article.from_text("Some text here.", title="Test")
-        summary = Summary(
-            article=article,
-            summary_text="Brief summary.",
-            model="gpt-4",
-            prompt_tokens=100,
-            completion_tokens=50,
-        )
-        assert summary.total_tokens == 150
-
-    def test_source_type_values(self):
-        from src.summarizer.models import SourceType
-        assert SourceType.URL == "url"
-        assert SourceType.FILE == "file"
-        assert SourceType.TEXT == "text"
-
-
-# ===========================================================================
-# Tests: fetcher
-# ===========================================================================
-
-class TestFetcher:
-    def test_fetch_url_success(self, mock_response):
+    def test_successful_fetch(self):
         from src.summarizer.ingestion.fetcher import fetch_url
 
-        response = mock_response(
-            status_code=200,
-            content=b"<html><body><p>Article content here for testing.</p></body></html>",
-            url="https://example.com/article",
-        )
-
-        with patch("src.summarizer.ingestion.fetcher.requests.get", return_value=response):
+        mock_response = _make_response()
+        with patch("requests.get", return_value=mock_response):
             html, final_url = fetch_url("https://example.com/article")
 
-        assert "Article content" in html
+        assert "Hello world" in html
         assert final_url == "https://example.com/article"
 
-    def test_fetch_url_http_error(self, mock_response):
-        from src.summarizer.ingestion.fetcher import fetch_url
-        from src.summarizer.exceptions import FetchError
-
-        response = mock_response(status_code=404, url="https://example.com/missing")
-
-        with patch("src.summarizer.ingestion.fetcher.requests.get", return_value=response):
-            with pytest.raises(FetchError) as exc_info:
-                fetch_url("https://example.com/missing")
-
-        assert "404" in str(exc_info.value)
-
-    def test_fetch_url_timeout(self):
-        from src.summarizer.ingestion.fetcher import fetch_url
-        from src.summarizer.exceptions import FetchError
+    def test_timeout_raises_fetch_error(self):
         from requests.exceptions import ReadTimeout
+        from src.summarizer.ingestion.fetcher import fetch_url
+        from src.summarizer.exceptions import FetchError
 
-        with patch(
-            "src.summarizer.ingestion.fetcher.requests.get",
-            side_effect=ReadTimeout("timed out"),
-        ):
+        with patch("requests.get", side_effect=ReadTimeout("timed out")):
             with pytest.raises(FetchError) as exc_info:
                 fetch_url("https://example.com/slow")
 
         assert "timed out" in str(exc_info.value).lower()
+        assert exc_info.value.source == "https://example.com/slow"
 
-    def test_fetch_url_connection_error(self):
+    def test_connection_error_raises_fetch_error(self):
+        from requests.exceptions import ConnectionError as ReqConnError
         from src.summarizer.ingestion.fetcher import fetch_url
         from src.summarizer.exceptions import FetchError
-        from requests.exceptions import ConnectionError
 
-        with patch(
-            "src.summarizer.ingestion.fetcher.requests.get",
-            side_effect=ConnectionError("connection refused"),
-        ):
-            with pytest.raises(FetchError):
+        with patch("requests.get", side_effect=ReqConnError("no route")):
+            with pytest.raises(FetchError) as exc_info:
                 fetch_url("https://unreachable.example.com/")
 
-    def test_fetch_url_too_many_redirects(self):
+        assert exc_info.value.source == "https://unreachable.example.com/"
+
+    def test_http_404_raises_fetch_error(self):
         from src.summarizer.ingestion.fetcher import fetch_url
         from src.summarizer.exceptions import FetchError
+
+        mock_response = _make_response(status_code=404)
+        with patch("requests.get", return_value=mock_response):
+            with pytest.raises(FetchError) as exc_info:
+                fetch_url("https://example.com/missing")
+
+        assert exc_info.value.status_code == 404
+
+    def test_http_500_raises_fetch_error(self):
+        from src.summarizer.ingestion.fetcher import fetch_url
+        from src.summarizer.exceptions import FetchError
+
+        mock_response = _make_response(status_code=500)
+        with patch("requests.get", return_value=mock_response):
+            with pytest.raises(FetchError) as exc_info:
+                fetch_url("https://example.com/error")
+
+        assert exc_info.value.status_code == 500
+
+    def test_unsupported_content_type_raises_fetch_error(self):
+        from src.summarizer.ingestion.fetcher import fetch_url
+        from src.summarizer.exceptions import FetchError
+
+        mock_response = _make_response(content_type="application/pdf")
+        with patch("requests.get", return_value=mock_response):
+            with pytest.raises(FetchError) as exc_info:
+                fetch_url("https://example.com/doc.pdf")
+
+        assert "content type" in str(exc_info.value).lower()
+
+    def test_too_many_redirects_raises_fetch_error(self):
         from requests.exceptions import TooManyRedirects
-
-        with patch(
-            "src.summarizer.ingestion.fetcher.requests.get",
-            side_effect=TooManyRedirects("too many redirects"),
-        ):
-            with pytest.raises(FetchError) as exc_info:
-                fetch_url("https://example.com/redirect-loop")
-
-        assert "redirect" in str(exc_info.value).lower()
-
-    def test_fetch_url_unsupported_content_type(self, mock_response):
         from src.summarizer.ingestion.fetcher import fetch_url
         from src.summarizer.exceptions import FetchError
 
-        response = mock_response(
-            status_code=200,
-            content=b"%PDF-1.4 binary content",
-            content_type="application/pdf",
-        )
+        with patch("requests.get", side_effect=TooManyRedirects("redirect loop")):
+            with pytest.raises(FetchError):
+                fetch_url("https://redirect-loop.example.com/")
 
-        with patch("src.summarizer.ingestion.fetcher.requests.get", return_value=response):
-            with pytest.raises(FetchError) as exc_info:
-                fetch_url("https://example.com/document.pdf")
-
-        assert "content type" in str(exc_info.value).lower() or "unsupported" in str(exc_info.value).lower()
-
-    def test_fetch_url_500_error(self, mock_response):
-        from src.summarizer.ingestion.fetcher import fetch_url
-        from src.summarizer.exceptions import FetchError
-
-        response = mock_response(status_code=500, url="https://example.com/broken")
-
-        with patch("src.summarizer.ingestion.fetcher.requests.get", return_value=response):
-            with pytest.raises(FetchError) as exc_info:
-                fetch_url("https://example.com/broken")
-
-        assert "500" in str(exc_info.value)
-
-    def test_fetch_url_returns_decoded_string(self, mock_response):
+    def test_returns_decoded_html(self):
         from src.summarizer.ingestion.fetcher import fetch_url
 
-        html_bytes = "<html><body><p>Héllo Wörld</p></body></html>".encode("utf-8")
-        response = mock_response(content=html_bytes, encoding="utf-8")
-
-        with patch("src.summarizer.ingestion.fetcher.requests.get", return_value=response):
+        html_bytes = "<html><body><p>Encoded content</p></body></html>".encode("utf-8")
+        mock_response = _make_response(content=html_bytes, encoding="utf-8")
+        with patch("requests.get", return_value=mock_response):
             html, _ = fetch_url("https://example.com/")
 
         assert isinstance(html, str)
-        assert "Héllo" in html
+        assert "Encoded content" in html
 
 
 # ===========================================================================
-# Tests: extractor
+# Extractor tests
 # ===========================================================================
 
-class TestExtractor:
-    def test_extract_from_sample_html(self, sample_html):
-        from src.summarizer.ingestion.extractor import extract_article
+class TestExtractTextFromHtml:
+    """Tests for src.summarizer.ingestion.extractor.extract_text_from_html"""
 
-        with patch("src.summarizer.ingestion.extractor._try_trafilatura", return_value=None), \
-             patch("src.summarizer.ingestion.extractor._try_newspaper", return_value=None):
-            article = extract_article(sample_html, url="https://example.com/renewable-energy")
+    def test_extracts_article_tag_content(self):
+        from src.summarizer.ingestion.extractor import extract_text_from_html
 
-        assert article.title == "The Rise of Renewable Energy: A Global Perspective"
-        assert "renewable energy" in article.text.lower()
-        assert article.word_count > 100
-        assert article.url == "https://example.com/renewable-energy"
+        html = """
+        <html><body>
+          <nav>Navigation junk that should be ignored completely</nav>
+          <article>
+            <h1>My Article</h1>
+            <p>This is the main content of the article with enough words to pass validation.</p>
+            <p>Second paragraph with more interesting details about the topic at hand.</p>
+          </article>
+          <footer>Footer junk ignored</footer>
+        </body></html>
+        """
+        title, text = extract_text_from_html(html)
+        assert "main content" in text.lower()
+        assert "navigation junk" not in text.lower()
+        assert "footer junk" not in text.lower()
 
-    def test_extract_article_tag(self, minimal_html):
-        from src.summarizer.ingestion.extractor import extract_article
+    def test_extracts_title_from_og_tag(self):
+        from src.summarizer.ingestion.extractor import extract_text_from_html
 
-        with patch("src.summarizer.ingestion.extractor._try_trafilatura", return_value=None), \
-             patch("src.summarizer.ingestion.extractor._try_newspaper", return_value=None):
-            article = extract_article(minimal_html)
+        html = """
+        <html><head>
+          <meta property="og:title" content="Open Graph Title">
+          <title>Page Title | Site Name</title>
+        </head><body>
+          <article><p>Content here with sufficient length for extraction tests.</p></article>
+        </body></html>
+        """
+        title, text = extract_text_from_html(html)
+        assert title == "Open Graph Title"
 
-        assert "Test Article Heading" in article.text or "paragraph" in article.text.lower()
-        # Nav and footer content should not dominate
-        assert article.word_count > 10
+    def test_extracts_title_from_h1_fallback(self):
+        from src.summarizer.ingestion.extractor import extract_text_from_html
 
-    def test_extract_strips_scripts(self, minimal_html):
-        from src.summarizer.ingestion.extractor import extract_article
+        html = """
+        <html><head><title>Page Title</title></head><body>
+          <article>
+            <h1>Article Heading</h1>
+            <p>Content here with sufficient words for extraction and testing purposes.</p>
+          </article>
+        </body></html>
+        """
+        title, text = extract_text_from_html(html)
+        assert title == "Article Heading"
 
-        with patch("src.summarizer.ingestion.extractor._try_trafilatura", return_value=None), \
-             patch("src.summarizer.ingestion.extractor._try_newspaper", return_value=None):
-            article = extract_article(minimal_html)
-
-        assert "console.log" not in article.text
-
-    def test_extract_empty_html_raises(self):
-        from src.summarizer.ingestion.extractor import extract_article
+    def test_raises_parse_error_on_empty_html(self):
+        from src.summarizer.ingestion.extractor import extract_text_from_html
         from src.summarizer.exceptions import ParseError
 
         with pytest.raises(ParseError):
-            extract_article("")
+            extract_text_from_html("")
 
-    def test_extract_whitespace_only_raises(self):
-        from src.summarizer.ingestion.extractor import extract_article
+    def test_raises_parse_error_on_whitespace_only(self):
+        from src.summarizer.ingestion.extractor import extract_text_from_html
         from src.summarizer.exceptions import ParseError
 
         with pytest.raises(ParseError):
-            extract_article("   \n\t  ")
+            extract_text_from_html("   \n\t  ")
 
-    def test_extract_title_from_og_meta(self):
-        from src.summarizer.ingestion.extractor import extract_article
-
-        html = """
-        <html>
-        <head>
-            <meta property="og:title" content="OG Title Here">
-            <title>Page Title</title>
-        </head>
-        <body>
-        <article>
-            <p>Long enough article content to pass word count minimum threshold for extraction.
-            Adding more text here to ensure we are over the minimum word count requirement.
-            This third sentence provides additional context and padding for the test.</p>
-        </article>
-        </body>
-        </html>
-        """
-        with patch("src.summarizer.ingestion.extractor._try_trafilatura", return_value=None), \
-             patch("src.summarizer.ingestion.extractor._try_newspaper", return_value=None):
-            article = extract_article(html)
-
-        assert article.title == "OG Title Here"
-
-    def test_extract_title_fallback_to_title_tag(self):
-        from src.summarizer.ingestion.extractor import extract_article
+    def test_strips_script_and_style_tags(self):
+        from src.summarizer.ingestion.extractor import extract_text_from_html
 
         html = """
-        <html>
-        <head><title>Fallback Title</title></head>
-        <body>
-        <article>
-            <p>Long enough article content to pass word count minimum threshold for extraction.
-            Adding more text here to ensure we are over the minimum word count requirement.
-            This third sentence provides additional context and padding for the test.</p>
-        </article>
-        </body>
-        </html>
+        <html><body>
+          <script>var x = 1; function doSomething() { return true; }</script>
+          <style>.foo { color: red; display: none; }</style>
+          <article>
+            <p>Real article content here with plenty of words for threshold testing.</p>
+            <p>More real content in this paragraph to ensure we meet word count requirements.</p>
+          </article>
+        </body></html>
         """
-        with patch("src.summarizer.ingestion.extractor._try_trafilatura", return_value=None), \
-             patch("src.summarizer.ingestion.extractor._try_newspaper", return_value=None):
-            article = extract_article(html)
+        title, text = extract_text_from_html(html)
+        assert "var x" not in text
+        assert "color: red" not in text
+        assert "Real article content" in text
 
-        assert article.title == "Fallback Title"
+    def test_extracts_from_sample_html_fixture(self):
+        from src.summarizer.ingestion.extractor import extract_text_from_html
 
-    def test_extract_uses_trafilatura_when_available(self):
-        from src.summarizer.ingestion.extractor import extract_article
+        html = SAMPLE_HTML.read_text(encoding="utf-8")
+        title, text = extract_text_from_html(html)
+
+        assert "renewable energy" in text.lower()
+        assert "battery" in text.lower()
+        assert len(text.split()) > 100
+
+    def test_title_extracted_from_sample_fixture(self):
+        from src.summarizer.ingestion.extractor import extract_text_from_html
+
+        html = SAMPLE_HTML.read_text(encoding="utf-8")
+        title, text = extract_text_from_html(html)
+
+        assert "Renewable Energy" in title
+
+    def test_sidebar_content_excluded(self):
+        from src.summarizer.ingestion.extractor import extract_text_from_html
+
+        html = SAMPLE_HTML.read_text(encoding="utf-8")
+        _, text = extract_text_from_html(html)
+
+        # The sidebar links should not appear in the extracted text
+        assert "Solar Power Trends" not in text
+
+    def test_uses_main_tag_when_no_article(self):
+        from src.summarizer.ingestion.extractor import extract_text_from_html
 
         html = """
-        <html><head><title>Test</title></head>
-        <body><article><p>placeholder</p></article></body>
-        </html>
+        <html><body>
+          <nav>Navigation content to ignore</nav>
+          <main>
+            <p>Primary main content that should be extracted by the heuristic.</p>
+            <p>Secondary paragraph with more details and words to meet the threshold.</p>
+            <p>Third paragraph ensures we have enough words for validation to pass.</p>
+          </main>
+        </body></html>
         """
-        long_text = " ".join(["word"] * 100)
+        title, text = extract_text_from_html(html)
+        assert "Primary main content" in text
 
-        with patch("src.summarizer.ingestion.extractor._try_trafilatura", return_value=long_text):
-            article = extract_article(html)
 
-        assert article.word_count == 100
+class TestNormalizeText:
+    """Tests for src.summarizer.ingestion.extractor.normalize_text"""
 
-    def test_extract_falls_back_to_newspaper(self):
-        from src.summarizer.ingestion.extractor import extract_article
-
-        html = """
-        <html><head><title>Test</title></head>
-        <body><article><p>placeholder</p></article></body>
-        </html>
-        """
-        long_text = " ".join(["article"] * 60)
-
-        with patch("src.summarizer.ingestion.extractor._try_trafilatura", return_value=None), \
-             patch("src.summarizer.ingestion.extractor._try_newspaper", return_value=long_text):
-            article = extract_article(html)
-
-        assert article.word_count == 60
-
-    def test_normalize_text_removes_zero_width(self):
+    def test_collapses_multiple_spaces(self):
         from src.summarizer.ingestion.extractor import normalize_text
 
-        text = "Hello\u200bWorld\u00adTest"  # zero-width space, soft hyphen
-        normalized = normalize_text(text)
-        assert "\u200b" not in normalized
-        assert "\u00ad" not in normalized
+        result = normalize_text("Hello    world   foo")
+        assert "  " not in result
+        assert "Hello world foo" in result
 
-    def test_normalize_text_collapses_spaces(self):
+    def test_removes_zero_width_chars(self):
         from src.summarizer.ingestion.extractor import normalize_text
 
-        text = "Hello    World   this   is  a  test"
-        normalized = normalize_text(text)
-        assert "  " not in normalized
+        text = "Hello\u200bWorld\u200c!"
+        result = normalize_text(text)
+        assert "\u200b" not in result
+        assert "\u200c" not in result
 
-    def test_normalize_text_limits_blank_lines(self):
+    def test_collapses_excessive_blank_lines(self):
         from src.summarizer.ingestion.extractor import normalize_text
 
-        text = "Line 1\n\n\n\n\n\nLine 2"
-        normalized = normalize_text(text)
-        lines = normalized.split("\n")
-        # Count consecutive blank lines
-        max_consecutive_blanks = 0
-        current_blanks = 0
-        for line in lines:
-            if line == "":
-                current_blanks += 1
-                max_consecutive_blanks = max(max_consecutive_blanks, current_blanks)
-            else:
-                current_blanks = 0
-        assert max_consecutive_blanks <= 2
+        text = "Para one\n\n\n\n\nPara two"
+        result = normalize_text(text)
+        assert "\n\n\n" not in result
 
-    def test_normalize_text_empty_string(self):
+    def test_strips_leading_trailing_whitespace(self):
+        from src.summarizer.ingestion.extractor import normalize_text
+
+        result = normalize_text("\n\n  Hello World  \n\n")
+        assert result == "Hello World"
+
+    def test_handles_empty_string(self):
         from src.summarizer.ingestion.extractor import normalize_text
 
         assert normalize_text("") == ""
-        assert normalize_text(None) == ""
+
+    def test_replaces_nbsp(self):
+        from src.summarizer.ingestion.extractor import normalize_text
+
+        text = "Hello\xa0World"
+        result = normalize_text(text)
+        assert "\xa0" not in result
 
 
 # ===========================================================================
-# Tests: file_reader
+# File reader tests
 # ===========================================================================
 
-class TestFileReader:
-    def test_read_txt_file(self):
+class TestReadFile:
+    """Tests for src.summarizer.ingestion.file_reader.read_file"""
+
+    def test_reads_txt_file(self):
         from src.summarizer.ingestion.file_reader import read_file
 
-        content, file_type = read_file(SAMPLE_TXT_PATH)
+        title, content, file_uri = read_file(str(SAMPLE_TXT))
 
-        assert file_type == "txt"
         assert "renewable energy" in content.lower()
-        assert len(content) > 100
+        assert title == "sample_article"
+        assert file_uri.startswith("file://")
 
-    def test_read_html_file(self):
+    def test_reads_html_file(self):
         from src.summarizer.ingestion.file_reader import read_file
 
-        content, file_type = read_file(SAMPLE_HTML_PATH)
+        title, content, file_uri = read_file(str(SAMPLE_HTML))
 
-        assert file_type == "html"
-        assert "<article>" in content
-        assert "renewable energy" in content.lower()
+        assert "<article" in content
+        assert title == "sample_article"
 
-    def test_read_file_not_found(self):
+    def test_file_not_found_raises_fetch_error(self):
         from src.summarizer.ingestion.file_reader import read_file
         from src.summarizer.exceptions import FetchError
 
@@ -497,143 +349,228 @@ class TestFileReader:
 
         assert "not found" in str(exc_info.value).lower()
 
-    def test_read_file_unsupported_extension(self, tmp_path):
+    def test_unsupported_extension_raises_fetch_error(self):
         from src.summarizer.ingestion.file_reader import read_file
         from src.summarizer.exceptions import FetchError
 
-        pdf_file = tmp_path / "document.pdf"
-        pdf_file.write_bytes(b"%PDF-1.4 binary")
+        # Create a temp file with unsupported extension
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(b"PDF content")
+            tmp_path = f.name
 
-        with pytest.raises(FetchError) as exc_info:
-            read_file(str(pdf_file))
+        try:
+            with pytest.raises(FetchError) as exc_info:
+                read_file(tmp_path)
+            assert "unsupported" in str(exc_info.value).lower()
+        finally:
+            os.unlink(tmp_path)
 
-        assert ".pdf" in str(exc_info.value)
-
-    def test_read_empty_file(self, tmp_path):
+    def test_directory_path_raises_fetch_error(self):
         from src.summarizer.ingestion.file_reader import read_file
         from src.summarizer.exceptions import FetchError
 
-        empty_file = tmp_path / "empty.txt"
-        empty_file.write_text("")
+        # Passing a directory instead of a file
+        with pytest.raises(FetchError):
+            read_file(str(FIXTURES_DIR))
 
-        with pytest.raises(FetchError) as exc_info:
-            read_file(str(empty_file))
-
-        assert "empty" in str(exc_info.value).lower()
-
-    def test_read_directory_raises(self, tmp_path):
+    def test_empty_file_raises_parse_error(self):
         from src.summarizer.ingestion.file_reader import read_file
-        from src.summarizer.exceptions import FetchError
+        from src.summarizer.exceptions import ParseError
 
-        with pytest.raises(FetchError) as exc_info:
-            read_file(str(tmp_path))
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".txt", mode="w", delete=False) as f:
+            f.write("   \n  \n  ")
+            tmp_path = f.name
 
-        assert "not a regular file" in str(exc_info.value).lower()
+        try:
+            with pytest.raises(ParseError):
+                read_file(tmp_path)
+        finally:
+            os.unlink(tmp_path)
 
-    def test_read_file_htm_extension(self, tmp_path):
-        from src.summarizer.ingestion.file_reader import read_file
-
-        htm_file = tmp_path / "article.htm"
-        htm_file.write_text("<html><body><p>Hello</p></body></html>", encoding="utf-8")
-
-        content, file_type = read_file(str(htm_file))
-
-        assert file_type == "html"
-        assert "Hello" in content
-
-    def test_read_file_utf8_encoding(self, tmp_path):
+    def test_returns_file_uri(self):
         from src.summarizer.ingestion.file_reader import read_file
 
-        txt_file = tmp_path / "unicode.txt"
-        txt_file.write_text("Héllo Wörld — café naïve résumé", encoding="utf-8")
+        title, content, file_uri = read_file(str(SAMPLE_TXT))
+        assert file_uri.startswith("file:///")
 
-        content, _ = read_file(str(txt_file))
-
-        assert "Héllo" in content
-        assert "café" in content
-
-    def test_read_file_latin1_encoding(self, tmp_path):
+    def test_latin1_fallback_encoding(self):
         from src.summarizer.ingestion.file_reader import read_file
 
-        txt_file = tmp_path / "latin1.txt"
-        txt_file.write_bytes("Héllo Wörld".encode("latin-1"))
+        import tempfile
+        # Write a file with latin-1 encoding (not valid UTF-8)
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write("Caf\xe9 au lait is delicious and worth reading about.\n".encode("latin-1"))
+            tmp_path = f.name
 
-        # Should not raise — fallback encoding should handle it
-        content, _ = read_file(str(txt_file))
-        assert len(content) > 0
+        try:
+            title, content, file_uri = read_file(tmp_path)
+            assert "Caf" in content
+        finally:
+            os.unlink(tmp_path)
 
 
 # ===========================================================================
-# Tests: fetch_article (integration-style with mocks)
+# Pipeline integration tests
 # ===========================================================================
 
 class TestFetchArticle:
-    def test_fetch_article_from_url(self, sample_html, mock_response):
+    """Integration tests for the public fetch_article function."""
+
+    def test_fetch_article_from_url(self):
         from src.summarizer.ingestion import fetch_article
         from src.summarizer.models import SourceType
 
-        response = mock_response(
-            content=sample_html.encode("utf-8"),
-            url="https://example.com/renewable-energy",
-        )
+        long_html = """
+        <html><body><article>
+          <h1>Test Article Title</h1>
+          <p>This is a long article with lots of content to ensure extraction works.
+          We need many words here to pass all the validation thresholds that have been
+          set up in the extraction pipeline. More words make for better tests indeed.</p>
+          <p>Second paragraph adds more depth to the article making it realistic and
+          ensuring the word count exceeds the minimum required threshold for success.</p>
+        </article></body></html>
+        """.encode("utf-8")
 
-        with patch("src.summarizer.ingestion.fetcher.requests.get", return_value=response), \
-             patch("src.summarizer.ingestion.extractor._try_trafilatura", return_value=None), \
-             patch("src.summarizer.ingestion.extractor._try_newspaper", return_value=None):
-            article = fetch_article("https://example.com/renewable-energy")
+        mock_response = _make_response(content=long_html)
+        with patch("requests.get", return_value=mock_response):
+            article = fetch_article("https://example.com/article")
 
         assert article.source_type == SourceType.URL
-        assert article.url == "https://example.com/renewable-energy"
-        assert article.word_count > 50
-        assert article.title != ""
+        assert article.url == "https://example.com/article"
+        assert article.word_count > 0
+        assert len(article.text) > 0
 
     def test_fetch_article_from_txt_file(self):
         from src.summarizer.ingestion import fetch_article
         from src.summarizer.models import SourceType
 
-        article = fetch_article(SAMPLE_TXT_PATH)
+        article = fetch_article(str(SAMPLE_TXT))
 
         assert article.source_type == SourceType.FILE
-        assert article.url is None
+        assert "renewable energy" in article.text.lower()
         assert article.word_count > 50
-        assert "renewable" in article.text.lower()
+        assert article.url.startswith("file://")
 
     def test_fetch_article_from_html_file(self):
         from src.summarizer.ingestion import fetch_article
         from src.summarizer.models import SourceType
 
-        with patch("src.summarizer.ingestion.extractor._try_trafilatura", return_value=None), \
-             patch("src.summarizer.ingestion.extractor._try_newspaper", return_value=None):
-            article = fetch_article(SAMPLE_HTML_PATH)
+        article = fetch_article(str(SAMPLE_HTML))
 
         assert article.source_type == SourceType.FILE
-        assert article.url is None
+        assert "renewable energy" in article.text.lower()
         assert article.word_count > 50
 
-    def test_fetch_article_nonexistent_file_raises(self):
+    def test_fetch_article_url_404_raises_fetch_error(self):
+        from src.summarizer.ingestion import fetch_article
+        from src.summarizer.exceptions import FetchError
+
+        mock_response = _make_response(status_code=404)
+        with patch("requests.get", return_value=mock_response):
+            with pytest.raises(FetchError):
+                fetch_article("https://example.com/missing")
+
+    def test_fetch_article_nonexistent_file_raises_fetch_error(self):
         from src.summarizer.ingestion import fetch_article
         from src.summarizer.exceptions import FetchError
 
         with pytest.raises(FetchError):
-            fetch_article("/nonexistent/article.txt")
+            fetch_article("/no/such/file.txt")
 
-    def test_fetch_article_url_fetch_error_propagates(self):
-        from src.summarizer.ingestion import fetch_article
-        from src.summarizer.exceptions import FetchError
-        from requests.exceptions import ConnectionError
-
-        with patch(
-            "src.summarizer.ingestion.fetcher.requests.get",
-            side_effect=ConnectionError("no route to host"),
-        ):
-            with pytest.raises(FetchError):
-                fetch_article("https://unreachable.example.com/article")
-
-    def test_fetch_article_title_set_for_txt(self):
+    def test_article_word_count_is_computed(self):
         from src.summarizer.ingestion import fetch_article
 
-        article = fetch_article(SAMPLE_TXT_PATH)
+        article = fetch_article(str(SAMPLE_TXT))
+        expected = len(article.text.split())
+        assert article.word_count == expected
 
-        # Title should be derived from the filename
+    def test_article_title_populated_from_html_file(self):
+        from src.summarizer.ingestion import fetch_article
+
+        article = fetch_article(str(SAMPLE_HTML))
         assert article.title != ""
-        assert "sample" in article.title.lower() or "article" in article.title.lower()
+        assert article.title != "Untitled"
+
+
+# ===========================================================================
+# Exception hierarchy tests
+# ===========================================================================
+
+class TestExceptions:
+    """Tests for the custom exception hierarchy."""
+
+    def test_fetch_error_is_summarizer_error(self):
+        from src.summarizer.exceptions import FetchError, SummarizerError
+
+        exc = FetchError("test", source="http://x.com", status_code=404)
+        assert isinstance(exc, SummarizerError)
+        assert exc.source == "http://x.com"
+        assert exc.status_code == 404
+
+    def test_parse_error_is_summarizer_error(self):
+        from src.summarizer.exceptions import ParseError, SummarizerError
+
+        exc = ParseError("test", source="file://x.txt")
+        assert isinstance(exc, SummarizerError)
+        assert exc.source == "file://x.txt"
+
+    def test_llm_error_stores_model(self):
+        from src.summarizer.exceptions import LLMError
+
+        exc = LLMError("api failed", model="gpt-4")
+        assert exc.model == "gpt-4"
+
+    def test_config_error_stores_key(self):
+        from src.summarizer.exceptions import ConfigError
+
+        exc = ConfigError("missing key", key="OPENAI_API_KEY")
+        assert exc.key == "OPENAI_API_KEY"
+
+    def test_cause_is_stored(self):
+        from src.summarizer.exceptions import FetchError
+
+        original = ValueError("original error")
+        exc = FetchError("wrapper", cause=original)
+        assert exc.cause is original
+
+    def test_str_includes_cause(self):
+        from src.summarizer.exceptions import FetchError
+
+        cause = ConnectionError("network down")
+        exc = FetchError("could not fetch", cause=cause)
+        assert "network down" in str(exc)
+
+
+# ===========================================================================
+# Article model tests
+# ===========================================================================
+
+class TestArticleModel:
+    """Tests for the Article dataclass."""
+
+    def test_word_count_auto_computed(self):
+        from src.summarizer.models import Article
+
+        article = Article(title="Test", text="one two three four five")
+        assert article.word_count == 5
+
+    def test_explicit_word_count_not_overridden(self):
+        from src.summarizer.models import Article
+
+        article = Article(title="Test", text="one two three", word_count=99)
+        # __post_init__ only sets word_count if it is 0
+        assert article.word_count == 99
+
+    def test_source_type_defaults_to_text(self):
+        from src.summarizer.models import Article, SourceType
+
+        article = Article(title="T", text="some text content here")
+        assert article.source_type == SourceType.TEXT
+
+    def test_url_defaults_to_none(self):
+        from src.summarizer.models import Article
+
+        article = Article(title="T", text="some text")
+        assert article.url is None

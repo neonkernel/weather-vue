@@ -1,4 +1,4 @@
-"""Shared dataclasses for the summarizer."""
+"""Shared dataclasses for the summarizer pipeline."""
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -14,36 +14,28 @@ class SourceType(str, Enum):
 @dataclass
 class Article:
     """Represents a fetched and parsed article."""
-
     title: str
     text: str
-    url: Optional[str]
-    word_count: int
-    source_type: SourceType = SourceType.URL
+    url: Optional[str] = None
+    word_count: int = 0
+    source_type: SourceType = SourceType.TEXT
 
-    @classmethod
-    def from_text(cls, text: str, title: str = "", url: Optional[str] = None, source_type: SourceType = SourceType.URL) -> "Article":
-        word_count = len(text.split()) if text else 0
-        return cls(
-            title=title,
-            text=text,
-            url=url,
-            word_count=word_count,
-            source_type=source_type,
-        )
+    def __post_init__(self):
+        if self.word_count == 0 and self.text:
+            self.word_count = len(self.text.split())
 
 
 @dataclass
 class Summary:
-    """Represents a generated summary."""
-
+    """Represents a generated summary of an article."""
     article: Article
     summary_text: str
-    model: str
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    bullet_points: list = field(default_factory=list)
+    model: str = ""
+    word_count: int = 0
+    compression_ratio: float = 0.0
 
-    @property
-    def total_tokens(self) -> int:
-        return self.prompt_tokens + self.completion_tokens
+    def __post_init__(self):
+        if self.word_count == 0 and self.summary_text:
+            self.word_count = len(self.summary_text.split())
+        if self.compression_ratio == 0.0 and self.article.word_count > 0:
+            self.compression_ratio = self.word_count / self.article.word_count
