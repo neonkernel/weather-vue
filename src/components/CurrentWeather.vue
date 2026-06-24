@@ -1,108 +1,57 @@
 <template>
-  <div
-    class="
-      relative overflow-hidden rounded-3xl
-      bg-gradient-to-br from-sky-500/30 to-indigo-600/30
-      backdrop-blur-md border border-white/10
-      p-6 sm:p-8
-    "
-  >
-    <!-- Background decoration -->
-    <div
-      class="absolute -top-8 -right-8 text-9xl opacity-10 select-none pointer-events-none"
-      aria-hidden="true"
-    >
-      {{ weather.weatherEmoji }}
-    </div>
-
-    <!-- Location -->
-    <div class="flex items-center gap-2 mb-4">
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        class="h-4 w-4 text-sky-300 flex-shrink-0"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
-        stroke-width="2"
-        aria-hidden="true"
-      >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"
-        />
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"
-        />
-      </svg>
-      <h2 class="text-sky-200 font-medium text-sm tracking-wide">
-        {{ locationName }}
-      </h2>
-    </div>
-
-    <!-- Main temperature row -->
-    <div class="flex items-end gap-4 mb-6">
+  <div class="rounded-2xl bg-white/5 border border-white/10 p-6 backdrop-blur-sm">
+    <!-- City & Time -->
+    <div class="flex items-start justify-between mb-6">
       <div>
-        <div class="flex items-start leading-none">
-          <span class="text-7xl sm:text-8xl font-thin text-white">{{ weather.temperature }}</span>
-          <span class="text-3xl font-light text-sky-300 mt-2">°C</span>
-        </div>
-        <p class="text-slate-300 mt-2 text-lg font-light">{{ weather.weatherLabel }}</p>
+        <h2 class="text-2xl font-bold text-white">{{ cityName }}</h2>
+        <p class="text-slate-400 text-sm mt-1">{{ formattedTime }}</p>
       </div>
-      <div class="mb-3 text-6xl" aria-hidden="true">{{ weather.weatherEmoji }}</div>
+      <div class="text-right">
+        <p class="text-5xl font-thin text-white">{{ Math.round(weather.temperature) }}°C</p>
+        <p class="text-slate-400 text-sm mt-1">Feels like {{ Math.round(weather.feelsLike) }}°C</p>
+      </div>
     </div>
 
-    <!-- Feels like -->
-    <p class="text-slate-400 text-sm mb-6">
-      Feels like
-      <span class="text-white font-medium">{{ weather.feelsLike }}°C</span>
-    </p>
+    <!-- Weather description -->
+    <div class="flex items-center gap-2 mb-6">
+      <span class="text-3xl">{{ weatherEmoji }}</span>
+      <span class="text-lg text-slate-200">{{ weatherDescription }}</span>
+    </div>
 
     <!-- Stats grid -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-      <StatCard
-        label="Humidity"
-        :value="`${weather.humidity}%`"
-        icon="💧"
-      />
-      <StatCard
-        label="Wind"
-        :value="`${weather.windSpeed} km/h`"
-        icon="💨"
-      />
-      <StatCard
-        label="Rain Chance"
-        :value="`${weather.precipitationProbability}%`"
-        icon="🌧️"
-      />
-      <StatCard
-        label="UV Index"
-        :value="String(Math.round(weather.uvIndex))"
-        :badge="uvBadge"
-        icon="☀️"
-      />
+      <StatCard label="Humidity" :value="`${weather.humidity}%`" icon="💧" />
+      <StatCard label="Wind" :value="`${Math.round(weather.windSpeed)} km/h`" icon="💨" />
+      <StatCard label="Pressure" :value="`${Math.round(weather.pressure)} hPa`" icon="📊" />
+      <StatCard label="UV Index" :value="weather.uvIndex?.toString() ?? 'N/A'" icon="☀️" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-import type { WeatherCurrent } from '../types/weather';
-import StatCard from './StatCard.vue';
+import { computed } from 'vue'
+import StatCard from './StatCard.vue'
+import type { WeatherData } from '../types/weather'
+import { getWeatherDescription, getWeatherEmoji } from '../utils/weatherCodeMap'
 
 const props = defineProps<{
-  weather: WeatherCurrent;
-  locationName: string;
-}>();
+  weather: WeatherData
+  cityName: string
+}>()
 
-const uvBadge = computed(() => {
-  const uv = props.weather.uvIndex;
-  if (uv <= 2) return { label: 'Low', color: 'green' };
-  if (uv <= 5) return { label: 'Moderate', color: 'yellow' };
-  if (uv <= 7) return { label: 'High', color: 'orange' };
-  if (uv <= 10) return { label: 'Very High', color: 'red' };
-  return { label: 'Extreme', color: 'purple' };
-});
+const formattedTime = computed(() => {
+  try {
+    return new Date(props.weather.time).toLocaleString('en-US', {
+      weekday: 'long',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    })
+  } catch {
+    return props.weather.time
+  }
+})
+
+const weatherDescription = computed(() => getWeatherDescription(props.weather.weatherCode))
+const weatherEmoji = computed(() => getWeatherEmoji(props.weather.weatherCode))
 </script>

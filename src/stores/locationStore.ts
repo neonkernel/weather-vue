@@ -23,7 +23,14 @@ export const useLocationStore = defineStore('location', () => {
     source.value = payload.source
   }
 
-  function clearLocation() {
+  function setCoords(newLat: number, newLon: number, name: string, src: LocationSource) {
+    lat.value = newLat
+    lon.value = newLon
+    cityName.value = name
+    source.value = src
+  }
+
+  function reset() {
     lat.value = null
     lon.value = null
     cityName.value = ''
@@ -36,6 +43,7 @@ export const useLocationStore = defineStore('location', () => {
     cityName,
     source,
     setLocation,
-    clearLocation,
+    setCoords,
+    reset,
   }
 })

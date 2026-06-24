@@ -1,42 +1,34 @@
-export interface WeatherInfo {
-  label: string;
-  emoji: string;
-  icon: string;
+const weatherCodeMap: Record<number, { description: string; emoji: string }> = {
+  0: { description: 'Clear sky', emoji: '☀️' },
+  1: { description: 'Mainly clear', emoji: '🌤️' },
+  2: { description: 'Partly cloudy', emoji: '⛅' },
+  3: { description: 'Overcast', emoji: '☁️' },
+  45: { description: 'Foggy', emoji: '🌫️' },
+  48: { description: 'Icy fog', emoji: '🌫️' },
+  51: { description: 'Light drizzle', emoji: '🌦️' },
+  53: { description: 'Drizzle', emoji: '🌦️' },
+  55: { description: 'Heavy drizzle', emoji: '🌧️' },
+  61: { description: 'Slight rain', emoji: '🌧️' },
+  63: { description: 'Rain', emoji: '🌧️' },
+  65: { description: 'Heavy rain', emoji: '🌧️' },
+  71: { description: 'Slight snow', emoji: '🌨️' },
+  73: { description: 'Snow', emoji: '❄️' },
+  75: { description: 'Heavy snow', emoji: '❄️' },
+  77: { description: 'Snow grains', emoji: '🌨️' },
+  80: { description: 'Slight showers', emoji: '🌦️' },
+  81: { description: 'Showers', emoji: '🌧️' },
+  82: { description: 'Violent showers', emoji: '⛈️' },
+  85: { description: 'Snow showers', emoji: '🌨️' },
+  86: { description: 'Heavy snow showers', emoji: '❄️' },
+  95: { description: 'Thunderstorm', emoji: '⛈️' },
+  96: { description: 'Thunderstorm with hail', emoji: '⛈️' },
+  99: { description: 'Thunderstorm with heavy hail', emoji: '⛈️' },
 }
 
-const weatherCodeMap: Record<number, WeatherInfo> = {
-  0:  { label: 'Clear Sky',            emoji: '☀️',  icon: 'clear' },
-  1:  { label: 'Mainly Clear',         emoji: '🌤️',  icon: 'mainly-clear' },
-  2:  { label: 'Partly Cloudy',        emoji: '⛅',  icon: 'partly-cloudy' },
-  3:  { label: 'Overcast',             emoji: '☁️',  icon: 'overcast' },
-  45: { label: 'Foggy',                emoji: '🌫️',  icon: 'fog' },
-  48: { label: 'Icy Fog',              emoji: '🌫️',  icon: 'fog' },
-  51: { label: 'Light Drizzle',        emoji: '🌦️',  icon: 'drizzle' },
-  53: { label: 'Moderate Drizzle',     emoji: '🌦️',  icon: 'drizzle' },
-  55: { label: 'Heavy Drizzle',        emoji: '🌧️',  icon: 'drizzle-heavy' },
-  56: { label: 'Freezing Drizzle',     emoji: '🌨️',  icon: 'freezing-drizzle' },
-  57: { label: 'Heavy Freezing Drizzle', emoji: '🌨️', icon: 'freezing-drizzle' },
-  61: { label: 'Light Rain',           emoji: '🌧️',  icon: 'rain-light' },
-  63: { label: 'Moderate Rain',        emoji: '🌧️',  icon: 'rain' },
-  65: { label: 'Heavy Rain',           emoji: '🌧️',  icon: 'rain-heavy' },
-  66: { label: 'Freezing Rain',        emoji: '🌨️',  icon: 'freezing-rain' },
-  67: { label: 'Heavy Freezing Rain',  emoji: '🌨️',  icon: 'freezing-rain' },
-  71: { label: 'Light Snow',           emoji: '🌨️',  icon: 'snow-light' },
-  73: { label: 'Moderate Snow',        emoji: '❄️',  icon: 'snow' },
-  75: { label: 'Heavy Snow',           emoji: '❄️',  icon: 'snow-heavy' },
-  77: { label: 'Snow Grains',          emoji: '🌨️',  icon: 'snow-grains' },
-  80: { label: 'Light Showers',        emoji: '🌦️',  icon: 'showers-light' },
-  81: { label: 'Moderate Showers',     emoji: '🌧️',  icon: 'showers' },
-  82: { label: 'Heavy Showers',        emoji: '🌧️',  icon: 'showers-heavy' },
-  85: { label: 'Light Snow Showers',   emoji: '🌨️',  icon: 'snow-showers' },
-  86: { label: 'Heavy Snow Showers',   emoji: '❄️',  icon: 'snow-showers-heavy' },
-  95: { label: 'Thunderstorm',         emoji: '⛈️',  icon: 'thunderstorm' },
-  96: { label: 'Thunderstorm w/ Hail', emoji: '⛈️',  icon: 'thunderstorm-hail' },
-  99: { label: 'Thunderstorm w/ Heavy Hail', emoji: '⛈️', icon: 'thunderstorm-hail' },
-};
-
-export function getWeatherInfo(code: number): WeatherInfo {
-  return weatherCodeMap[code] ?? { label: 'Unknown', emoji: '🌡️', icon: 'unknown' };
+export function getWeatherDescription(code: number): string {
+  return weatherCodeMap[code]?.description ?? 'Unknown'
 }
 
-export default weatherCodeMap;
+export function getWeatherEmoji(code: number): string {
+  return weatherCodeMap[code]?.emoji ?? '🌡️'
+}

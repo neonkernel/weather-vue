@@ -1,100 +1,51 @@
+import type { WeatherData, ForecastData } from '../types/weather'
+
 const BASE_URL = 'https://api.open-meteo.com/v1'
 const GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1'
 
-export interface WeatherData {
-  current: {
-    temperature_2m: number
-    relative_humidity_2m: number
-    apparent_temperature: number
-    weather_code: number
-    wind_speed_10m: number
-    wind_direction_10m: number
-    precipitation: number
-    surface_pressure: number
-    visibility?: number
-    uv_index?: number
-  }
-  hourly?: {
-    time: string[]
-    temperature_2m: number[]
-    weather_code: number[]
-    precipitation_probability: number[]
-  }
-  daily?: {
-    time: string[]
-    temperature_2m_max: number[]
-    temperature_2m_min: number[]
-    weather_code: number[]
-    precipitation_sum: number[]
-    wind_speed_10m_max: number[]
-    precipitation_probability_max: number[]
-  }
-  latitude: number
-  longitude: number
-  timezone: string
+export interface WeatherServiceResult {
+  current: WeatherData
+  forecast: ForecastData[]
 }
 
-export interface GeocodingResult {
-  id: number
-  name: string
-  latitude: number
-  longitude: number
-  country: string
-  admin1?: string
-}
-
-const WEATHER_PARAMS = [
-  'temperature_2m',
-  'relative_humidity_2m',
-  'apparent_temperature',
-  'weather_code',
-  'wind_speed_10m',
-  'wind_direction_10m',
-  'precipitation',
-  'surface_pressure',
-].join(',')
-
-const HOURLY_PARAMS = [
-  'temperature_2m',
-  'weather_code',
-  'precipitation_probability',
-].join(',')
-
-const DAILY_PARAMS = [
-  'temperature_2m_max',
-  'temperature_2m_min',
-  'weather_code',
-  'precipitation_sum',
-  'wind_speed_10m_max',
-  'precipitation_probability_max',
-].join(',')
-
-export async function fetchWeatherByCoords(
-  lat: number,
-  lon: number
-): Promise<WeatherData> {
+async function fetchWeatherByCoords(lat: number, lon: number): Promise<WeatherServiceResult> {
   const params = new URLSearchParams({
     latitude: lat.toString(),
     longitude: lon.toString(),
-    current: WEATHER_PARAMS,
-    hourly: HOURLY_PARAMS,
-    daily: DAILY_PARAMS,
-    forecast_days: '7',
+    current: [
+      'temperature_2m',
+      'relative_humidity_2m',
+      'apparent_temperature',
+      'weather_code',
+      'wind_speed_10m',
+      'wind_direction_10m',
+      'precipitation',
+      'surface_pressure',
+      'visibility',
+      'uv_index',
+    ].join(','),
+    daily: [
+      'weather_code',
+      'temperature_2m_max',
+      'temperature_2m_min',
+      'precipitation_sum',
+      'wind_speed_10m_max',
+    ].join(','),
     timezone: 'auto',
+    forecast_days: '7',
   })
 
   const response = await fetch(`${BASE_URL}/forecast?${params}`)
   if (!response.ok) {
     throw new Error(`Weather API error: ${response.status} ${response.statusText}`)
   }
-  return response.json()
+
+  const data = await response.json()
+  return parseWeatherResponse(data)
 }
 
-export async function fetchWeatherByCity(city: string): Promise<{
-  weather: WeatherData
-  location: GeocodingResult
-}> {
-  // First geocode the city name
+async function fetchWeatherByCity(city: string): Promise<WeatherServiceResult> {
+  // First geocode the city
   const geoParams = new URLSearchParams({
     name: city,
     count: '1',
@@ -104,7 +55,7 @@ export async function fetchWeatherByCity(city: string): Promise<{
 
   const geoResponse = await fetch(`${GEOCODING_URL}/search?${geoParams}`)
   if (!geoResponse.ok) {
-    throw new Error(`Geocoding API error: ${geoResponse.status} ${geoResponse.statusText}`)
+    throw new Error(`Geocoding API error: ${geoResponse.status}`)
   }
 
   const geoData = await geoResponse.json()
@@ -112,36 +63,38 @@ export async function fetchWeatherByCity(city: string): Promise<{
     throw new Error(`City not found: ${city}`)
   }
 
-  const location: GeocodingResult = geoData.results[0]
-  const weather = await fetchWeatherByCoords(location.latitude, location.longitude)
-
-  return { weather, location }
+  const { latitude, longitude } = geoData.results[0]
+  return fetchWeatherByCoords(latitude, longitude)
 }
 
-export async function reverseGeocode(lat: number, lon: number): Promise<string> {
-  // Open-Meteo doesn't have reverse geocoding, so we use a simple approach
-  // with the nominatim API or return a coordinate string as fallback
-  try {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
-      {
-        headers: {
-          'Accept-Language': 'en',
-          'User-Agent': 'WeatherDashboard/1.0',
-        },
-      }
-    )
-    if (!response.ok) throw new Error('Reverse geocoding failed')
-    const data = await response.json()
-    const city =
-      data.address?.city ||
-      data.address?.town ||
-      data.address?.village ||
-      data.address?.county ||
-      data.address?.state ||
-      'Unknown Location'
-    return city
-  } catch {
-    return `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`
+function parseWeatherResponse(data: any): WeatherServiceResult {
+  const current: WeatherData = {
+    temperature: data.current.temperature_2m,
+    feelsLike: data.current.apparent_temperature,
+    humidity: data.current.relative_humidity_2m,
+    weatherCode: data.current.weather_code,
+    windSpeed: data.current.wind_speed_10m,
+    windDirection: data.current.wind_direction_10m,
+    precipitation: data.current.precipitation,
+    pressure: data.current.surface_pressure,
+    visibility: data.current.visibility,
+    uvIndex: data.current.uv_index,
+    time: data.current.time,
   }
+
+  const forecast: ForecastData[] = data.daily.time.map((time: string, index: number) => ({
+    time,
+    weatherCode: data.daily.weather_code[index],
+    tempMax: data.daily.temperature_2m_max[index],
+    tempMin: data.daily.temperature_2m_min[index],
+    precipitationSum: data.daily.precipitation_sum[index],
+    windSpeedMax: data.daily.wind_speed_10m_max[index],
+  }))
+
+  return { current, forecast }
+}
+
+export const weatherService = {
+  fetchByCoords: fetchWeatherByCoords,
+  fetchByCity: fetchWeatherByCity,
 }

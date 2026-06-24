@@ -1,32 +1,21 @@
 <template>
-  <div class="w-full">
-    <h3 class="text-slate-400 text-sm font-medium uppercase tracking-wider mb-3">
-      7-Day Forecast
-    </h3>
-    <div
-      class="
-        flex gap-3 overflow-x-auto pb-2
-        scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent
-      "
-      role="list"
-      aria-label="7-day forecast"
-    >
-      <div
+  <div class="rounded-2xl bg-white/5 border border-white/10 p-5 backdrop-blur-sm">
+    <h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-4">7-Day Forecast</h3>
+    <div class="grid grid-cols-7 gap-2">
+      <ForecastCard
         v-for="day in forecast"
-        :key="day.date"
-        role="listitem"
-      >
-        <ForecastCard :day="day" />
-      </div>
+        :key="day.time"
+        :forecast="day"
+      />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import type { ForecastDay } from '../types/weather';
-import ForecastCard from './ForecastCard.vue';
+import ForecastCard from './ForecastCard.vue'
+import type { ForecastData } from '../types/weather'
 
 defineProps<{
-  forecast: ForecastDay[];
-}>();
+  forecast: ForecastData[]
+}>()
 </script>

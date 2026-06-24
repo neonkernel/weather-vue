@@ -1,78 +1,89 @@
 <template>
-  <div class="min-h-screen bg-gradient-to-br from-blue-900 via-blue-800 to-indigo-900 text-white">
-    <div class="container mx-auto px-4 py-8 max-w-4xl">
+  <div class="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 text-white">
+    <div class="max-w-4xl mx-auto px-4 py-8">
       <!-- Header -->
-      <header class="mb-8 text-center">
-        <h1 class="text-4xl font-bold mb-2 tracking-tight">
-          🌤 Weather Dashboard
-        </h1>
-        <p class="text-blue-200 text-sm">Real-time weather powered by Open-Meteo</p>
+      <header class="mb-8">
+        <h1 class="text-3xl font-bold text-white mb-1">Weather Dashboard</h1>
+        <p class="text-slate-400 text-sm">Real-time weather powered by Open-Meteo</p>
       </header>
 
-      <!-- Permission Notice -->
-      <PermissionNotice
-        v-if="showPermissionNotice"
-        :fallback-city="locationStore.cityName"
-        @dismiss="showPermissionNotice = false"
-      />
-
       <!-- Search Bar -->
-      <SearchBar
-        class="mb-6"
-        :is-loading="geoLoading"
-        @search="handleCitySearch"
-        @use-my-location="handleUseMyLocation"
-      />
+      <div class="mb-4">
+        <SearchBar
+          :is-loading="weatherLoading"
+          :geo-loading="geoLoading"
+          @search="handleCitySearch"
+          @use-location="handleUseLocation"
+        />
+      </div>
 
       <!-- Location Status -->
-      <LocationStatus
-        v-if="locationStore.cityName"
-        class="mb-4"
-        :city-name="locationStore.cityName"
-        :source="locationStore.source"
-      />
+      <div class="mb-4">
+        <LocationStatus
+          v-if="locationStore.cityName"
+          :city-name="locationStore.cityName"
+          :source="locationStore.source"
+        />
+      </div>
 
-      <!-- Detecting Location State -->
-      <div
-        v-if="geoLoading"
-        class="flex items-center justify-center gap-3 mb-6 p-4 bg-white/10 rounded-xl backdrop-blur"
-      >
-        <svg class="animate-spin h-5 w-5 text-blue-300" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-          <path
-            class="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-          />
+      <!-- Permission Notice -->
+      <div class="mb-4">
+        <PermissionNotice
+          v-if="showPermissionNotice"
+          :fallback-city="locationStore.cityName"
+          @dismissed="showPermissionNotice = false"
+        />
+      </div>
+
+      <!-- Geo detecting state -->
+      <div v-if="geoLoading && !weatherLoading" class="mb-6 flex items-center gap-3 px-4 py-3 rounded-xl bg-blue-500/10 border border-blue-400/20">
+        <svg class="w-5 h-5 text-blue-400 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
         </svg>
-        <span class="text-blue-200 text-sm">Detecting your location...</span>
+        <span class="text-sm text-blue-300">Detecting your location...</span>
+      </div>
+
+      <!-- Error Message -->
+      <div v-if="weatherError" class="mb-6 flex items-start gap-3 px-4 py-3 rounded-xl bg-red-500/10 border border-red-400/20">
+        <svg class="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
+        </svg>
+        <div>
+          <p class="text-sm font-medium text-red-300">Failed to load weather</p>
+          <p class="text-xs text-red-300/70 mt-0.5">{{ weatherError }}</p>
+        </div>
+      </div>
+
+      <!-- Loading Spinner -->
+      <div v-if="weatherLoading" class="flex justify-center items-center py-20">
+        <div class="flex flex-col items-center gap-4">
+          <svg class="w-10 h-10 text-blue-400 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+          <p class="text-slate-400 text-sm">Loading weather data...</p>
+        </div>
       </div>
 
       <!-- Weather Dashboard -->
       <WeatherDashboard
-        v-if="weatherApi.weatherData.value && !weatherApi.loading.value"
-        :weather="weatherApi.weatherData.value"
-        :location="weatherApi.currentLocation.value"
+        v-else-if="weatherData"
+        :weather="weatherData.current"
+        :forecast="weatherData.forecast"
+        :city-name="locationStore.cityName"
       />
 
-      <!-- Loading Spinner -->
-      <LoadingSpinner v-else-if="weatherApi.loading.value" message="Fetching weather data..." />
-
-      <!-- Error Message -->
-      <ErrorMessage
-        v-else-if="weatherApi.error.value && !weatherApi.loading.value"
-        :message="weatherApi.error.value"
-        @retry="retryLastFetch"
-      />
-
-      <!-- Initial State (no data, no loading, no error) -->
+      <!-- Empty state -->
       <div
-        v-else-if="!weatherApi.weatherData.value && !weatherApi.loading.value && !weatherApi.error.value && !geoLoading"
-        class="text-center py-16 text-blue-200"
+        v-else-if="!weatherLoading && !weatherError && !geoLoading"
+        class="flex flex-col items-center justify-center py-20 text-center"
       >
-        <div class="text-6xl mb-4">🌍</div>
-        <p class="text-lg font-medium">Search for a city or allow location access</p>
-        <p class="text-sm mt-2 opacity-70">to see current weather conditions</p>
+        <svg class="w-16 h-16 text-slate-600 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z"/>
+        </svg>
+        <p class="text-slate-400 text-lg font-medium">No weather data</p>
+        <p class="text-slate-500 text-sm mt-1">Search for a city or use your location to get started</p>
       </div>
     </div>
   </div>
@@ -83,81 +94,56 @@ import { ref, onMounted } from 'vue'
 import { useLocationStore } from './stores/locationStore'
 import { useGeolocation } from './composables/useGeolocation'
 import { useWeatherApi } from './composables/useWeatherApi'
-import { reverseGeocode } from './services/weatherService'
 import SearchBar from './components/SearchBar.vue'
 import LocationStatus from './components/LocationStatus.vue'
 import PermissionNotice from './components/PermissionNotice.vue'
 import WeatherDashboard from './components/WeatherDashboard.vue'
-import LoadingSpinner from './components/LoadingSpinner.vue'
-import ErrorMessage from './components/ErrorMessage.vue'
 
 const DEFAULT_CITY = 'New York'
+const DEFAULT_LAT = 40.7128
+const DEFAULT_LON = -74.006
 
 const locationStore = useLocationStore()
-const geolocation = useGeolocation()
-const weatherApi = useWeatherApi()
+const { loading: geoLoading, permissionDenied, getCurrentPosition } = useGeolocation()
+const { weatherData, loading: weatherLoading, error: weatherError, fetchByCoords, fetchByCity } = useWeatherApi()
 
-const geoLoading = ref(false)
 const showPermissionNotice = ref(false)
-let lastSearchCity = ref<string | null>(null)
 
-async function handleUseMyLocation() {
-  geoLoading.value = true
+async function handleUseLocation() {
   showPermissionNotice.value = false
-
-  const coords = await geolocation.getCurrentPosition()
+  const coords = await getCurrentPosition()
 
   if (coords) {
-    const cityName = await reverseGeocode(coords.latitude, coords.longitude)
-    locationStore.setLocation({
-      lat: coords.latitude,
-      lon: coords.longitude,
-      cityName,
-      source: 'geo',
-    })
-    await weatherApi.fetchByCoords(coords.latitude, coords.longitude, cityName)
+    locationStore.setCoords(coords.lat, coords.lon, 'My Location', 'geo')
+    await fetchByCoords(coords.lat, coords.lon)
   } else {
-    if (geolocation.permissionDenied.value) {
-      showPermissionNotice.value = true
-    }
-    // Fall back to default city if no previous data
-    if (!weatherApi.weatherData.value) {
-      await loadDefaultCity()
-    }
+    // Permission denied or error - fall back to default
+    showPermissionNotice.value = true
+    locationStore.setCoords(DEFAULT_LAT, DEFAULT_LON, DEFAULT_CITY, 'default')
+    await fetchByCoords(DEFAULT_LAT, DEFAULT_LON)
   }
-
-  geoLoading.value = false
 }
 
 async function handleCitySearch(city: string) {
-  lastSearchCity.value = city
   showPermissionNotice.value = false
-  await weatherApi.fetchByCity(city)
-}
-
-async function loadDefaultCity() {
-  locationStore.setLocation({
-    lat: null,
-    lon: null,
-    cityName: DEFAULT_CITY,
-    source: 'default',
-  })
-  await weatherApi.fetchByCity(DEFAULT_CITY)
-}
-
-async function retryLastFetch() {
-  weatherApi.clearError()
-  if (locationStore.lat !== null && locationStore.lon !== null) {
-    await weatherApi.fetchByCoords(locationStore.lat, locationStore.lon, locationStore.cityName)
-  } else if (lastSearchCity.value) {
-    await weatherApi.fetchByCity(lastSearchCity.value)
-  } else {
-    await loadDefaultCity()
-  }
+  locationStore.setCoords(null as any, null as any, city, 'search')
+  await fetchByCity(city)
 }
 
 onMounted(async () => {
-  // Auto-detect location on app load
-  await handleUseMyLocation()
+  // Try geolocation on mount
+  const coords = await getCurrentPosition()
+
+  if (coords) {
+    locationStore.setCoords(coords.lat, coords.lon, 'My Location', 'geo')
+    await fetchByCoords(coords.lat, coords.lon)
+  } else {
+    // Permission denied or unavailable - use default city
+    if (permissionDenied.value) {
+      showPermissionNotice.value = true
+    }
+    locationStore.setCoords(DEFAULT_LAT, DEFAULT_LON, DEFAULT_CITY, 'default')
+    await fetchByCoords(DEFAULT_LAT, DEFAULT_LON)
+  }
 })
 </script>
