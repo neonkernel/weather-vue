@@ -1,29 +1,35 @@
 <template>
-  <div class="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-white/5 transition-colors duration-150">
-    <p class="text-xs text-slate-400 font-medium">{{ dayLabel }}</p>
-    <span class="text-2xl">{{ weatherEmoji }}</span>
-    <p class="text-sm font-semibold text-white">{{ Math.round(forecast.tempMax) }}°</p>
-    <p class="text-xs text-slate-500">{{ Math.round(forecast.tempMin) }}°</p>
+  <div
+    class="flex flex-col items-center gap-1 rounded-xl border p-3 text-center backdrop-blur-sm"
+    :class="isToday ? 'border-blue-400/40 bg-blue-500/15' : 'border-white/10 bg-white/5'"
+  >
+    <p class="text-xs font-medium" :class="isToday ? 'text-blue-300' : 'text-white/60'">
+      {{ isToday ? 'Today' : dayLabel }}
+    </p>
+    <span class="text-2xl">{{ emoji }}</span>
+    <p class="text-sm font-semibold text-white">{{ Math.round(tempMax) }}°</p>
+    <p class="text-xs text-white/50">{{ Math.round(tempMin) }}°</p>
+    <p v-if="precipitation > 0" class="text-xs text-blue-300">{{ precipitation }}mm</p>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { ForecastData } from '../types/weather'
 import { getWeatherEmoji } from '../utils/weatherCodeMap'
 
 const props = defineProps<{
-  forecast: ForecastData
+  date: string
+  weatherCode: number
+  tempMax: number
+  tempMin: number
+  precipitation: number
+  isToday?: boolean
 }>()
 
 const dayLabel = computed(() => {
-  try {
-    const date = new Date(props.forecast.time)
-    return date.toLocaleDateString('en-US', { weekday: 'short' })
-  } catch {
-    return props.forecast.time
-  }
+  const d = new Date(props.date)
+  return d.toLocaleDateString('en-US', { weekday: 'short' })
 })
 
-const weatherEmoji = computed(() => getWeatherEmoji(props.forecast.weatherCode))
+const emoji = computed(() => getWeatherEmoji(props.weatherCode, true))
 </script>

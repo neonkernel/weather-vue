@@ -1,21 +1,39 @@
 <template>
-  <div class="rounded-2xl bg-white/5 border border-white/10 p-5 backdrop-blur-sm">
-    <h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-4">7-Day Forecast</h3>
-    <div class="grid grid-cols-7 gap-2">
-      <ForecastCard
-        v-for="day in forecast"
-        :key="day.time"
-        :forecast="day"
-      />
-    </div>
+  <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-7">
+    <ForecastCard
+      v-for="(day, index) in days"
+      :key="day.date"
+      :date="day.date"
+      :weather-code="day.weatherCode"
+      :temp-max="day.tempMax"
+      :temp-min="day.tempMin"
+      :precipitation="day.precipitation"
+      :is-today="index === 0"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import ForecastCard from './ForecastCard.vue'
-import type { ForecastData } from '../types/weather'
 
-defineProps<{
-  forecast: ForecastData[]
+const props = defineProps<{
+  daily: {
+    time: string[]
+    weather_code: number[]
+    temperature_2m_max: number[]
+    temperature_2m_min: number[]
+    precipitation_sum: number[]
+  }
 }>()
+
+const days = computed(() =>
+  props.daily.time.map((date, i) => ({
+    date,
+    weatherCode: props.daily.weather_code[i],
+    tempMax: props.daily.temperature_2m_max[i],
+    tempMin: props.daily.temperature_2m_min[i],
+    precipitation: props.daily.precipitation_sum[i],
+  }))
+)
 </script>

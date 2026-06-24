@@ -1,7 +1,9 @@
 <template>
-  <div class="flex flex-col items-center justify-center py-16 gap-4">
+  <div class="flex items-center justify-center py-12">
     <svg
-      class="animate-spin h-10 w-10 text-blue-300"
+      class="animate-spin text-blue-400"
+      :class="sizeClass"
+      xmlns="http://www.w3.org/2000/svg"
       fill="none"
       viewBox="0 0 24 24"
     >
@@ -19,12 +21,21 @@
         d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
       />
     </svg>
-    <p v-if="message" class="text-blue-200 text-sm">{{ message }}</p>
   </div>
 </template>
 
 <script setup lang="ts">
-defineProps<{
-  message?: string
+import { computed } from 'vue'
+
+const props = defineProps<{
+  size?: 'sm' | 'md' | 'lg'
 }>()
+
+const sizeClass = computed(() => {
+  switch (props.size) {
+    case 'sm': return 'h-5 w-5'
+    case 'lg': return 'h-12 w-12'
+    default: return 'h-8 w-8'
+  }
+})
 </script>

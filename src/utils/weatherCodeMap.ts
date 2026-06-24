@@ -1,34 +1,77 @@
-const weatherCodeMap: Record<number, { description: string; emoji: string }> = {
-  0: { description: 'Clear sky', emoji: '☀️' },
-  1: { description: 'Mainly clear', emoji: '🌤️' },
-  2: { description: 'Partly cloudy', emoji: '⛅' },
-  3: { description: 'Overcast', emoji: '☁️' },
-  45: { description: 'Foggy', emoji: '🌫️' },
-  48: { description: 'Icy fog', emoji: '🌫️' },
-  51: { description: 'Light drizzle', emoji: '🌦️' },
-  53: { description: 'Drizzle', emoji: '🌦️' },
-  55: { description: 'Heavy drizzle', emoji: '🌧️' },
-  61: { description: 'Slight rain', emoji: '🌧️' },
-  63: { description: 'Rain', emoji: '🌧️' },
-  65: { description: 'Heavy rain', emoji: '🌧️' },
-  71: { description: 'Slight snow', emoji: '🌨️' },
-  73: { description: 'Snow', emoji: '❄️' },
-  75: { description: 'Heavy snow', emoji: '❄️' },
-  77: { description: 'Snow grains', emoji: '🌨️' },
-  80: { description: 'Slight showers', emoji: '🌦️' },
-  81: { description: 'Showers', emoji: '🌧️' },
-  82: { description: 'Violent showers', emoji: '⛈️' },
-  85: { description: 'Snow showers', emoji: '🌨️' },
-  86: { description: 'Heavy snow showers', emoji: '❄️' },
-  95: { description: 'Thunderstorm', emoji: '⛈️' },
-  96: { description: 'Thunderstorm with hail', emoji: '⛈️' },
-  99: { description: 'Thunderstorm with heavy hail', emoji: '⛈️' },
+export const weatherDescriptions: Record<number, string> = {
+  0: 'Clear sky',
+  1: 'Mainly clear',
+  2: 'Partly cloudy',
+  3: 'Overcast',
+  45: 'Foggy',
+  48: 'Rime fog',
+  51: 'Light drizzle',
+  53: 'Moderate drizzle',
+  55: 'Dense drizzle',
+  56: 'Freezing drizzle',
+  57: 'Heavy freezing drizzle',
+  61: 'Slight rain',
+  63: 'Moderate rain',
+  65: 'Heavy rain',
+  66: 'Freezing rain',
+  67: 'Heavy freezing rain',
+  71: 'Slight snow',
+  73: 'Moderate snow',
+  75: 'Heavy snow',
+  77: 'Snow grains',
+  80: 'Slight showers',
+  81: 'Moderate showers',
+  82: 'Violent showers',
+  85: 'Slight snow showers',
+  86: 'Heavy snow showers',
+  95: 'Thunderstorm',
+  96: 'Thunderstorm with hail',
+  99: 'Thunderstorm with heavy hail',
+}
+
+export const weatherEmojisDay: Record<number, string> = {
+  0: '☀️',
+  1: '🌤️',
+  2: '⛅',
+  3: '☁️',
+  45: '🌫️',
+  48: '🌫️',
+  51: '🌦️',
+  53: '🌦️',
+  55: '🌧️',
+  56: '🌧️',
+  57: '🌧️',
+  61: '🌧️',
+  63: '🌧️',
+  65: '🌧️',
+  66: '🌨️',
+  67: '🌨️',
+  71: '🌨️',
+  73: '❄️',
+  75: '❄️',
+  77: '🌨️',
+  80: '🌦️',
+  81: '🌧️',
+  82: '⛈️',
+  85: '🌨️',
+  86: '❄️',
+  95: '⛈️',
+  96: '⛈️',
+  99: '⛈️',
+}
+
+export const weatherEmojisNight: Record<number, string> = {
+  ...weatherEmojisDay,
+  0: '🌙',
+  1: '🌙',
+  2: '🌙',
 }
 
 export function getWeatherDescription(code: number): string {
-  return weatherCodeMap[code]?.description ?? 'Unknown'
+  return weatherDescriptions[code] ?? 'Unknown'
 }
 
-export function getWeatherEmoji(code: number): string {
-  return weatherCodeMap[code]?.emoji ?? '🌡️'
+export function getWeatherEmoji(code: number, isDay: boolean = true): string {
+  const map = isDay ? weatherEmojisDay : weatherEmojisNight
+  return map[code] ?? '🌡️'
 }

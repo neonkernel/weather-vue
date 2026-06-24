@@ -1,54 +1,88 @@
 <template>
-  <div class="w-full">
-    <form @submit.prevent="handleSubmit" class="flex items-center gap-2">
+  <div class="relative w-full">
+    <div class="flex items-center gap-2">
       <!-- Search input group -->
       <div class="relative flex-1">
-        <div class="absolute inset-y-0 left-3 flex items-center pointer-events-none">
+        <div class="pointer-events-none absolute inset-y-0 left-3 flex items-center">
           <svg
-            class="w-4 h-4 text-slate-400"
-            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-4 w-4 text-white/40"
             viewBox="0 0 24 24"
+            fill="none"
             stroke="currentColor"
             stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
           >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
-            />
+            <circle cx="11" cy="11" r="8" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
           </svg>
         </div>
 
         <input
+          ref="inputRef"
           v-model="query"
           type="text"
           placeholder="Search city..."
-          class="w-full pl-10 pr-4 py-2.5 rounded-xl bg-white/10 border border-white/20 text-white placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400/50 focus:border-blue-400/50 transition-all duration-200"
-          :disabled="isLoading"
+          class="w-full rounded-xl border border-white/20 bg-white/10 py-2.5 pl-10 pr-4 text-sm text-white placeholder-white/40 backdrop-blur-sm transition-all duration-200 focus:border-white/40 focus:bg-white/15 focus:outline-none focus:ring-2 focus:ring-white/20"
+          @input="onInput"
+          @keydown.enter="onEnter"
+          @keydown.escape="clearResults"
+          @keydown.arrow-down.prevent="selectNext"
+          @keydown.arrow-up.prevent="selectPrev"
         />
-      </div>
 
-      <!-- Search button -->
-      <button
-        type="submit"
-        :disabled="isLoading || !query.trim()"
-        class="px-4 py-2.5 rounded-xl bg-blue-500 hover:bg-blue-400 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-all duration-200 flex items-center gap-2 whitespace-nowrap"
-      >
-        <span>Search</span>
-      </button>
+        <!-- Clear button -->
+        <button
+          v-if="query"
+          type="button"
+          class="absolute inset-y-0 right-3 flex items-center text-white/40 transition-colors hover:text-white/70"
+          @click="clearQuery"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
 
       <!-- Use My Location button -->
       <button
         type="button"
-        @click="handleUseLocation"
-        :disabled="geoLoading || isLoading"
+        class="flex flex-shrink-0 items-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3 py-2.5 text-sm text-white/70 backdrop-blur-sm transition-all duration-200 hover:bg-white/20 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/20 disabled:cursor-not-allowed disabled:opacity-50"
         :title="geoLoading ? 'Detecting location...' : 'Use my current location'"
-        class="flex-shrink-0 p-2.5 rounded-xl border border-white/20 bg-white/10 hover:bg-white/20 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-all duration-200 relative"
+        :disabled="geoLoading"
+        @click="triggerGeolocation"
       >
+        <svg
+          v-if="!geoLoading"
+          xmlns="http://www.w3.org/2000/svg"
+          class="h-4 w-4"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="3" />
+          <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+        </svg>
+
         <!-- Spinner when loading -->
         <svg
-          v-if="geoLoading"
-          class="w-5 h-5 animate-spin text-blue-300"
+          v-else
+          class="h-4 w-4 animate-spin"
+          xmlns="http://www.w3.org/2000/svg"
           fill="none"
           viewBox="0 0 24 24"
         >
@@ -67,69 +101,154 @@
           />
         </svg>
 
-        <!-- Location pin icon -->
-        <svg
-          v-else
-          class="w-5 h-5"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          stroke-width="2"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z"
-          />
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z"
-          />
-        </svg>
+        <span class="hidden sm:inline">
+          {{ geoLoading ? 'Locating...' : 'My Location' }}
+        </span>
       </button>
-    </form>
+    </div>
 
-    <!-- Geo status message -->
-    <Transition
-      enter-active-class="transition-all duration-200 ease-out"
-      enter-from-class="opacity-0 -translate-y-1"
-      enter-to-class="opacity-100 translate-y-0"
-      leave-active-class="transition-all duration-150 ease-in"
-      leave-from-class="opacity-100 translate-y-0"
-      leave-to-class="opacity-0 -translate-y-1"
-    >
-      <p v-if="geoLoading" class="mt-2 text-xs text-blue-300/80 flex items-center gap-1.5">
-        <span class="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse inline-block"></span>
-        Detecting your location...
-      </p>
+    <!-- Autocomplete dropdown -->
+    <Transition name="dropdown">
+      <ul
+        v-if="showDropdown && results.length"
+        class="absolute left-0 right-0 top-full z-50 mt-1.5 overflow-hidden rounded-xl border border-white/20 bg-slate-800/95 shadow-2xl backdrop-blur-md"
+        role="listbox"
+      >
+        <li
+          v-for="(result, index) in results"
+          :key="result.id"
+          class="flex cursor-pointer items-center gap-3 px-4 py-3 text-sm transition-colors"
+          :class="
+            index === selectedIndex
+              ? 'bg-white/20 text-white'
+              : 'text-white/70 hover:bg-white/10 hover:text-white'
+          "
+          role="option"
+          :aria-selected="index === selectedIndex"
+          @click="selectResult(result)"
+          @mouseenter="selectedIndex = index"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-4 w-4 flex-shrink-0 text-white/40"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" />
+            <circle cx="12" cy="10" r="3" />
+          </svg>
+          <div>
+            <div class="font-medium text-white">{{ result.name }}</div>
+            <div class="text-xs text-white/50">
+              {{ [result.admin1, result.country].filter(Boolean).join(', ') }}
+            </div>
+          </div>
+        </li>
+      </ul>
+    </Transition>
+
+    <!-- No results -->
+    <Transition name="dropdown">
+      <div
+        v-if="showDropdown && !results.length && !geocodingLoading && query.length >= 2"
+        class="absolute left-0 right-0 top-full z-50 mt-1.5 rounded-xl border border-white/20 bg-slate-800/95 px-4 py-3 text-sm text-white/50 shadow-2xl backdrop-blur-md"
+      >
+        No cities found for "{{ query }}"
+      </div>
     </Transition>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
+import { useGeocoding } from '../composables/useGeocoding'
+import type { GeocodingResult } from '../services/geocodingService'
 
 const props = defineProps<{
-  isLoading?: boolean
   geoLoading?: boolean
 }>()
 
 const emit = defineEmits<{
-  search: [city: string]
-  useLocation: []
+  citySelected: [name: string, lat: number, lon: number]
+  geolocate: []
 }>()
 
-const query = ref('')
+const { results, loading: geocodingLoading, search, clearResults } = useGeocoding()
 
-function handleSubmit() {
-  const trimmed = query.value.trim()
-  if (trimmed) {
-    emit('search', trimmed)
+const query = ref('')
+const inputRef = ref<HTMLInputElement | null>(null)
+const selectedIndex = ref(-1)
+const showDropdown = ref(false)
+
+let debounceTimer: ReturnType<typeof setTimeout> | null = null
+
+const onInput = () => {
+  selectedIndex.value = -1
+  showDropdown.value = true
+
+  if (debounceTimer) clearTimeout(debounceTimer)
+
+  if (query.value.trim().length < 2) {
+    clearResults()
+    return
+  }
+
+  debounceTimer = setTimeout(() => {
+    search(query.value.trim())
+  }, 300)
+}
+
+const onEnter = () => {
+  if (selectedIndex.value >= 0 && results.value[selectedIndex.value]) {
+    selectResult(results.value[selectedIndex.value])
+  } else if (results.value.length > 0) {
+    selectResult(results.value[0])
   }
 }
 
-function handleUseLocation() {
-  emit('useLocation')
+const selectResult = (result: GeocodingResult) => {
+  query.value = result.name
+  showDropdown.value = false
+  clearResults()
+  emit('citySelected', result.name, result.latitude, result.longitude)
+}
+
+const selectNext = () => {
+  if (results.value.length === 0) return
+  selectedIndex.value = (selectedIndex.value + 1) % results.value.length
+}
+
+const selectPrev = () => {
+  if (results.value.length === 0) return
+  selectedIndex.value =
+    selectedIndex.value <= 0 ? results.value.length - 1 : selectedIndex.value - 1
+}
+
+const clearQuery = () => {
+  query.value = ''
+  clearResults()
+  showDropdown.value = false
+  inputRef.value?.focus()
+}
+
+const triggerGeolocation = () => {
+  emit('geolocate')
 }
 </script>
+
+<style scoped>
+.dropdown-enter-active,
+.dropdown-leave-active {
+  transition: all 0.15s ease;
+}
+
+.dropdown-enter-from,
+.dropdown-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+</style>

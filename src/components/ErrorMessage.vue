@@ -1,14 +1,11 @@
 <template>
-  <div class="flex flex-col items-center justify-center py-12 gap-4">
-    <div class="text-5xl">⛈️</div>
-    <div class="text-center">
-      <p class="text-lg font-medium text-red-300 mb-1">Something went wrong</p>
-      <p class="text-sm text-blue-200 max-w-md">{{ message }}</p>
-    </div>
+  <div class="flex flex-col items-center justify-center rounded-2xl border border-red-400/30 bg-red-500/10 py-12 text-center backdrop-blur-sm">
+    <div class="mb-3 text-4xl">⚠️</div>
+    <h3 class="mb-1 text-lg font-semibold text-red-300">Something went wrong</h3>
+    <p class="mb-4 max-w-sm text-sm text-red-300/70">{{ message }}</p>
     <button
-      v-if="showRetry"
-      type="button"
-      class="px-6 py-2 rounded-xl bg-blue-500 hover:bg-blue-400 text-white text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-blue-400"
+      v-if="$attrs.onRetry"
+      class="rounded-lg border border-red-400/40 bg-red-500/20 px-4 py-2 text-sm text-red-300 transition-colors hover:bg-red-500/30"
       @click="$emit('retry')"
     >
       Try Again
@@ -19,15 +16,7 @@
 <script setup lang="ts">
 defineProps<{
   message: string
-  showRetry?: boolean
 }>()
-
-withDefaults(defineProps<{
-  message: string
-  showRetry?: boolean
-}>(), {
-  showRetry: true,
-})
 
 defineEmits<{
   retry: []

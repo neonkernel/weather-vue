@@ -23,18 +23,29 @@ export const useLocationStore = defineStore('location', () => {
     source.value = payload.source
   }
 
-  function setCoords(newLat: number, newLon: number, name: string, src: LocationSource) {
-    lat.value = newLat
-    lon.value = newLon
+  function setFromGeo(latitude: number, longitude: number, name: string = '') {
+    lat.value = latitude
+    lon.value = longitude
     cityName.value = name
-    source.value = src
+    source.value = 'geo'
   }
 
-  function reset() {
-    lat.value = null
-    lon.value = null
-    cityName.value = ''
+  function setFromSearch(name: string, latitude: number, longitude: number) {
+    lat.value = latitude
+    lon.value = longitude
+    cityName.value = name
+    source.value = 'search'
+  }
+
+  function setDefault(name: string, latitude: number, longitude: number) {
+    lat.value = latitude
+    lon.value = longitude
+    cityName.value = name
     source.value = 'default'
+  }
+
+  function hasCoords(): boolean {
+    return lat.value !== null && lon.value !== null
   }
 
   return {
@@ -43,7 +54,9 @@ export const useLocationStore = defineStore('location', () => {
     cityName,
     source,
     setLocation,
-    setCoords,
-    reset,
+    setFromGeo,
+    setFromSearch,
+    setDefault,
+    hasCoords,
   }
 })

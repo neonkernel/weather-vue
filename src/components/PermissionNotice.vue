@@ -1,52 +1,57 @@
 <template>
-  <Transition
-    enter-active-class="transition-all duration-300 ease-out"
-    enter-from-class="opacity-0 -translate-y-2"
-    enter-to-class="opacity-100 translate-y-0"
-    leave-active-class="transition-all duration-200 ease-in"
-    leave-from-class="opacity-100 translate-y-0"
-    leave-to-class="opacity-0 -translate-y-2"
-  >
+  <Transition name="slide-down">
     <div
       v-if="visible"
-      class="flex items-start gap-3 px-4 py-3 rounded-xl border border-amber-400/30 bg-amber-500/10 backdrop-blur-sm"
+      class="relative flex items-start gap-3 rounded-xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200 backdrop-blur-sm"
       role="alert"
     >
       <!-- Icon -->
-      <div class="flex-shrink-0 mt-0.5">
+      <div class="mt-0.5 flex-shrink-0">
         <svg
-          class="w-5 h-5 text-amber-400"
-          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          class="h-5 w-5 text-amber-400"
           viewBox="0 0 24 24"
+          fill="none"
           stroke="currentColor"
           stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
-          />
+          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          <line x1="12" y1="9" x2="12" y2="13" />
+          <line x1="12" y1="17" x2="12.01" y2="17" />
         </svg>
       </div>
 
       <!-- Message -->
-      <div class="flex-1 min-w-0">
-        <p class="text-sm font-medium text-amber-300">Location Access Denied</p>
-        <p class="mt-0.5 text-xs text-amber-200/70">
+      <div class="flex-1">
+        <p class="font-medium text-amber-300">Location access denied</p>
+        <p class="mt-0.5 text-amber-200/80">
           We couldn't access your location. Showing weather for
-          <span class="font-semibold text-amber-200">{{ fallbackCity }}</span> instead.
+          <strong class="text-amber-200">{{ fallbackCity }}</strong> instead.
           You can search for any city using the search bar above.
         </p>
       </div>
 
       <!-- Dismiss button -->
       <button
+        type="button"
+        class="flex-shrink-0 rounded-lg p-1 text-amber-400 transition-colors hover:bg-amber-400/20 hover:text-amber-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+        aria-label="Dismiss notification"
         @click="dismiss"
-        class="flex-shrink-0 p-1 rounded-lg text-amber-400/60 hover:text-amber-300 hover:bg-amber-400/10 transition-colors duration-150"
-        aria-label="Dismiss notice"
       >
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          class="h-4 w-4"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
         </svg>
       </button>
     </div>
@@ -56,18 +61,37 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
-const props = defineProps<{
-  fallbackCity: string
-}>()
+interface Props {
+  fallbackCity?: string
+  show?: boolean
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  fallbackCity: 'New York',
+  show: true,
+})
 
 const emit = defineEmits<{
-  dismissed: []
+  dismiss: []
 }>()
 
-const visible = ref(true)
+const visible = ref(props.show)
 
 function dismiss() {
   visible.value = false
-  emit('dismissed')
+  emit('dismiss')
 }
 </script>
+
+<style scoped>
+.slide-down-enter-active,
+.slide-down-leave-active {
+  transition: all 0.3s ease;
+}
+
+.slide-down-enter-from,
+.slide-down-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+</style>

@@ -1,66 +1,68 @@
-import type { GeoLocation } from '../types/weather';
+const GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search'
 
-const GEOCODING_BASE = 'https://geocoding-api.open-meteo.com/v1/search';
-
-export interface GeocodeResult {
-  id: number;
-  name: string;
-  latitude: number;
-  longitude: number;
-  country: string;
-  country_code: string;
-  admin1?: string;
+export interface GeocodingResult {
+  id: number
+  name: string
+  latitude: number
+  longitude: number
+  country: string
+  admin1?: string
 }
 
-export interface GeocodeResponse {
-  results?: GeocodeResult[];
-  generationtime_ms: number;
+export interface GeocodingResponse {
+  results?: GeocodingResult[]
 }
 
-/**
- * Fetch geocoding results for a city name.
- * Returns up to `count` matches (default 5).
- */
-export async function geocodeCity(cityName: string, count = 5): Promise<GeocodeResult[]> {
-  if (!cityName.trim()) throw new Error('City name must not be empty.');
+export async function searchCity(query: string): Promise<GeocodingResult[]> {
+  const url = new URL(GEOCODING_URL)
+  url.searchParams.set('name', query)
+  url.searchParams.set('count', '5')
+  url.searchParams.set('language', 'en')
+  url.searchParams.set('format', 'json')
 
-  const params = new URLSearchParams({
-    name: cityName.trim(),
-    count: String(count),
-    language: 'en',
-    format: 'json',
-  });
-
-  const response = await fetch(`${GEOCODING_BASE}?${params.toString()}`);
+  const response = await fetch(url.toString())
 
   if (!response.ok) {
-    throw new Error(`Geocoding request failed: ${response.status} ${response.statusText}`);
+    throw new Error(`Geocoding API error: ${response.status} ${response.statusText}`)
   }
 
-  const data: GeocodeResponse = await response.json();
-
-  if (!data.results || data.results.length === 0) {
-    throw new Error(`No location found for "${cityName}". Please check the spelling and try again.`);
-  }
-
-  return data.results;
+  const data: GeocodingResponse = await response.json()
+  return data.results ?? []
 }
 
-/**
- * Resolve the first matching GeoLocation for a city name string.
- */
-export async function resolveCity(cityName: string): Promise<GeoLocation> {
-  const results = await geocodeCity(cityName, 1);
-  const first = results[0];
+export async function reverseGeocode(lat: number, lon: number): Promise<string> {
+  // Open-Meteo doesn't provide reverse geocoding, so we use a simple approach
+  // In production you'd use a proper reverse geocoding API
+  // For now, return coordinates as fallback
+  try {
+    const url = new URL('https://nominatim.openstreetmap.org/reverse')
+    url.searchParams.set('lat', lat.toString())
+    url.searchParams.set('lon', lon.toString())
+    url.searchParams.set('format', 'json')
 
-  const displayParts = [first.name];
-  if (first.admin1) displayParts.push(first.admin1);
-  displayParts.push(first.country);
+    const response = await fetch(url.toString(), {
+      headers: {
+        'Accept-Language': 'en',
+        'User-Agent': 'WeatherDashboard/1.0',
+      },
+    })
 
-  return {
-    lat: first.latitude,
-    lon: first.longitude,
-    displayName: displayParts.join(', '),
-    country: first.country,
-  };
+    if (!response.ok) {
+      return `${lat.toFixed(2)}, ${lon.toFixed(2)}`
+    }
+
+    const data = await response.json()
+    const city =
+      data.address?.city ||
+      data.address?.town ||
+      data.address?.village ||
+      data.address?.county ||
+      data.address?.state ||
+      data.address?.country ||
+      `${lat.toFixed(2)}, ${lon.toFixed(2)}`
+
+    return city
+  } catch {
+    return `${lat.toFixed(2)}, ${lon.toFixed(2)}`
+  }
 }
