@@ -5,19 +5,21 @@ build-backend = "hatchling.build"
 [project]
 name = "summarizer"
 version = "0.1.0"
-description = "Article summarizer using LLMs"
-requires-python = ">=3.10"
+description = "Article summarization tool powered by LLMs"
+readme = "README.md"
+requires-python = ">=3.11"
 dependencies = [
     "openai>=1.0.0",
     "tiktoken>=0.5.0",
     "tenacity>=8.2.0",
-    "httpx>=0.24.0",
+    "httpx>=0.25.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
 ]
 
 [tool.pytest.ini_options]
@@ -25,6 +27,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+addopts = "-v --tb=short"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/summarizer"]

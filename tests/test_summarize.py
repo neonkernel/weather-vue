@@ -1,307 +1,290 @@
-"""Integration-style tests for the full summarize() pipeline."""
+"""Integration-style tests for the summarize() pipeline using mocked LLM responses."""
 
-from __future__ import annotations
-
-import sys
-import os
-from unittest.mock import MagicMock, patch
-
+from unittest.mock import MagicMock, patch, call
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from summarizer.config import Config
-from summarizer.exceptions import SummarizerError
-from summarizer.llm.client import SummarizerClient
-from summarizer.llm.prompts import SummaryStyle
-from summarizer.models import Article, Summary
-from summarizer.summarize import summarize
+from src.summarizer.summarize import summarize, _direct_summarize, _chunked_summarize
+from src.summarizer.models import Article, Summary
+from src.summarizer.llm.client import SummarizerClient
+from src.summarizer.llm.prompts import PromptBuilder
+from src.summarizer.exceptions import SummarizationError
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-
-@pytest.fixture
-def short_article() -> Article:
-    return Article(
-        content="Scientists have discovered a new species of deep-sea fish "
-                "off the coast of New Zealand. The fish, named Bathypelagicus "
-                "novus, lives at depths of over 3,000 meters.",
-        title="New Deep-Sea Fish Discovered",
-        url="https://example.com/fish",
-    )
-
-
-@pytest.fixture
-def long_article() -> Article:
-    paragraph = (
-        "The global economy continues to face significant challenges in the "
-        "wake of unprecedented disruptions. Analysts from major financial "
-        "institutions warn that inflation, supply chain bottlenecks, and "
-        "geopolitical tensions are creating a perfect storm for markets. "
-        "Central banks around the world are raising interest rates in an "
-        "attempt to tame inflation, but critics argue these measures risk "
-        "triggering a recession. "
-    )
-    return Article(
-        content=paragraph * 50,  # ~350 words repeated
-        title="Global Economic Outlook",
-    )
+def make_mock_response(content: str, prompt_tokens: int = 100, completion_tokens: int = 50):
+    """Create a mock OpenAI API response."""
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = content
+    mock_response.usage.prompt_tokens = prompt_tokens
+    mock_response.usage.completion_tokens = completion_tokens
+    mock_response.usage.total_tokens = prompt_tokens + completion_tokens
+    return mock_response
 
 
 @pytest.fixture
-def mock_client() -> MagicMock:
-    """A pre-configured mock SummarizerClient."""
-    client = MagicMock(spec=SummarizerClient)
-    client.complete.return_value = ("A concise summary.", 100, 50)
+def mock_openai_client():
+    """Patch the OpenAI client constructor."""
+    with patch("src.summarizer.llm.client.OpenAI") as mock_cls:
+        mock_instance = MagicMock()
+        mock_cls.return_value = mock_instance
+        yield mock_instance
+
+
+@pytest.fixture
+def summarizer_client(mock_openai_client):
+    """Create a SummarizerClient backed by a mock OpenAI instance."""
+    client = SummarizerClient(api_key="test-key", model="gpt-4o-mini")
     return client
 
 
 @pytest.fixture
-def config() -> Config:
-    return Config(
-        openai_api_key="test-key",
-        model="gpt-4o-mini",
-        temperature=0.3,
-        max_tokens=512,
-        max_retries=3,
+def short_article():
+    return Article(
+        content="Scientists have discovered a new species of deep-sea fish near the Mariana Trench. "
+                "The fish, named Bathysaurus marianae, can survive at depths exceeding 8,000 meters. "
+                "It has bioluminescent organs and a transparent body.",
+        title="New Deep-Sea Fish Species Discovered",
+        url="https://example.com/fish",
+        author="Dr. Jane Smith",
+    )
+
+
+@pytest.fixture
+def long_article():
+    """Create an article long enough to trigger chunking."""
+    content = " ".join([
+        f"This is sentence number {i} of a very long article about climate change. "
+        f"Researchers have found significant evidence that global temperatures are rising. "
+        f"The impact on ecosystems is profound and far-reaching."
+        for i in range(1000)
+    ])
+    return Article(
+        content=content,
+        title="Climate Change: A Comprehensive Analysis",
     )
 
 
 # ---------------------------------------------------------------------------
-# Basic summarize() tests
+# Direct summarization tests
 # ---------------------------------------------------------------------------
 
-
-class TestSummarize:
-    def test_returns_summary_object(self, short_article, mock_client, config):
-        result = summarize(short_article, config=config, client=mock_client)
+class TestDirectSummarize:
+    def test_returns_summary_object(self, summarizer_client, mock_openai_client, short_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response(
+            "A new deep-sea fish species was discovered near the Mariana Trench."
+        )
+        result = summarize(short_article, client=summarizer_client)
         assert isinstance(result, Summary)
 
-    def test_summary_has_correct_title(self, short_article, mock_client, config):
-        result = summarize(short_article, config=config, client=mock_client)
-        assert result.article_title == "New Deep-Sea Fish Discovered"
+    def test_summary_text_matches_api_response(self, summarizer_client, mock_openai_client, short_article):
+        expected = "A new deep-sea fish species was discovered near the Mariana Trench."
+        mock_openai_client.chat.completions.create.return_value = make_mock_response(expected)
+        result = summarize(short_article, client=summarizer_client)
+        assert result.summary_text == expected
 
-    def test_summary_text_is_non_empty(self, short_article, mock_client, config):
-        result = summarize(short_article, config=config, client=mock_client)
-        assert len(result.summary) > 0
-
-    def test_summary_contains_llm_response(self, short_article, mock_client, config):
-        mock_client.complete.return_value = ("Deep sea fish found.", 50, 20)
-        result = summarize(short_article, config=config, client=mock_client)
-        assert result.summary == "Deep sea fish found."
-
-    def test_summary_has_model_name(self, short_article, mock_client, config):
-        result = summarize(short_article, config=config, client=mock_client)
+    def test_summary_has_correct_model(self, summarizer_client, mock_openai_client, short_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Summary")
+        result = summarize(short_article, client=summarizer_client, model="gpt-4o-mini")
         assert result.model == "gpt-4o-mini"
 
-    def test_summary_has_token_counts(self, short_article, config):
-        client = MagicMock(spec=SummarizerClient)
-        client.complete.return_value = ("Summary text.", 100, 50)
-        result = summarize(short_article, config=config, client=client)
-        assert result.prompt_tokens == 100
-        assert result.completion_tokens == 50
-        assert result.total_tokens == 150
+    def test_summary_has_correct_style(self, summarizer_client, mock_openai_client, short_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Summary")
+        result = summarize(short_article, client=summarizer_client, style="detailed")
+        assert result.style == "detailed"
 
-    def test_summary_strategy_direct_for_short_article(
-        self, short_article, mock_client, config
-    ):
-        result = summarize(short_article, config=config, client=mock_client)
-        assert result.strategy == "direct"
+    def test_summary_method_is_direct_for_short_article(self, summarizer_client, mock_openai_client, short_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Summary")
+        result = summarize(short_article, client=summarizer_client)
+        assert result.method == "direct"
 
-    def test_article_without_title_uses_untitled(self, mock_client, config):
-        article = Article(content="Some content here.")
-        result = summarize(article, config=config, client=mock_client)
-        assert result.article_title == "Untitled"
+    def test_summary_includes_token_counts(self, summarizer_client, mock_openai_client, short_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response(
+            "Summary", prompt_tokens=200, completion_tokens=80
+        )
+        result = summarize(short_article, client=summarizer_client)
+        assert result.input_tokens == 200
+        assert result.output_tokens == 80
 
-    def test_summary_text_is_stripped(self, short_article, config):
-        client = MagicMock(spec=SummarizerClient)
-        client.complete.return_value = ("  Summary with spaces.  ", 50, 20)
-        result = summarize(short_article, config=config, client=client)
-        assert result.summary == "Summary with spaces."
+    def test_summary_includes_cost_estimate(self, summarizer_client, mock_openai_client, short_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response(
+            "Summary", prompt_tokens=200, completion_tokens=80
+        )
+        result = summarize(short_article, client=summarizer_client)
+        assert result.estimated_cost_usd > 0
 
+    def test_summary_includes_article_title(self, summarizer_client, mock_openai_client, short_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Summary")
+        result = summarize(short_article, client=summarizer_client)
+        assert result.article_title == "New Deep-Sea Fish Species Discovered"
 
-# ---------------------------------------------------------------------------
-# Strategy selection tests
-# ---------------------------------------------------------------------------
+    def test_api_called_once_for_short_article(self, summarizer_client, mock_openai_client, short_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Summary")
+        summarize(short_article, client=summarizer_client)
+        assert mock_openai_client.chat.completions.create.call_count == 1
 
+    def test_user_prompt_contains_article_content(self, summarizer_client, mock_openai_client, short_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Summary")
+        summarize(short_article, client=summarizer_client)
 
-class TestStrategySelection:
-    def test_direct_strategy_when_content_fits(self, short_article, mock_client, config):
-        with patch("summarizer.summarize.fits_in_context", return_value=True):
-            result = summarize(short_article, config=config, client=mock_client)
-        assert result.strategy == "direct"
+        call_args = mock_openai_client.chat.completions.create.call_args
+        messages = call_args.kwargs.get("messages") or call_args.args[0] if call_args.args else call_args.kwargs["messages"]
+        user_message = next(m for m in messages if m["role"] == "user")
+        assert "Mariana Trench" in user_message["content"]
 
-    def test_map_reduce_strategy_when_content_too_long(
-        self, long_article, config
-    ):
-        mock_client = MagicMock(spec=SummarizerClient)
-        # map calls + reduce call
-        mock_client.complete.side_effect = [
-            ("Chunk summary 1.", 100, 40),
-            ("Chunk summary 2.", 110, 45),
-            ("Final summary.", 200, 80),
-        ]
-
-        with patch("summarizer.summarize.fits_in_context", return_value=False), \
-             patch("summarizer.summarize.map_reduce_summarize") as mock_mr:
-            mock_mr.return_value = ("Map-reduce summary.", 500, 150)
-            result = summarize(long_article, config=config, client=mock_client)
-
-        assert result.strategy == "map_reduce"
-        assert result.summary == "Map-reduce summary."
-
-    def test_map_reduce_called_with_correct_args(self, long_article, config):
-        mock_client = MagicMock(spec=SummarizerClient)
-
-        with patch("summarizer.summarize.fits_in_context", return_value=False), \
-             patch("summarizer.summarize.map_reduce_summarize") as mock_mr:
-            mock_mr.return_value = ("Summary.", 100, 50)
-            summarize(long_article, config=config, client=mock_client)
-
-        mock_mr.assert_called_once()
-        call_kwargs = mock_mr.call_args.kwargs
-        assert call_kwargs["text"] == long_article.content
-        assert call_kwargs["title"] == long_article.title
-        assert call_kwargs["client"] == mock_client
-        assert call_kwargs["model"] == config.model
-
-
-# ---------------------------------------------------------------------------
-# Style tests
-# ---------------------------------------------------------------------------
-
-
-class TestSummarizeStyles:
-    @pytest.mark.parametrize("style", list(SummaryStyle))
-    def test_all_styles_produce_summary(self, short_article, config, style):
-        client = MagicMock(spec=SummarizerClient)
-        client.complete.return_value = ("Summary.", 50, 20)
-        result = summarize(short_article, config=config, style=style, client=client)
+    def test_creates_client_if_not_provided(self, mock_openai_client, short_article):
+        """Should auto-create a SummarizerClient if none is provided."""
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Summary")
+        # Should not raise — creates its own client
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+            result = summarize(short_article)
         assert isinstance(result, Summary)
 
-    def test_style_affects_prompt(self, short_article, config):
-        """Different styles should result in different prompts being sent."""
-        captured_messages = []
 
-        def capture_messages(messages):
-            captured_messages.append(messages)
-            return "Summary.", 50, 20
+# ---------------------------------------------------------------------------
+# Style variations
+# ---------------------------------------------------------------------------
 
-        client = MagicMock(spec=SummarizerClient)
-        client.complete.side_effect = capture_messages
+class TestSummarizeStyles:
+    @pytest.mark.parametrize("style", ["concise", "detailed", "bullet", "executive"])
+    def test_all_styles_produce_summary(self, summarizer_client, mock_openai_client, short_article, style):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response(
+            f"Summary in {style} style."
+        )
+        result = summarize(short_article, client=summarizer_client, style=style)
+        assert result.style == style
+        assert result.summary_text == f"Summary in {style} style."
 
-        summarize(short_article, config=config, style=SummaryStyle.CONCISE, client=client)
-        client.reset_mock()
-        client.complete.side_effect = capture_messages
+    def test_different_styles_use_different_system_prompts(self, summarizer_client, mock_openai_client, short_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Summary")
 
-        summarize(short_article, config=config, style=SummaryStyle.DETAILED, client=client)
+        system_prompts = []
+        for style in ["concise", "detailed"]:
+            summarize(short_article, client=summarizer_client, style=style)
+            call_args = mock_openai_client.chat.completions.create.call_args
+            messages = call_args.kwargs.get("messages", call_args.args[0] if call_args.args else [])
+            system_msg = next(m for m in messages if m["role"] == "system")
+            system_prompts.append(system_msg["content"])
+            mock_openai_client.chat.completions.create.reset_mock()
 
-        assert len(captured_messages) == 2
-        # The system prompts should differ between styles
-        concise_system = captured_messages[0][0]["content"]
-        detailed_system = captured_messages[1][0]["content"]
-        assert concise_system != detailed_system
+        assert system_prompts[0] != system_prompts[1]
+
+
+# ---------------------------------------------------------------------------
+# Chunked (map-reduce) summarization tests
+# ---------------------------------------------------------------------------
+
+class TestChunkedSummarize:
+    def test_long_article_uses_map_reduce(self, summarizer_client, mock_openai_client, long_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response(
+            "Final combined summary of climate change article."
+        )
+        result = summarize(long_article, client=summarizer_client)
+        assert result.method == "map_reduce"
+
+    def test_long_article_makes_multiple_api_calls(self, summarizer_client, mock_openai_client, long_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Chunk summary")
+        summarize(long_article, client=summarizer_client)
+        # Should have more than 1 call (map + reduce)
+        assert mock_openai_client.chat.completions.create.call_count > 1
+
+    def test_long_article_returns_summary_object(self, summarizer_client, mock_openai_client, long_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Final summary")
+        result = summarize(long_article, client=summarizer_client)
+        assert isinstance(result, Summary)
+
+    def test_long_article_summary_text_is_non_empty(self, summarizer_client, mock_openai_client, long_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Final summary")
+        result = summarize(long_article, client=summarizer_client)
+        assert result.summary_text
+        assert len(result.summary_text) > 0
+
+    def test_chunked_summary_accumulates_token_usage(self, summarizer_client, mock_openai_client, long_article):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response(
+            "Summary", prompt_tokens=100, completion_tokens=50
+        )
+        result = summarize(long_article, client=summarizer_client)
+        call_count = mock_openai_client.chat.completions.create.call_count
+        # Total tokens should be call_count * (100 + 50)
+        assert result.input_tokens == call_count * 100
+        assert result.output_tokens == call_count * 50
 
 
 # ---------------------------------------------------------------------------
 # Error handling tests
 # ---------------------------------------------------------------------------
 
+class TestSummarizeErrors:
+    def test_api_error_raises_summarization_error(self, summarizer_client, mock_openai_client, short_article):
+        mock_openai_client.chat.completions.create.side_effect = Exception("Unexpected API error")
+        with pytest.raises(SummarizationError):
+            summarize(short_article, client=summarizer_client)
 
-class TestSummarizeErrorHandling:
-    def test_raises_summarizer_error_on_api_failure(self, short_article, config):
-        client = MagicMock(spec=SummarizerClient)
-        client.complete.side_effect = RuntimeError("API is down")
-
-        with pytest.raises(SummarizerError, match="Failed to summarize article"):
-            summarize(short_article, config=config, client=client)
-
-    def test_original_exception_is_chained(self, short_article, config):
-        client = MagicMock(spec=SummarizerClient)
-        original_error = ValueError("Something went wrong")
-        client.complete.side_effect = original_error
-
-        with pytest.raises(SummarizerError) as exc_info:
-            summarize(short_article, config=config, client=client)
-
+    def test_summarization_error_wraps_original(self, summarizer_client, mock_openai_client, short_article):
+        original_error = Exception("Original error")
+        mock_openai_client.chat.completions.create.side_effect = original_error
+        with pytest.raises(SummarizationError) as exc_info:
+            summarize(short_article, client=summarizer_client)
         assert exc_info.value.__cause__ is original_error
 
-    def test_empty_article_content_raises_value_error(self):
-        with pytest.raises(ValueError, match="content cannot be empty"):
-            Article(content="")
+    def test_invalid_style_raises_value_error(self, summarizer_client, mock_openai_client, short_article):
+        with pytest.raises(ValueError):
+            summarize(short_article, client=summarizer_client, style="invalid_style")
 
 
 # ---------------------------------------------------------------------------
-# Client creation tests
+# Article without title
 # ---------------------------------------------------------------------------
 
+class TestSummarizeWithoutTitle:
+    def test_article_without_title(self, summarizer_client, mock_openai_client):
+        article = Article(content="Some content without a title.")
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Summary")
+        result = summarize(article, client=summarizer_client)
+        assert isinstance(result, Summary)
+        assert result.article_title is None
 
-class TestClientCreation:
-    def test_client_created_from_config_when_not_provided(
-        self, short_article, config
-    ):
-        with patch("summarizer.summarize.SummarizerClient") as MockClient:
-            mock_instance = MagicMock(spec=SummarizerClient)
-            mock_instance.complete.return_value = ("Summary.", 50, 20)
-            MockClient.return_value = mock_instance
+    def test_article_without_title_still_sends_content(self, summarizer_client, mock_openai_client):
+        article = Article(content="Unique article content XYZ123.")
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Summary")
+        summarize(article, client=summarizer_client)
 
-            result = summarize(short_article, config=config)
+        call_args = mock_openai_client.chat.completions.create.call_args
+        messages = call_args.kwargs.get("messages", [])
+        all_content = " ".join(m["content"] for m in messages)
+        assert "XYZ123" in all_content
 
-        MockClient.assert_called_once_with(
-            api_key=config.openai_api_key,
-            model=config.model,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-            max_retries=config.max_retries,
-            base_url=None,
+
+# ---------------------------------------------------------------------------
+# _direct_summarize and _chunked_summarize unit tests
+# ---------------------------------------------------------------------------
+
+class TestInternalHelpers:
+    def test_direct_summarize_returns_string(self, summarizer_client, mock_openai_client):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Direct summary")
+        builder = PromptBuilder(style="concise")
+        result = _direct_summarize(
+            article_text="Some article text.",
+            article_title="Test Article",
+            client=summarizer_client,
+            prompt_builder=builder,
         )
+        assert result == "Direct summary"
 
-    def test_provided_client_is_used_directly(self, short_article, config):
-        """When a client is passed in, no new client should be created."""
-        custom_client = MagicMock(spec=SummarizerClient)
-        custom_client.complete.return_value = ("Custom summary.", 50, 20)
-
-        with patch("summarizer.summarize.SummarizerClient") as MockClient:
-            result = summarize(short_article, config=config, client=custom_client)
-
-        MockClient.assert_not_called()
-        assert result.summary == "Custom summary."
-
-
-# ---------------------------------------------------------------------------
-# Summary dataclass tests
-# ---------------------------------------------------------------------------
-
-
-class TestSummaryDataclass:
-    def test_total_tokens_property(self):
-        summary = Summary(
-            article_title="Test",
-            summary="A summary.",
+    def test_chunked_summarize_returns_string(self, summarizer_client, mock_openai_client):
+        mock_openai_client.chat.completions.create.return_value = make_mock_response("Chunk summary")
+        builder = PromptBuilder(style="concise")
+        long_text = "word " * 500
+        result = _chunked_summarize(
+            article_text=long_text,
+            article_title="Long Article",
+            client=summarizer_client,
+            prompt_builder=builder,
             model="gpt-4o-mini",
-            prompt_tokens=100,
-            completion_tokens=50,
+            chunk_overlap=10,
         )
-        assert summary.total_tokens == 150
-
-    def test_default_strategy_is_direct(self):
-        summary = Summary(
-            article_title="Test",
-            summary="A summary.",
-            model="gpt-4o-mini",
-        )
-        assert summary.strategy == "direct"
-
-    def test_summary_str_representation(self):
-        summary = Summary(
-            article_title="My Article",
-            summary="Short summary.",
-            model="gpt-4o-mini",
-            prompt_tokens=10,
-            completion_tokens=5,
-        )
-        repr_str = repr(summary)
-        assert "My Article" in repr_str
+        assert isinstance(result, str)
+        assert len(result) > 0

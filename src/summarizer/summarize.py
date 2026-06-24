@@ -1,16 +1,14 @@
-"""Top-level orchestration: takes an Article, returns a Summary."""
-
-from __future__ import annotations
+"""Top-level orchestration for article summarization."""
 
 import logging
 from typing import Optional
 
-from .config import Config
-from .exceptions import SummarizerError
-from .llm.chunker import map_reduce_summarize
+from .config import get_config
+from .exceptions import SummarizationError
 from .llm.client import SummarizerClient
-from .llm.prompts import PromptBuilder, SummaryStyle
-from .llm.token_utils import fits_in_context
+from .llm.chunker import TextChunker, run_map_reduce
+from .llm.prompts import PromptBuilder
+from .llm.token_utils import fits_in_context, count_tokens
 from .models import Article, Summary
 
 logger = logging.getLogger(__name__)
@@ -18,114 +16,186 @@ logger = logging.getLogger(__name__)
 
 def summarize(
     article: Article,
-    config: Optional[Config] = None,
-    style: SummaryStyle = SummaryStyle.CONCISE,
     client: Optional[SummarizerClient] = None,
+    style: str = "concise",
+    max_summary_words: Optional[int] = None,
+    model: str = "gpt-4o-mini",
+    temperature: float = 0.3,
+    max_tokens: int = 1024,
+    chunk_overlap: int = 100,
 ) -> Summary:
-    """Summarize an article using the configured LLM.
+    """Summarize an article using the LLM.
 
-    This function decides whether to use direct summarization (for articles
-    that fit within the model's context window) or map-reduce chunked
-    summarization (for longer articles).
+    Automatically decides between direct summarization and chunked (map-reduce)
+    summarization based on the article's token count.
 
     Args:
         article: The Article object to summarize.
-        config: Optional Config object. Defaults to Config().
-        style: The summary style to use.
-        client: Optional pre-configured SummarizerClient. If not provided,
-                one is created from config.
+        client: Optional pre-configured SummarizerClient. If not provided, one
+                will be created using the application config.
+        style: Summary style — 'concise', 'detailed', 'bullet', or 'executive'.
+        max_summary_words: Optional word limit for the summary.
+        model: The OpenAI model to use.
+        temperature: Sampling temperature.
+        max_tokens: Maximum completion tokens.
+        chunk_overlap: Token overlap between chunks in map-reduce mode.
 
     Returns:
-        A Summary dataclass containing the summary text and metadata.
+        A Summary dataclass with the generated summary text and metadata.
 
     Raises:
-        SummarizerError: If summarization fails.
+        SummarizationError: If the summarization fails.
     """
-    if config is None:
-        config = Config()
-
     if client is None:
         client = SummarizerClient(
-            api_key=config.openai_api_key,
-            model=config.model,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-            max_retries=config.max_retries,
-            base_url=getattr(config, "base_url", None),
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
 
-    prompt_builder = PromptBuilder(style=style)
+    prompt_builder = PromptBuilder(
+        style=style,
+        max_summary_words=max_summary_words,
+    )
 
+    article_text = article.content
+    article_title = getattr(article, "title", None)
+
+    token_count = count_tokens(article_text, model)
     logger.info(
-        "Starting summarization for article: '%s' (%d chars)",
-        article.title or "Untitled",
-        len(article.content),
+        "Starting summarization for article '%s' (%d tokens)",
+        article_title or "Untitled",
+        token_count,
     )
 
     try:
-        content_fits = fits_in_context(
-            article.content,
-            model=config.model,
-        )
-
-        if content_fits:
-            logger.info("Using direct summarization (content fits in context window).")
-            summary_text, prompt_tokens, completion_tokens = _direct_summarize(
-                article=article,
+        if fits_in_context(article_text, model):
+            logger.info("Using direct summarization (article fits in context window)")
+            summary_text = _direct_summarize(
+                article_text=article_text,
+                article_title=article_title,
                 client=client,
                 prompt_builder=prompt_builder,
             )
-            strategy = "direct"
+            method = "direct"
         else:
-            logger.info(
-                "Content exceeds context window — using map-reduce summarization."
-            )
-            summary_text, prompt_tokens, completion_tokens = map_reduce_summarize(
-                text=article.content,
-                title=article.title or "",
+            logger.info("Using map-reduce summarization (article exceeds context window)")
+            summary_text = _chunked_summarize(
+                article_text=article_text,
+                article_title=article_title,
                 client=client,
                 prompt_builder=prompt_builder,
-                model=config.model,
+                model=model,
+                chunk_overlap=chunk_overlap,
             )
-            strategy = "map_reduce"
+            method = "map_reduce"
 
-        logger.info(
-            "Summarization complete. Strategy: %s | Total tokens: %d",
-            strategy,
-            prompt_tokens + completion_tokens,
-        )
+    except Exception as e:
+        logger.error("Summarization failed: %s", e)
+        raise SummarizationError(f"Failed to summarize article: {e}") from e
 
-        return Summary(
-            article_title=article.title or "Untitled",
-            summary=summary_text.strip(),
-            model=config.model,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            strategy=strategy,
-        )
+    client.log_usage_summary()
 
-    except Exception as exc:
-        logger.error("Summarization failed: %s", exc, exc_info=True)
-        raise SummarizerError(f"Failed to summarize article: {exc}") from exc
+    stats = client.usage_stats
+
+    summary = Summary(
+        article_title=article_title,
+        summary_text=summary_text,
+        model=model,
+        style=style,
+        method=method,
+        input_tokens=stats["total_prompt_tokens"],
+        output_tokens=stats["total_completion_tokens"],
+        estimated_cost_usd=stats["total_cost_usd"],
+    )
+
+    logger.info(
+        "Summarization complete: method=%s, summary_length=%d chars",
+        method,
+        len(summary_text),
+    )
+
+    return summary
 
 
 def _direct_summarize(
-    article: Article,
+    article_text: str,
+    article_title: Optional[str],
     client: SummarizerClient,
     prompt_builder: PromptBuilder,
-) -> tuple[str, int, int]:
-    """Summarize an article directly (no chunking).
+) -> str:
+    """Summarize the full article text in a single API call.
 
     Args:
-        article: The Article to summarize.
+        article_text: The article text.
+        article_title: Optional title.
         client: The SummarizerClient.
         prompt_builder: The PromptBuilder.
 
     Returns:
-        Tuple of (summary_text, prompt_tokens, completion_tokens).
+        The summary text.
     """
-    messages = prompt_builder.build_messages(
-        content=article.content,
-        title=article.title or "",
-    )
+    prompt = prompt_builder.build(article_text, title=article_title)
+    messages = prompt.to_openai_messages()
     return client.complete(messages)
+
+
+def _chunked_summarize(
+    article_text: str,
+    article_title: Optional[str],
+    client: SummarizerClient,
+    prompt_builder: PromptBuilder,
+    model: str,
+    chunk_overlap: int,
+) -> str:
+    """Summarize a long article using map-reduce chunking.
+
+    Args:
+        article_text: The full article text.
+        article_title: Optional title.
+        client: The SummarizerClient.
+        prompt_builder: The PromptBuilder.
+        model: The model name for token counting.
+        chunk_overlap: Token overlap between chunks.
+
+    Returns:
+        The final combined summary.
+    """
+    system_prompt = prompt_builder.build_system_prompt()
+
+    def summarize_fn(
+        text: str,
+        title: Optional[str],
+        is_chunk: bool,
+        chunk_index: int,
+        total_chunks: int,
+        is_reduce: bool = False,
+        chunk_summaries: Optional[list[str]] = None,
+    ) -> str:
+        if is_reduce and chunk_summaries is not None:
+            user_prompt = prompt_builder.build_reduce_user_prompt(
+                chunk_summaries=chunk_summaries,
+                title=title,
+            )
+        elif is_chunk:
+            user_prompt = prompt_builder.build_chunk_user_prompt(
+                chunk_text=text,
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
+            )
+        else:
+            user_prompt = prompt_builder.build_user_prompt(text, title=title)
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        return client.complete(messages)
+
+    return run_map_reduce(
+        text=article_text,
+        summarize_fn=summarize_fn,
+        model=model,
+        overlap=chunk_overlap,
+        title=article_title,
+    )
