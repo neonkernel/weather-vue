@@ -1,105 +1,116 @@
 <template>
-  <form
-    class="flex items-center gap-2 w-full max-w-lg mx-auto"
-    @submit.prevent="handleSubmit"
-    role="search"
-    aria-label="Search for a city"
-  >
-    <div class="relative flex-1">
-      <span class="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-400">
-        <!-- Search icon -->
+  <div class="w-full">
+    <div class="flex gap-2">
+      <div class="relative flex-1">
+        <div class="absolute inset-y-0 left-3 flex items-center pointer-events-none">
+          <svg
+            class="w-5 h-5 text-gray-400"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+            />
+          </svg>
+        </div>
+        <input
+          v-model="query"
+          type="text"
+          placeholder="Search for a city..."
+          class="w-full pl-10 pr-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400/50 focus:border-blue-400/50 transition-all"
+          @keydown.enter="handleSearch"
+          @input="handleInput"
+        />
+      </div>
+
+      <button
+        @click="handleSearch"
+        class="px-5 py-3 rounded-xl bg-blue-500 hover:bg-blue-400 text-white font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400/50 disabled:opacity-50 disabled:cursor-not-allowed"
+        :disabled="!query.trim()"
+      >
+        Search
+      </button>
+
+      <button
+        @click="handleGeolocate"
+        :disabled="geoLoading"
+        class="flex items-center justify-center w-12 h-12 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white transition-all focus:outline-none focus:ring-2 focus:ring-blue-400/50 disabled:opacity-50 disabled:cursor-not-allowed"
+        :title="geoLoading ? 'Detecting location...' : 'Use My Location'"
+        aria-label="Use my current location"
+      >
         <svg
-          xmlns="http://www.w3.org/2000/svg"
-          class="h-5 w-5"
+          v-if="!geoLoading"
+          class="w-5 h-5"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
           stroke-width="2"
-          aria-hidden="true"
         >
           <path
             stroke-linecap="round"
             stroke-linejoin="round"
-            d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"
+            d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0013 3.06V1h-2v2.06A8.994 8.994 0 003.06 11H1v2h2.06A8.994 8.994 0 0011 20.94V23h2v-2.06A8.994 8.994 0 0020.94 13H23v-2h-2.06z"
           />
         </svg>
-      </span>
-      <input
-        v-model="query"
-        type="text"
-        name="city"
-        autocomplete="off"
-        placeholder="Search city… e.g. London"
-        class="
-          w-full pl-10 pr-4 py-3 rounded-xl
-          bg-white/10 backdrop-blur-sm
-          border border-white/20
-          text-white placeholder-slate-400
-          focus:outline-none focus:ring-2 focus:ring-sky-400/70 focus:border-transparent
-          transition-all duration-200
-        "
-        :disabled="props.loading"
-        aria-label="City name"
-      />
-    </div>
-
-    <button
-      type="submit"
-      :disabled="props.loading || !query.trim()"
-      class="
-        flex items-center gap-2 px-5 py-3 rounded-xl font-semibold
-        bg-sky-500 hover:bg-sky-400 disabled:bg-sky-500/40
-        text-white transition-all duration-200
-        focus:outline-none focus:ring-2 focus:ring-sky-400/70
-        disabled:cursor-not-allowed
-      "
-      aria-label="Search"
-    >
-      <span v-if="!props.loading">Search</span>
-      <span v-else class="flex items-center gap-1">
         <svg
-          class="animate-spin h-4 w-4 text-white"
-          xmlns="http://www.w3.org/2000/svg"
+          v-else
+          class="w-5 h-5 animate-spin"
           fill="none"
           viewBox="0 0 24 24"
-          aria-hidden="true"
         >
-          <circle
-            class="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            stroke-width="4"
-          />
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
           <path
             class="opacity-75"
             fill="currentColor"
-            d="M4 12a8 8 0 018-8v8H4z"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
           />
         </svg>
-        Searching…
-      </span>
-    </button>
-  </form>
+      </button>
+    </div>
+
+    <p
+      v-if="geoLoading"
+      class="mt-2 text-xs text-blue-300 flex items-center gap-1.5"
+    >
+      <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      </svg>
+      Detecting location...
+    </p>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref } from 'vue'
 
 const props = defineProps<{
-  loading?: boolean;
-}>();
+  geoLoading?: boolean
+}>()
 
 const emit = defineEmits<{
-  (e: 'search', city: string): void;
-}>();
+  (e: 'search', city: string): void
+  (e: 'geolocate'): void
+}>()
 
-const query = ref('');
+const query = ref('')
 
-function handleSubmit() {
-  const trimmed = query.value.trim();
-  if (!trimmed || props.loading) return;
-  emit('search', trimmed);
+function handleSearch() {
+  const trimmed = query.value.trim()
+  if (!trimmed) return
+  emit('search', trimmed)
+  query.value = ''
+}
+
+function handleInput() {
+  // Could add debounced autocomplete here in the future
+}
+
+function handleGeolocate() {
+  emit('geolocate')
 }
 </script>

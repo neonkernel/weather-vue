@@ -1,159 +1,121 @@
-import type { GeoLocation, WeatherCurrent, ForecastDay, WeatherData } from '../types/weather';
-import { getWeatherInfo } from '../utils/weatherCodeMap';
-import { friendlyDate } from '../utils/unitConverters';
+import type { WeatherData } from '../types/weather'
+import { getWeatherDescription } from '../utils/weatherCodeMap'
 
-const WEATHER_BASE = 'https://api.open-meteo.com/v1/forecast';
+const BASE_URL = 'https://api.open-meteo.com/v1/forecast'
+const GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search'
 
-interface OpenMeteoCurrentUnits {
-  temperature_2m: string;
-  apparent_temperature: string;
-  relative_humidity_2m: string;
-  wind_speed_10m: string;
-  wind_direction_10m: string;
-  weather_code: string;
-  is_day: string;
-  precipitation_probability: string;
-  uv_index: string;
+async function geocodeCity(city: string): Promise<{ lat: number; lon: number; name: string }> {
+  const response = await fetch(
+    `${GEOCODING_URL}?name=${encodeURIComponent(city)}&count=1&language=en&format=json`
+  )
+  if (!response.ok) {
+    throw new Error(`Geocoding failed: ${response.statusText}`)
+  }
+  const data = await response.json()
+  if (!data.results || data.results.length === 0) {
+    throw new Error(`City not found: ${city}`)
+  }
+  const result = data.results[0]
+  return { lat: result.latitude, lon: result.longitude, name: result.name }
 }
 
-interface OpenMeteoCurrent {
-  time: string;
-  temperature_2m: number;
-  apparent_temperature: number;
-  relative_humidity_2m: number;
-  wind_speed_10m: number;
-  wind_direction_10m: number;
-  weather_code: number;
-  is_day: number;
-  precipitation_probability: number;
-  uv_index: number;
-}
-
-interface OpenMeteoDailyUnits {
-  time: string;
-  temperature_2m_max: string;
-  temperature_2m_min: string;
-  weather_code: string;
-  precipitation_sum: string;
-  precipitation_probability_max: string;
-  wind_speed_10m_max: string;
-  uv_index_max: string;
-}
-
-interface OpenMeteoDaily {
-  time: string[];
-  temperature_2m_max: number[];
-  temperature_2m_min: number[];
-  weather_code: number[];
-  precipitation_sum: number[];
-  precipitation_probability_max: number[];
-  wind_speed_10m_max: number[];
-  uv_index_max: number[];
-}
-
-export interface OpenMeteoResponse {
-  latitude: number;
-  longitude: number;
-  timezone: string;
-  current_units: OpenMeteoCurrentUnits;
-  current: OpenMeteoCurrent;
-  daily_units: OpenMeteoDailyUnits;
-  daily: OpenMeteoDaily;
-}
-
-/**
- * Fetch raw weather data from Open-Meteo for a given lat/lon.
- */
-export async function fetchWeatherRaw(lat: number, lon: number): Promise<OpenMeteoResponse> {
+async function fetchWeatherData(lat: number, lon: number): Promise<any> {
   const params = new URLSearchParams({
-    latitude: String(lat),
-    longitude: String(lon),
+    latitude: lat.toString(),
+    longitude: lon.toString(),
     current: [
       'temperature_2m',
-      'apparent_temperature',
       'relative_humidity_2m',
+      'apparent_temperature',
+      'weather_code',
       'wind_speed_10m',
       'wind_direction_10m',
-      'weather_code',
-      'is_day',
-      'precipitation_probability',
+      'surface_pressure',
+      'visibility',
       'uv_index',
     ].join(','),
+    hourly: 'temperature_2m,precipitation_probability,weather_code',
     daily: [
+      'weather_code',
       'temperature_2m_max',
       'temperature_2m_min',
-      'weather_code',
       'precipitation_sum',
-      'precipitation_probability_max',
       'wind_speed_10m_max',
-      'uv_index_max',
     ].join(','),
-    wind_speed_unit: 'kmh',
-    forecast_days: '7',
     timezone: 'auto',
-  });
+    forecast_days: '7',
+  })
 
-  const response = await fetch(`${WEATHER_BASE}?${params.toString()}`);
-
+  const response = await fetch(`${BASE_URL}?${params.toString()}`)
   if (!response.ok) {
-    throw new Error(`Weather request failed: ${response.status} ${response.statusText}`);
+    throw new Error(`Weather API error: ${response.statusText}`)
   }
-
-  return response.json() as Promise<OpenMeteoResponse>;
+  return response.json()
 }
 
-/**
- * Transform raw Open-Meteo response into our typed WeatherData shape.
- */
-export function transformWeatherData(raw: OpenMeteoResponse, location: GeoLocation): WeatherData {
-  const c = raw.current;
-  const d = raw.daily;
+function mapApiResponseToWeatherData(data: any, cityName: string): WeatherData {
+  const current = data.current
+  const daily = data.daily
 
-  const currentInfo = getWeatherInfo(c.weather_code);
-
-  const current: WeatherCurrent = {
-    temperature: Math.round(c.temperature_2m),
-    feelsLike: Math.round(c.apparent_temperature),
-    humidity: c.relative_humidity_2m,
-    windSpeed: Math.round(c.wind_speed_10m),
-    windDirection: c.wind_direction_10m,
-    weatherCode: c.weather_code,
-    weatherLabel: currentInfo.label,
-    weatherEmoji: currentInfo.emoji,
-    isDay: c.is_day === 1,
-    precipitationProbability: c.precipitation_probability ?? 0,
-    uvIndex: c.uv_index ?? 0,
-  };
-
-  const forecast: ForecastDay[] = d.time.map((dateStr, i) => {
-    const info = getWeatherInfo(d.weather_code[i]);
-    return {
-      date: dateStr,
-      dateFormatted: friendlyDate(dateStr),
-      tempMax: Math.round(d.temperature_2m_max[i]),
-      tempMin: Math.round(d.temperature_2m_min[i]),
-      weatherCode: d.weather_code[i],
-      weatherLabel: info.label,
-      weatherEmoji: info.emoji,
-      precipitationSum: Math.round((d.precipitation_sum[i] ?? 0) * 10) / 10,
-      precipitationProbability: d.precipitation_probability_max[i] ?? 0,
-      windSpeedMax: Math.round(d.wind_speed_10m_max[i]),
-      uvIndexMax: Math.round(d.uv_index_max[i] ?? 0),
-    };
-  });
+  const forecast = daily.time.map((date: string, i: number) => ({
+    date,
+    weatherCode: daily.weather_code[i],
+    description: getWeatherDescription(daily.weather_code[i]),
+    tempMax: daily.temperature_2m_max[i],
+    tempMin: daily.temperature_2m_min[i],
+    precipitationSum: daily.precipitation_sum[i],
+    windSpeedMax: daily.wind_speed_10m_max[i],
+  }))
 
   return {
-    location,
-    current,
+    city: cityName,
+    current: {
+      temperature: current.temperature_2m,
+      feelsLike: current.apparent_temperature,
+      humidity: current.relative_humidity_2m,
+      weatherCode: current.weather_code,
+      description: getWeatherDescription(current.weather_code),
+      windSpeed: current.wind_speed_10m,
+      windDirection: current.wind_direction_10m,
+      pressure: current.surface_pressure,
+      visibility: current.visibility,
+      uvIndex: current.uv_index,
+    },
     forecast,
-    fetchedAt: new Date().toISOString(),
-  };
+    timezone: data.timezone,
+    lastUpdated: new Date().toISOString(),
+  }
 }
 
-/**
- * High-level function: fetch + transform weather for a location.
- */
-export async function fetchWeatherForLocation(location: GeoLocation): Promise<WeatherData> {
-  const raw = await fetchWeatherRaw(location.lat, location.lon);
-  return transformWeatherData(raw, location);
+export async function fetchWeatherByCity(city: string): Promise<WeatherData> {
+  const { lat, lon, name } = await geocodeCity(city)
+  const data = await fetchWeatherData(lat, lon)
+  return mapApiResponseToWeatherData(data, name)
+}
+
+export async function fetchWeatherByCoords(lat: number, lon: number, cityName?: string): Promise<WeatherData> {
+  const data = await fetchWeatherData(lat, lon)
+
+  let resolvedCityName = cityName || 'Current Location'
+
+  if (!cityName) {
+    try {
+      const reverseResponse = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`
+      )
+      if (reverseResponse.ok) {
+        const reverseData = await reverseResponse.json()
+        resolvedCityName =
+          reverseData.address?.city ||
+          reverseData.address?.town ||
+          reverseData.address?.village ||
+          reverseData.address?.county ||
+          'Current Location'
+      }
+    } catch {
+      resolvedCityName = 'Current Location'
+    }
+  }
+
+  return mapApiResponseToWeatherData(data, resolvedCityName)
 }
