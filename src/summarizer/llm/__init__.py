@@ -1,5 +1,5 @@
-"""LLM integration package for summarization."""
+"""LLM integration package for the summarizer."""
 
-from src.summarizer.llm.client import SummarizerClient
+from .client import SummarizerClient
 
 __all__ = ["SummarizerClient"]

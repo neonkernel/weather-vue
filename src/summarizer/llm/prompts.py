@@ -1,14 +1,14 @@
-"""PromptBuilder: constructs system + user messages for summarization."""
+"""PromptBuilder: constructs system and user prompts for summarization."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
+from typing import Optional
 
 
 class SummaryStyle(str, Enum):
-    """Supported summary styles."""
+    """Available summary styles."""
 
     CONCISE = "concise"
     DETAILED = "detailed"
@@ -18,130 +18,179 @@ class SummaryStyle(str, Enum):
 
 STYLE_INSTRUCTIONS: dict[SummaryStyle, str] = {
     SummaryStyle.CONCISE: (
-        "Produce a concise summary in 2-3 sentences. "
-        "Capture the core message without unnecessary detail."
+        "Provide a concise summary in 2-3 sentences that captures the most "
+        "important information."
     ),
     SummaryStyle.DETAILED: (
-        "Produce a detailed summary covering the main points, key arguments, "
-        "and important details. Aim for 1-2 paragraphs."
+        "Provide a detailed summary covering all major points, key arguments, "
+        "and important details. Use 1-3 paragraphs."
     ),
     SummaryStyle.BULLET_POINTS: (
-        "Produce a summary as a bulleted list of the key points. "
-        "Use between 3 and 7 bullet points. Start each bullet with '- '."
+        "Summarize the content as a structured list of bullet points. "
+        "Each bullet should capture one key idea or fact."
     ),
     SummaryStyle.EXECUTIVE: (
-        "Produce an executive summary suitable for a busy decision-maker. "
-        "Include: the main topic, key findings or events, and implications or "
-        "next steps if present. Keep it to 3-5 sentences."
+        "Write an executive summary suitable for a busy professional. "
+        "Include: the main topic, key findings or arguments, and any actionable "
+        "takeaways. Use clear, professional language."
     ),
 }
 
-SYSTEM_PROMPT_TEMPLATE = (
-    "You are an expert summarization assistant. "
-    "Your task is to read the provided article text and produce a high-quality summary. "
-    "Follow these rules strictly:\n"
-    "1. Only use information present in the article — do not add external knowledge.\n"
-    "2. Maintain a neutral, objective tone.\n"
-    "3. Do not include meta-commentary like 'This article discusses...'.\n"
-    "4. Output only the summary — no preamble or explanation.\n"
-    "{style_instruction}"
-)
+SYSTEM_PROMPT_TEMPLATE = """You are an expert content summarizer. Your task is to \
+summarize articles and text content accurately and faithfully.
 
-CHUNK_SYSTEM_PROMPT = (
-    "You are an expert summarization assistant. "
-    "You will be given a segment of a longer article. "
-    "Summarize only this segment, capturing its key information. "
-    "Be concise but thorough. Output only the summary text."
-)
+Guidelines:
+- Only summarize information present in the provided text; do not add external knowledge
+- Preserve the original meaning and intent of the content
+- Use clear, readable language
+- Do not include opinions or editorial commentary unless present in the original
+- If the text is a partial chunk of a larger document, summarize only what is provided
 
-REDUCE_SYSTEM_PROMPT = (
-    "You are an expert summarization assistant. "
-    "You will be given several partial summaries of different segments of a single article. "
-    "Combine them into one coherent, unified summary. "
-    "Remove redundancy, preserve all key information, and ensure the result reads naturally. "
-    "Output only the final combined summary."
-)
+{style_instruction}"""
 
-USER_PROMPT_TEMPLATE = (
-    "Article text:\n"
-    "'''\n"
-    "{article_text}\n"
-    "'''\n\n"
-    "{instruction}"
-)
+USER_PROMPT_TEMPLATE = """Please summarize the following article:
 
-CHUNK_USER_PROMPT_TEMPLATE = (
-    "Article segment ({chunk_index} of {total_chunks}):\n"
-    "'''\n"
-    "{chunk_text}\n"
-    "'''\n\n"
-    "Summarize this segment."
-)
+Title: {title}
 
-REDUCE_USER_PROMPT_TEMPLATE = (
-    "Partial summaries:\n"
-    "'''\n"
-    "{partial_summaries}\n"
-    "'''\n\n"
-    "Produce a single, unified summary from the partial summaries above."
-)
+Content:
+{content}
 
+{instruction}"""
 
-@dataclass
-class Message:
-    """A single chat message."""
+CHUNK_SYSTEM_PROMPT = """You are an expert content summarizer. Your task is to \
+summarize a section of a larger article accurately and faithfully.
 
-    role: str  # "system" or "user" or "assistant"
-    content: str
+Guidelines:
+- Only summarize information present in the provided text
+- This is a partial section — summarize what you see, not what might come before or after
+- Use clear, readable language
+- Be faithful to the source material"""
 
-    def to_dict(self) -> dict[str, str]:
-        return {"role": self.role, "content": self.content}
+CHUNK_USER_PROMPT_TEMPLATE = """Please summarize the following section of an article:
+
+{content}
+
+Provide a concise summary of this section in 2-4 sentences."""
+
+REDUCE_SYSTEM_PROMPT = """You are an expert content synthesizer. Your task is to \
+combine multiple section summaries of a single article into one coherent summary.
+
+Guidelines:
+- Synthesize the section summaries into a unified, flowing summary
+- Eliminate redundancy while preserving all important information
+- Maintain logical flow and coherence
+- Do not add information not present in the section summaries"""
+
+REDUCE_USER_PROMPT_TEMPLATE = """The following are summaries of consecutive sections \
+of an article titled "{title}".
+
+Please combine them into a single, coherent summary:
+
+{section_summaries}
+
+{instruction}"""
 
 
 @dataclass
 class PromptBuilder:
-    """Constructs chat messages for summarization tasks."""
+    """Builds system and user prompts for summarization tasks."""
 
     style: SummaryStyle = SummaryStyle.CONCISE
+    custom_instruction: Optional[str] = None
 
-    def build_direct_messages(self, article_text: str) -> List[Message]:
-        """Build messages for a single-shot summarization."""
-        style_instruction = STYLE_INSTRUCTIONS[self.style]
-        system_content = SYSTEM_PROMPT_TEMPLATE.format(
-            style_instruction=style_instruction
+    def _get_style_instruction(self) -> str:
+        return STYLE_INSTRUCTIONS.get(self.style, STYLE_INSTRUCTIONS[SummaryStyle.CONCISE])
+
+    def _get_user_instruction(self) -> str:
+        if self.custom_instruction:
+            return self.custom_instruction
+        return self._get_style_instruction()
+
+    def build_system_prompt(self) -> str:
+        """Build the system prompt for direct summarization.
+
+        Returns:
+            The system prompt string.
+        """
+        style_instruction = self._get_style_instruction()
+        return SYSTEM_PROMPT_TEMPLATE.format(style_instruction=style_instruction)
+
+    def build_user_prompt(self, content: str, title: str = "") -> str:
+        """Build the user prompt for direct summarization.
+
+        Args:
+            content: The article content to summarize.
+            title: Optional article title.
+
+        Returns:
+            The user prompt string.
+        """
+        instruction = self._get_user_instruction()
+        return USER_PROMPT_TEMPLATE.format(
+            title=title or "Untitled",
+            content=content,
+            instruction=instruction,
         )
-        user_content = USER_PROMPT_TEMPLATE.format(
-            article_text=article_text,
-            instruction=style_instruction,
-        )
+
+    def build_messages(
+        self, content: str, title: str = ""
+    ) -> list[dict[str, str]]:
+        """Build the full messages list for a direct summarization call.
+
+        Args:
+            content: The article content to summarize.
+            title: Optional article title.
+
+        Returns:
+            A list of message dicts with 'role' and 'content' keys.
+        """
         return [
-            Message(role="system", content=system_content),
-            Message(role="user", content=user_content),
+            {"role": "system", "content": self.build_system_prompt()},
+            {"role": "user", "content": self.build_user_prompt(content, title)},
         ]
 
-    def build_chunk_messages(
-        self, chunk_text: str, chunk_index: int, total_chunks: int
-    ) -> List[Message]:
-        """Build messages for summarizing a single chunk."""
-        user_content = CHUNK_USER_PROMPT_TEMPLATE.format(
-            chunk_index=chunk_index,
-            total_chunks=total_chunks,
-            chunk_text=chunk_text,
-        )
+    def build_chunk_messages(self, chunk_text: str) -> list[dict[str, str]]:
+        """Build messages for summarizing a single chunk.
+
+        Args:
+            chunk_text: The text chunk to summarize.
+
+        Returns:
+            A list of message dicts.
+        """
         return [
-            Message(role="system", content=CHUNK_SYSTEM_PROMPT),
-            Message(role="user", content=user_content),
+            {"role": "system", "content": CHUNK_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": CHUNK_USER_PROMPT_TEMPLATE.format(content=chunk_text),
+            },
         ]
 
-    def build_reduce_messages(self, partial_summaries: List[str]) -> List[Message]:
-        """Build messages for the reduce step (combining partial summaries)."""
-        combined = "\n\n---\n\n".join(
-            f"[Summary {i + 1}]\n{s}" for i, s in enumerate(partial_summaries)
+    def build_reduce_messages(
+        self, section_summaries: list[str], title: str = ""
+    ) -> list[dict[str, str]]:
+        """Build messages for the reduce step (combining chunk summaries).
+
+        Args:
+            section_summaries: List of summaries from each chunk.
+            title: Optional article title.
+
+        Returns:
+            A list of message dicts.
+        """
+        formatted_summaries = "\n\n".join(
+            f"Section {i + 1}:\n{summary}"
+            for i, summary in enumerate(section_summaries)
         )
-        user_content = REDUCE_USER_PROMPT_TEMPLATE.format(
-            partial_summaries=combined
-        )
+        instruction = self._get_user_instruction()
         return [
-            Message(role="system", content=REDUCE_SYSTEM_PROMPT),
-            Message(role="user", content=user_content),
+            {"role": "system", "content": REDUCE_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": REDUCE_USER_PROMPT_TEMPLATE.format(
+                    title=title or "Untitled",
+                    section_summaries=formatted_summaries,
+                    instruction=instruction,
+                ),
+            },
         ]

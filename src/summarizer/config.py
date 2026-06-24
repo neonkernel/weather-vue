@@ -1,32 +1,30 @@
-"""Configuration management for the summarizer package."""
+"""Configuration for the summarizer."""
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
 class Config:
-    """Application configuration.
+    """Summarizer configuration.
 
-    Values are read from environment variables with sensible defaults.
+    Attributes:
+        openai_api_key: OpenAI API key. Falls back to OPENAI_API_KEY env var.
+        model: Model to use for completions.
+        temperature: Sampling temperature.
+        max_tokens: Maximum tokens for completion responses.
+        max_retries: Number of retries for transient API errors.
+        base_url: Optional custom base URL for compatible endpoints.
     """
 
-    openai_api_key: str = field(
-        default_factory=lambda: os.environ.get("OPENAI_API_KEY", "")
+    openai_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("OPENAI_API_KEY")
     )
-    openai_base_url: str = field(
-        default_factory=lambda: os.environ.get(
-            "OPENAI_BASE_URL", "https://api.openai.com/v1"
-        )
-    )
-    model: str = field(
-        default_factory=lambda: os.environ.get("SUMMARIZER_MODEL", "gpt-4o-mini")
-    )
-    temperature: float = field(
-        default_factory=lambda: float(os.environ.get("SUMMARIZER_TEMPERATURE", "0.3"))
-    )
-    max_tokens: int = field(
-        default_factory=lambda: int(os.environ.get("SUMMARIZER_MAX_TOKENS", "1024"))
-    )
+    model: str = "gpt-4o-mini"
+    temperature: float = 0.3
+    max_tokens: int = 1024
+    max_retries: int = 3
+    base_url: Optional[str] = None

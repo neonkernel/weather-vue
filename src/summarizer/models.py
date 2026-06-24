@@ -1,4 +1,4 @@
-"""Domain models for the summarizer package."""
+"""Data models for the summarizer."""
 
 from __future__ import annotations
 
@@ -8,22 +8,30 @@ from typing import Optional
 
 @dataclass
 class Article:
-    """Represents a fetched and parsed article."""
+    """Represents an article to be summarized."""
 
-    url: str
-    title: str
-    text: str
-    html: Optional[str] = None
+    content: str
+    title: Optional[str] = None
+    url: Optional[str] = None
+    author: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if not self.content:
+            raise ValueError("Article content cannot be empty.")
 
 
 @dataclass
 class Summary:
-    """Represents the result of a summarization operation."""
+    """Represents a generated summary with metadata."""
 
-    title: str
+    article_title: str
     summary: str
     model: str
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    estimated_cost: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    strategy: str = "direct"
+
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens used (prompt + completion)."""
+        return self.prompt_tokens + self.completion_tokens

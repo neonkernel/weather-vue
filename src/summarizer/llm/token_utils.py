@@ -1,4 +1,4 @@
-"""Helper functions for token counting, cost estimation, and context window checks."""
+"""Helper functions for token counting and cost estimation."""
 
 from __future__ import annotations
 
@@ -8,7 +8,16 @@ import tiktoken
 
 logger = logging.getLogger(__name__)
 
-# Context window sizes (in tokens) for supported models
+# Cost per 1,000 tokens (as of 2024 — update as pricing changes)
+MODEL_COSTS: dict[str, dict[str, float]] = {
+    "gpt-4o-mini": {"prompt": 0.00015, "completion": 0.0006},
+    "gpt-4o": {"prompt": 0.005, "completion": 0.015},
+    "gpt-4-turbo": {"prompt": 0.01, "completion": 0.03},
+    "gpt-4": {"prompt": 0.03, "completion": 0.06},
+    "gpt-3.5-turbo": {"prompt": 0.0005, "completion": 0.0015},
+}
+
+# Context window sizes in tokens
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-4o-mini": 128_000,
     "gpt-4o": 128_000,
@@ -17,74 +26,90 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-3.5-turbo": 16_385,
 }
 
-# Cost per 1k tokens (prompt, completion) in USD
-MODEL_COSTS: dict[str, tuple[float, float]] = {
-    "gpt-4o-mini": (0.000150, 0.000600),   # $0.15 / $0.60 per 1M tokens
-    "gpt-4o": (0.005, 0.015),
-    "gpt-4-turbo": (0.01, 0.03),
-    "gpt-4": (0.03, 0.06),
-    "gpt-3.5-turbo": (0.0005, 0.0015),
-}
-
-_ENCODER_CACHE: dict[str, tiktoken.Encoding] = {}
+DEFAULT_MODEL = "gpt-4o-mini"
+# Reserve tokens for system prompt + response
+RESERVED_TOKENS = 2_000
 
 
-def _get_encoder(model: str) -> tiktoken.Encoding:
-    """Return (and cache) a tiktoken encoder for the given model."""
-    if model not in _ENCODER_CACHE:
-        try:
-            _ENCODER_CACHE[model] = tiktoken.encoding_for_model(model)
-        except KeyError:
-            # Fall back to cl100k_base for unknown models
-            logger.warning(
-                "No tiktoken encoding found for model '%s'; falling back to cl100k_base.",
-                model,
-            )
-            _ENCODER_CACHE[model] = tiktoken.get_encoding("cl100k_base")
-    return _ENCODER_CACHE[model]
+def _get_encoding(model: str) -> tiktoken.Encoding:
+    """Get the tiktoken encoding for a model, with fallback."""
+    try:
+        return tiktoken.encoding_for_model(model)
+    except KeyError:
+        logger.warning(
+            "No encoding found for model '%s', falling back to cl100k_base.", model
+        )
+        return tiktoken.get_encoding("cl100k_base")
 
 
-def count_tokens(text: str, model: str = "gpt-4o-mini") -> int:
-    """Return the number of tokens in *text* for the given *model*."""
-    encoder = _get_encoder(model)
-    return len(encoder.encode(text))
+def count_tokens(text: str, model: str = DEFAULT_MODEL) -> int:
+    """Count the number of tokens in a text string for the given model.
+
+    Args:
+        text: The text to count tokens for.
+        model: The model name to use for tokenization.
+
+    Returns:
+        The number of tokens in the text.
+    """
+    encoding = _get_encoding(model)
+    return len(encoding.encode(text))
 
 
 def estimate_cost(
     prompt_tokens: int,
     completion_tokens: int,
-    model: str = "gpt-4o-mini",
+    model: str = DEFAULT_MODEL,
 ) -> float:
-    """Estimate the USD cost for a single API call.
+    """Estimate the cost in USD for a given number of tokens.
 
-    Returns 0.0 if the model is not in the cost table.
+    Args:
+        prompt_tokens: Number of tokens in the prompt.
+        completion_tokens: Number of tokens in the completion.
+        model: The model name to use for cost estimation.
+
+    Returns:
+        Estimated cost in USD.
     """
-    if model not in MODEL_COSTS:
-        logger.warning("Cost data not available for model '%s'.", model)
+    costs = MODEL_COSTS.get(model)
+    if costs is None:
+        logger.warning(
+            "No cost data for model '%s'. Returning 0.0.", model
+        )
         return 0.0
-    prompt_cost_per_k, completion_cost_per_k = MODEL_COSTS[model]
-    cost = (prompt_tokens / 1000 * prompt_cost_per_k) + (
-        completion_tokens / 1000 * completion_cost_per_k
-    )
-    return round(cost, 8)
+
+    prompt_cost = (prompt_tokens / 1_000) * costs["prompt"]
+    completion_cost = (completion_tokens / 1_000) * costs["completion"]
+    return prompt_cost + completion_cost
+
+
+def get_context_window(model: str = DEFAULT_MODEL) -> int:
+    """Get the context window size in tokens for a model.
+
+    Args:
+        model: The model name.
+
+    Returns:
+        Context window size in tokens.
+    """
+    return MODEL_CONTEXT_WINDOWS.get(model, 8_192)
 
 
 def fits_in_context(
     text: str,
-    model: str = "gpt-4o-mini",
-    reserved_tokens: int = 1_000,
+    model: str = DEFAULT_MODEL,
+    reserved_tokens: int = RESERVED_TOKENS,
 ) -> bool:
-    """Return True if *text* fits within the model's context window.
+    """Check if a text fits within a model's context window.
 
-    *reserved_tokens* are subtracted from the context window to leave room for
-    system / user prompt overhead and the completion.
+    Args:
+        text: The text to check.
+        model: The model name.
+        reserved_tokens: Tokens to reserve for system prompt and response.
+
+    Returns:
+        True if the text fits in the context window.
     """
-    context_window = MODEL_CONTEXT_WINDOWS.get(model, 4_096)
-    available = context_window - reserved_tokens
     token_count = count_tokens(text, model)
+    available = get_context_window(model) - reserved_tokens
     return token_count <= available
-
-
-def get_context_window(model: str) -> int:
-    """Return the context window size for the given model (defaults to 4096)."""
-    return MODEL_CONTEXT_WINDOWS.get(model, 4_096)

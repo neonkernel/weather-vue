@@ -3,200 +3,164 @@
 from __future__ import annotations
 
 import logging
-from typing import List
+import os
+from typing import Optional
 
-import openai
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from tenacity import (
+    RetryError,
+    before_sleep_log,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    before_sleep_log,
 )
 
-from src.summarizer.config import Config
-from src.summarizer.llm.prompts import Message, PromptBuilder, SummaryStyle
-from src.summarizer.llm.chunker import split_into_chunks
-from src.summarizer.llm.token_utils import estimate_cost, count_tokens
-from src.summarizer.models import Summary
+from .token_utils import DEFAULT_MODEL, estimate_cost
 
 logger = logging.getLogger(__name__)
 
-# Transient errors that should trigger a retry
-_RETRYABLE_EXCEPTIONS = (
-    openai.APIConnectionError,
-    openai.APITimeoutError,
-    openai.RateLimitError,
-    openai.InternalServerError,
+# Transient errors that should be retried
+_RETRYABLE_ERRORS = (
+    APIConnectionError,
+    APITimeoutError,
 )
 
+# 429 (rate limit) and 5xx server errors
+def _is_retryable_status_error(exc: BaseException) -> bool:
+    if isinstance(exc, APIStatusError):
+        return exc.status_code == 429 or exc.status_code >= 500
+    return False
 
-def _build_retry_decorator():
-    return retry(
-        retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-        reraise=True,
-    )
+
+def _is_retryable(exc: BaseException) -> bool:
+    return isinstance(exc, _RETRYABLE_ERRORS) or _is_retryable_status_error(exc)
 
 
 class SummarizerClient:
-    """Wraps the OpenAI chat completions API for article summarization.
+    """Wraps the OpenAI client with retry logic and usage logging.
 
-    Parameters
-    ----------
-    config:
-        Application configuration (carries API key, model, temperature, etc.).
-    style:
-        Summary style to use (concise, detailed, bullet_points, executive).
+    Args:
+        api_key: OpenAI API key. Defaults to OPENAI_API_KEY env var.
+        model: Model to use for completions.
+        temperature: Sampling temperature (0.0–2.0).
+        max_tokens: Maximum tokens in the completion.
+        max_retries: Number of retry attempts for transient errors.
+        base_url: Optional custom base URL (for compatible endpoints).
     """
 
     def __init__(
         self,
-        config: Config | None = None,
-        style: SummaryStyle = SummaryStyle.CONCISE,
+        api_key: Optional[str] = None,
+        model: str = DEFAULT_MODEL,
+        temperature: float = 0.3,
+        max_tokens: int = 1024,
+        max_retries: int = 3,
+        base_url: Optional[str] = None,
     ) -> None:
-        self.config = config or Config()
-        self.style = style
-        self.prompt_builder = PromptBuilder(style=style)
-        self._client = openai.OpenAI(
-            api_key=self.config.openai_api_key,
-            base_url=getattr(self.config, "openai_base_url", None) or "https://api.openai.com/v1",
-        )
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.max_retries = max_retries
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def summarize(self, article_text: str, title: str = "") -> Summary:
-        """Summarize *article_text*, choosing direct or chunked strategy.
-
-        Parameters
-        ----------
-        article_text:
-            The raw text of the article.
-        title:
-            Optional article title used in the returned Summary.
-
-        Returns
-        -------
-        Summary
-            Populated Summary dataclass.
-        """
-        from src.summarizer.llm.token_utils import fits_in_context
-
-        model = self.config.model
-        # Reserve tokens for prompts + completion
-        reserved = 2_000 + self.config.max_tokens
-
-        if fits_in_context(article_text, model=model, reserved_tokens=reserved):
-            logger.info("Article fits in context window; using direct summarization.")
-            return self._direct_summarize(article_text, title=title)
-        else:
-            logger.info("Article exceeds context window; using chunked (map-reduce) summarization.")
-            return self._chunked_summarize(article_text, title=title)
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    def _direct_summarize(self, article_text: str, title: str = "") -> Summary:
-        """Single-call summarization for articles that fit in context."""
-        messages = self.prompt_builder.build_direct_messages(article_text)
-        summary_text, usage = self._call_api(messages)
-        return Summary(
-            title=title,
-            summary=summary_text,
-            model=self.config.model,
-            prompt_tokens=usage["prompt_tokens"],
-            completion_tokens=usage["completion_tokens"],
-            total_tokens=usage["total_tokens"],
-            estimated_cost=estimate_cost(
-                usage["prompt_tokens"],
-                usage["completion_tokens"],
-                self.config.model,
-            ),
-        )
-
-    def _chunked_summarize(self, article_text: str, title: str = "") -> Summary:
-        """Map-reduce summarization for long articles."""
-        model = self.config.model
-        chunks = split_into_chunks(article_text, model=model)
-        total_chunks = len(chunks)
-        logger.info("Processing %d chunks for map-reduce summarization.", total_chunks)
-
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-        partial_summaries: list[str] = []
-
-        # --- MAP step: summarize each chunk independently ---
-        for chunk in chunks:
-            messages = self.prompt_builder.build_chunk_messages(
-                chunk_text=chunk.text,
-                chunk_index=chunk.index,
-                total_chunks=chunk.total,
-            )
-            chunk_summary, usage = self._call_api(messages)
-            partial_summaries.append(chunk_summary)
-            total_prompt_tokens += usage["prompt_tokens"]
-            total_completion_tokens += usage["completion_tokens"]
-            logger.debug("Chunk %d/%d summarized.", chunk.index, chunk.total)
-
-        # --- REDUCE step: combine partial summaries ---
-        reduce_messages = self.prompt_builder.build_reduce_messages(partial_summaries)
-        final_summary, reduce_usage = self._call_api(reduce_messages)
-        total_prompt_tokens += reduce_usage["prompt_tokens"]
-        total_completion_tokens += reduce_usage["completion_tokens"]
-
-        total_tokens = total_prompt_tokens + total_completion_tokens
-        cost = estimate_cost(total_prompt_tokens, total_completion_tokens, model)
-
-        return Summary(
-            title=title,
-            summary=final_summary,
-            model=model,
-            prompt_tokens=total_prompt_tokens,
-            completion_tokens=total_completion_tokens,
-            total_tokens=total_tokens,
-            estimated_cost=cost,
-        )
-
-    @_build_retry_decorator()
-    def _call_api(self, messages: List[Message]) -> tuple[str, dict]:
-        """Make a single call to the OpenAI chat completions endpoint.
-
-        Returns
-        -------
-        tuple[str, dict]
-            The response text and a dict with token usage counts.
-        """
-        model = self.config.model
-        response = self._client.chat.completions.create(
-            model=model,
-            messages=[m.to_dict() for m in messages],
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-        )
-
-        choice = response.choices[0]
-        summary_text = (choice.message.content or "").strip()
-
-        usage = {
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens,
+        client_kwargs: dict = {
+            "api_key": api_key or os.environ.get("OPENAI_API_KEY"),
         }
+        if base_url:
+            client_kwargs["base_url"] = base_url
 
-        cost = estimate_cost(usage["prompt_tokens"], usage["completion_tokens"], model)
+        self._client = OpenAI(**client_kwargs)
         logger.info(
-            "API call complete — model=%s prompt_tokens=%d completion_tokens=%d "
-            "total_tokens=%d estimated_cost=$%.6f",
-            model,
-            usage["prompt_tokens"],
-            usage["completion_tokens"],
-            usage["total_tokens"],
-            cost,
+            "SummarizerClient initialized: model=%s, temperature=%s, max_tokens=%d",
+            self.model,
+            self.temperature,
+            self.max_tokens,
         )
 
-        return summary_text, usage
+    def _make_api_call(
+        self, messages: list[dict[str, str]]
+    ) -> tuple[str, int, int]:
+        """Make a single API call without retry logic.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content'.
+
+        Returns:
+            Tuple of (response_text, prompt_tokens, completion_tokens).
+        """
+        response = self._client.chat.completions.create(
+            model=self.model,
+            messages=messages,  # type: ignore[arg-type]
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        )
+
+        content = response.choices[0].message.content or ""
+        prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+        completion_tokens = response.usage.completion_tokens if response.usage else 0
+
+        return content, prompt_tokens, completion_tokens
+
+    def complete(
+        self, messages: list[dict[str, str]]
+    ) -> tuple[str, int, int]:
+        """Call the OpenAI API with retry logic and usage logging.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content'.
+
+        Returns:
+            Tuple of (response_text, prompt_tokens, completion_tokens).
+
+        Raises:
+            Exception: After all retries are exhausted.
+        """
+        attempt_count = 0
+
+        @retry(
+            retry=retry_if_exception_type(
+                (APIConnectionError, APITimeoutError, APIStatusError)
+            ),
+            wait=wait_exponential(multiplier=1, min=1, max=30),
+            stop=stop_after_attempt(self.max_retries),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
+            reraise=True,
+        )
+        def _call_with_retry() -> tuple[str, int, int]:
+            nonlocal attempt_count
+            attempt_count += 1
+
+            # For status errors, only retry on 429 and 5xx
+            try:
+                return self._make_api_call(messages)
+            except APIStatusError as exc:
+                if exc.status_code == 429 or exc.status_code >= 500:
+                    logger.warning(
+                        "Retryable API status error (attempt %d): %s %s",
+                        attempt_count,
+                        exc.status_code,
+                        exc.message,
+                    )
+                    raise
+                # 4xx errors that are not 429 should not be retried
+                raise
+
+        result = _call_with_retry()
+        content, prompt_tokens, completion_tokens = result
+
+        self._log_usage(prompt_tokens, completion_tokens)
+        return content, prompt_tokens, completion_tokens
+
+    def _log_usage(self, prompt_tokens: int, completion_tokens: int) -> None:
+        """Log token usage and estimated cost."""
+        total_tokens = prompt_tokens + completion_tokens
+        cost = estimate_cost(prompt_tokens, completion_tokens, self.model)
+        logger.info(
+            "Token usage — prompt: %d, completion: %d, total: %d | "
+            "Estimated cost: $%.6f (model: %s)",
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cost,
+            self.model,
+        )

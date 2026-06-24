@@ -4,103 +4,193 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List
+from typing import TYPE_CHECKING
 
 import tiktoken
 
-from src.summarizer.llm.token_utils import count_tokens, get_context_window
+from .token_utils import (
+    DEFAULT_MODEL,
+    RESERVED_TOKENS,
+    count_tokens,
+    get_context_window,
+)
+
+if TYPE_CHECKING:
+    from .client import SummarizerClient
+    from .prompts import PromptBuilder
 
 logger = logging.getLogger(__name__)
-
-# Fraction of the context window to use for each chunk's content.
-# The remainder is reserved for prompts and completion.
-DEFAULT_CHUNK_CONTENT_RATIO = 0.6
-
-# Number of tokens to overlap between consecutive chunks so that context
-# is not lost at chunk boundaries.
-DEFAULT_OVERLAP_TOKENS = 100
 
 
 @dataclass
 class TextChunk:
-    """A slice of the original text."""
+    """Represents a chunk of text with metadata."""
 
     text: str
-    index: int  # 1-based
-    total: int
-    token_count: int
+    chunk_index: int
+    total_chunks: int
+    token_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.token_count == 0:
+            self.token_count = count_tokens(self.text)
 
 
-def split_into_chunks(
-    text: str,
-    model: str = "gpt-4o-mini",
-    max_chunk_tokens: int | None = None,
-    overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
-) -> List[TextChunk]:
-    """Split *text* into overlapping token-bounded chunks.
+@dataclass
+class Chunker:
+    """Token-aware text splitter using tiktoken.
 
-    Parameters
-    ----------
-    text:
-        The full article text to split.
-    model:
-        The model name used to select the tokenizer.
-    max_chunk_tokens:
-        Maximum number of tokens per chunk. Defaults to
-        ``DEFAULT_CHUNK_CONTENT_RATIO * context_window``.
-    overlap_tokens:
-        Number of tokens to repeat at the start of each new chunk to
-        preserve context across chunk boundaries.
-
-    Returns
-    -------
-    List[TextChunk]
-        Ordered list of chunks (1-based index).
+    Splits article text into overlapping chunks suitable for map-reduce
+    summarization.
     """
-    try:
-        encoder = tiktoken.encoding_for_model(model)
-    except KeyError:
-        encoder = tiktoken.get_encoding("cl100k_base")
 
-    if max_chunk_tokens is None:
-        context_window = get_context_window(model)
-        max_chunk_tokens = int(context_window * DEFAULT_CHUNK_CONTENT_RATIO)
+    model: str = DEFAULT_MODEL
+    # Tokens to reserve for system prompt + response per chunk call
+    reserved_tokens: int = RESERVED_TOKENS
+    # Number of tokens to overlap between consecutive chunks
+    overlap_tokens: int = 100
 
-    all_token_ids: list[int] = encoder.encode(text)
-    total_tokens = len(all_token_ids)
+    @property
+    def max_chunk_tokens(self) -> int:
+        """Maximum tokens per chunk (context window minus reserved)."""
+        return get_context_window(self.model) - self.reserved_tokens
 
-    if total_tokens == 0:
-        return []
+    def _get_encoding(self) -> tiktoken.Encoding:
+        try:
+            return tiktoken.encoding_for_model(self.model)
+        except KeyError:
+            return tiktoken.get_encoding("cl100k_base")
 
-    logger.debug(
-        "Splitting text of %d tokens into chunks of max %d tokens (overlap=%d).",
-        total_tokens,
-        max_chunk_tokens,
-        overlap_tokens,
-    )
+    def split(self, text: str) -> list[TextChunk]:
+        """Split text into token-aware chunks with overlap.
 
-    chunks: list[TextChunk] = []
-    start = 0
-    step = max(max_chunk_tokens - overlap_tokens, 1)
+        Args:
+            text: The text to split.
 
-    while start < total_tokens:
-        end = min(start + max_chunk_tokens, total_tokens)
-        chunk_ids = all_token_ids[start:end]
-        chunk_text = encoder.decode(chunk_ids)
-        chunks.append(chunk_text)
-        if end == total_tokens:
-            break
-        start += step
+        Returns:
+            A list of TextChunk objects.
+        """
+        encoding = self._get_encoding()
+        all_tokens = encoding.encode(text)
+        total_tokens = len(all_tokens)
 
-    logger.info("Split text into %d chunks.", len(chunks))
+        if total_tokens <= self.max_chunk_tokens:
+            logger.debug(
+                "Text fits in a single chunk (%d tokens).", total_tokens
+            )
+            chunk = TextChunk(
+                text=text,
+                chunk_index=0,
+                total_chunks=1,
+                token_count=total_tokens,
+            )
+            return [chunk]
 
-    total = len(chunks)
-    return [
-        TextChunk(
-            text=chunk_text,
-            index=i + 1,
-            total=total,
-            token_count=count_tokens(chunk_text, model),
+        chunks: list[TextChunk] = []
+        step = self.max_chunk_tokens - self.overlap_tokens
+        if step <= 0:
+            step = self.max_chunk_tokens
+
+        start = 0
+        chunk_index = 0
+
+        # Pre-calculate number of chunks
+        chunk_starts = []
+        pos = 0
+        while pos < total_tokens:
+            chunk_starts.append(pos)
+            pos += step
+
+        total_chunks = len(chunk_starts)
+
+        for chunk_start in chunk_starts:
+            chunk_end = min(chunk_start + self.max_chunk_tokens, total_tokens)
+            chunk_tokens = all_tokens[chunk_start:chunk_end]
+            chunk_text = encoding.decode(chunk_tokens)
+
+            chunks.append(
+                TextChunk(
+                    text=chunk_text,
+                    chunk_index=chunk_index,
+                    total_chunks=total_chunks,
+                    token_count=len(chunk_tokens),
+                )
+            )
+            chunk_index += 1
+
+            if chunk_end >= total_tokens:
+                break
+
+        logger.info(
+            "Split text into %d chunks (total %d tokens, max %d per chunk).",
+            len(chunks),
+            total_tokens,
+            self.max_chunk_tokens,
         )
-        for i, chunk_text in enumerate(chunks)
-    ]
+        return chunks
+
+
+def map_reduce_summarize(
+    text: str,
+    title: str,
+    client: "SummarizerClient",
+    prompt_builder: "PromptBuilder",
+    model: str = DEFAULT_MODEL,
+    reserved_tokens: int = RESERVED_TOKENS,
+    overlap_tokens: int = 100,
+) -> tuple[str, int, int]:
+    """Perform map-reduce summarization on long text.
+
+    1. Map: Split text into chunks and summarize each independently.
+    2. Reduce: Combine chunk summaries into a final summary.
+
+    Args:
+        text: The full article text.
+        title: The article title.
+        client: The SummarizerClient to use for API calls.
+        prompt_builder: The PromptBuilder for prompt construction.
+        model: The model to use.
+        reserved_tokens: Tokens to reserve per API call.
+        overlap_tokens: Token overlap between chunks.
+
+    Returns:
+        A tuple of (summary_text, total_prompt_tokens, total_completion_tokens).
+    """
+    chunker = Chunker(
+        model=model,
+        reserved_tokens=reserved_tokens,
+        overlap_tokens=overlap_tokens,
+    )
+    chunks = chunker.split(text)
+
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    chunk_summaries: list[str] = []
+
+    logger.info("Map phase: summarizing %d chunks.", len(chunks))
+
+    for chunk in chunks:
+        messages = prompt_builder.build_chunk_messages(chunk.text)
+        summary, prompt_tokens, completion_tokens = client.complete(messages)
+        chunk_summaries.append(summary)
+        total_prompt_tokens += prompt_tokens
+        total_completion_tokens += completion_tokens
+        logger.debug(
+            "Chunk %d/%d summarized (%d + %d tokens).",
+            chunk.chunk_index + 1,
+            chunk.total_chunks,
+            prompt_tokens,
+            completion_tokens,
+        )
+
+    logger.info("Reduce phase: combining %d chunk summaries.", len(chunk_summaries))
+
+    if len(chunk_summaries) == 1:
+        return chunk_summaries[0], total_prompt_tokens, total_completion_tokens
+
+    reduce_messages = prompt_builder.build_reduce_messages(chunk_summaries, title)
+    final_summary, prompt_tokens, completion_tokens = client.complete(reduce_messages)
+    total_prompt_tokens += prompt_tokens
+    total_completion_tokens += completion_tokens
+
+    return final_summary, total_prompt_tokens, total_completion_tokens
