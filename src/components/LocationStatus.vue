@@ -1,37 +1,45 @@
 <template>
-  <div
-    v-if="locationStore.cityName"
-    class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium"
-    :class="pillClasses"
-    :title="pillTitle"
-  >
-    <span class="text-sm">{{ sourceIcon }}</span>
-    <span>{{ locationStore.cityName }}</span>
-    <span v-if="sourceLabel" class="opacity-70">· {{ sourceLabel }}</span>
+  <div class="flex items-center gap-2">
+    <span
+      class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium backdrop-blur border"
+      :class="badgeClasses"
+    >
+      <span class="text-sm">{{ sourceIcon }}</span>
+      <span>{{ cityName }}</span>
+      <span
+        class="px-1.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wide"
+        :class="sourceTagClasses"
+      >
+        {{ sourceLabel }}
+      </span>
+    </span>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useLocationStore } from '../stores/locationStore'
+import type { LocationSource } from '../stores/locationStore'
 
-const locationStore = useLocationStore()
+const props = defineProps<{
+  cityName: string
+  source: LocationSource
+}>()
 
 const sourceIcon = computed(() => {
-  switch (locationStore.source) {
+  switch (props.source) {
     case 'geo':
       return '📍'
     case 'search':
       return '🔍'
     case 'default':
-      return '🌐'
+      return '🌍'
     default:
-      return '🌐'
+      return '🌍'
   }
 })
 
 const sourceLabel = computed(() => {
-  switch (locationStore.source) {
+  switch (props.source) {
     case 'geo':
       return 'GPS'
     case 'search':
@@ -39,33 +47,33 @@ const sourceLabel = computed(() => {
     case 'default':
       return 'Default'
     default:
-      return ''
+      return 'Unknown'
   }
 })
 
-const pillTitle = computed(() => {
-  switch (locationStore.source) {
+const badgeClasses = computed(() => {
+  switch (props.source) {
     case 'geo':
-      return 'Location detected automatically via GPS'
+      return 'bg-green-500/20 border-green-400/30 text-green-100'
     case 'search':
-      return 'Location set via search'
+      return 'bg-blue-500/20 border-blue-400/30 text-blue-100'
     case 'default':
-      return 'Showing default location'
+      return 'bg-gray-500/20 border-gray-400/30 text-gray-200'
     default:
-      return ''
+      return 'bg-gray-500/20 border-gray-400/30 text-gray-200'
   }
 })
 
-const pillClasses = computed(() => {
-  switch (locationStore.source) {
+const sourceTagClasses = computed(() => {
+  switch (props.source) {
     case 'geo':
-      return 'bg-green-500/20 text-green-300 border border-green-500/30'
+      return 'bg-green-500/40 text-green-100'
     case 'search':
-      return 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+      return 'bg-blue-500/40 text-blue-100'
     case 'default':
-      return 'bg-gray-500/20 text-gray-300 border border-gray-500/30'
+      return 'bg-gray-500/40 text-gray-200'
     default:
-      return 'bg-gray-500/20 text-gray-300 border border-gray-500/30'
+      return 'bg-gray-500/40 text-gray-200'
   }
 })
 </script>

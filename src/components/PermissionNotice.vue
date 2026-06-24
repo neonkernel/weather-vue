@@ -1,48 +1,43 @@
 <template>
-  <Transition
-    enter-active-class="transition-all duration-300 ease-out"
-    enter-from-class="opacity-0 -translate-y-2"
-    enter-to-class="opacity-100 translate-y-0"
-    leave-active-class="transition-all duration-200 ease-in"
-    leave-from-class="opacity-100 translate-y-0"
-    leave-to-class="opacity-0 -translate-y-2"
+  <div
+    class="relative mb-6 flex items-start gap-3 p-4 rounded-xl bg-amber-500/20 border border-amber-400/30 backdrop-blur text-amber-100"
+    role="alert"
   >
-    <div
-      v-if="visible"
-      class="flex items-start gap-3 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-sm"
-    >
-      <span class="text-lg flex-shrink-0 mt-0.5">⚠️</span>
-      <div class="flex-1 min-w-0">
-        <p class="font-medium text-amber-100">Location access denied</p>
-        <p class="text-amber-300/80 text-xs mt-0.5">
-          Unable to detect your location. Showing weather for
-          <span class="font-semibold text-amber-200">{{ fallbackCity }}</span> instead.
-          You can search for any city using the search bar.
-        </p>
-      </div>
-      <button
-        @click="dismiss"
-        class="flex-shrink-0 p-1 rounded-lg hover:bg-amber-500/20 transition-colors text-amber-400 hover:text-amber-200"
-        aria-label="Dismiss notice"
-      >
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      </button>
+    <!-- Icon -->
+    <span class="text-xl flex-shrink-0 mt-0.5">⚠️</span>
+
+    <!-- Content -->
+    <div class="flex-1 min-w-0">
+      <p class="text-sm font-medium">Location access was denied</p>
+      <p class="text-xs mt-0.5 text-amber-200">
+        We couldn't detect your location.
+        <span v-if="fallbackCity">
+          Showing weather for <strong>{{ fallbackCity }}</strong> instead.
+        </span>
+        You can search for any city manually or try enabling location access in your browser settings.
+      </p>
     </div>
-  </Transition>
+
+    <!-- Dismiss Button -->
+    <button
+      type="button"
+      class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full text-amber-200 hover:text-white hover:bg-amber-400/30 transition focus:outline-none focus:ring-2 focus:ring-amber-400"
+      aria-label="Dismiss notification"
+      @click="$emit('dismiss')"
+    >
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+      </svg>
+    </button>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-
-const props = defineProps<{
-  fallbackCity: string
+defineProps<{
+  fallbackCity?: string
 }>()
 
-const visible = ref(true)
-
-function dismiss() {
-  visible.value = false
-}
+defineEmits<{
+  dismiss: []
+}>()
 </script>

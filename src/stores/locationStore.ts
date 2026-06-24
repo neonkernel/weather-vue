@@ -30,5 +30,12 @@ export const useLocationStore = defineStore('location', () => {
     source.value = 'default'
   }
 
-  return { lat, lon, cityName, source, setLocation, clearLocation }
+  return {
+    lat,
+    lon,
+    cityName,
+    source,
+    setLocation,
+    clearLocation,
+  }
 })

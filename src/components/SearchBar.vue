@@ -1,87 +1,63 @@
 <template>
-  <div class="w-full">
-    <div class="flex gap-2">
-      <div class="relative flex-1">
-        <div class="absolute inset-y-0 left-3 flex items-center pointer-events-none">
-          <svg
-            class="w-5 h-5 text-gray-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            stroke-width="2"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-            />
-          </svg>
-        </div>
-        <input
-          v-model="query"
-          type="text"
-          placeholder="Search for a city..."
-          class="w-full pl-10 pr-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400/50 focus:border-blue-400/50 transition-all"
-          @keydown.enter="handleSearch"
-          @input="handleInput"
-        />
-      </div>
-
-      <button
-        @click="handleSearch"
-        class="px-5 py-3 rounded-xl bg-blue-500 hover:bg-blue-400 text-white font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400/50 disabled:opacity-50 disabled:cursor-not-allowed"
-        :disabled="!query.trim()"
-      >
-        Search
-      </button>
-
-      <button
-        @click="handleGeolocate"
-        :disabled="geoLoading"
-        class="flex items-center justify-center w-12 h-12 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white transition-all focus:outline-none focus:ring-2 focus:ring-blue-400/50 disabled:opacity-50 disabled:cursor-not-allowed"
-        :title="geoLoading ? 'Detecting location...' : 'Use My Location'"
-        aria-label="Use my current location"
-      >
-        <svg
-          v-if="!geoLoading"
-          class="w-5 h-5"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          stroke-width="2"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0013 3.06V1h-2v2.06A8.994 8.994 0 003.06 11H1v2h2.06A8.994 8.994 0 0011 20.94V23h2v-2.06A8.994 8.994 0 0020.94 13H23v-2h-2.06z"
-          />
-        </svg>
-        <svg
-          v-else
-          class="w-5 h-5 animate-spin"
-          fill="none"
-          viewBox="0 0 24 24"
-        >
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-          <path
-            class="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-          />
-        </svg>
-      </button>
+  <div class="flex gap-2">
+    <div class="relative flex-1">
+      <input
+        v-model="query"
+        type="text"
+        placeholder="Search for a city..."
+        class="w-full px-4 py-3 pl-10 rounded-xl bg-white/10 border border-white/20 text-white placeholder-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent backdrop-blur transition"
+        @keydown.enter="handleSearch"
+        @input="onInput"
+      />
+      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-blue-300 pointer-events-none">
+        🔍
+      </span>
     </div>
 
-    <p
-      v-if="geoLoading"
-      class="mt-2 text-xs text-blue-300 flex items-center gap-1.5"
+    <button
+      type="button"
+      class="px-4 py-3 rounded-xl bg-blue-500 hover:bg-blue-400 active:bg-blue-600 text-white font-medium transition focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:opacity-50 disabled:cursor-not-allowed"
+      :disabled="!query.trim()"
+      @click="handleSearch"
     >
-      <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      Search
+    </button>
+
+    <!-- Use My Location Button -->
+    <button
+      type="button"
+      title="Use my current location"
+      class="flex items-center justify-center px-4 py-3 rounded-xl bg-white/10 border border-white/20 hover:bg-white/20 active:bg-white/30 text-white transition focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:opacity-50 disabled:cursor-not-allowed"
+      :disabled="isLoading"
+      @click="$emit('use-my-location')"
+    >
+      <svg
+        v-if="!isLoading"
+        class="w-5 h-5"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+      >
+        <circle cx="12" cy="12" r="3" />
+        <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+        <circle cx="12" cy="12" r="8" stroke-dasharray="2 2" />
       </svg>
-      Detecting location...
-    </p>
+      <svg
+        v-else
+        class="w-5 h-5 animate-spin"
+        fill="none"
+        viewBox="0 0 24 24"
+      >
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+        <path
+          class="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+        />
+      </svg>
+      <span class="ml-2 text-sm hidden sm:inline">My Location</span>
+    </button>
   </div>
 </template>
 
@@ -89,28 +65,24 @@
 import { ref } from 'vue'
 
 const props = defineProps<{
-  geoLoading?: boolean
+  isLoading?: boolean
 }>()
 
 const emit = defineEmits<{
-  (e: 'search', city: string): void
-  (e: 'geolocate'): void
+  search: [city: string]
+  'use-my-location': []
 }>()
 
 const query = ref('')
 
 function handleSearch() {
   const trimmed = query.value.trim()
-  if (!trimmed) return
-  emit('search', trimmed)
-  query.value = ''
+  if (trimmed) {
+    emit('search', trimmed)
+  }
 }
 
-function handleInput() {
-  // Could add debounced autocomplete here in the future
-}
-
-function handleGeolocate() {
-  emit('geolocate')
+function onInput() {
+  // Could add debounced suggestions here in future
 }
 </script>

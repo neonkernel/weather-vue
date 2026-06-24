@@ -1,37 +1,81 @@
 import { ref } from 'vue'
-import { fetchWeatherByCity, fetchWeatherByCoords } from '../services/weatherService'
-import type { WeatherData } from '../types/weather'
+import {
+  fetchWeatherByCoords,
+  fetchWeatherByCity,
+  reverseGeocode,
+  type WeatherData,
+  type GeocodingResult,
+} from '../services/weatherService'
+import { useLocationStore } from '../stores/locationStore'
 
 export function useWeatherApi() {
   const weatherData = ref<WeatherData | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const currentLocation = ref<GeocodingResult | null>(null)
 
-  async function fetchByCity(city: string) {
+  const locationStore = useLocationStore()
+
+  async function fetchByCoords(lat: number, lon: number, cityName?: string): Promise<void> {
     loading.value = true
     error.value = null
+
     try {
-      weatherData.value = await fetchWeatherByCity(city)
-    } catch (err: any) {
-      error.value = err?.message || 'Failed to fetch weather data.'
+      const weather = await fetchWeatherByCoords(lat, lon)
+      weatherData.value = weather
+
+      // If no city name provided, attempt reverse geocoding
+      const resolvedCityName = cityName || (await reverseGeocode(lat, lon))
+
+      currentLocation.value = {
+        id: 0,
+        name: resolvedCityName,
+        latitude: lat,
+        longitude: lon,
+        country: '',
+      }
+    } catch (err: unknown) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch weather data.'
       weatherData.value = null
     } finally {
       loading.value = false
     }
   }
 
-  async function fetchByCoords(lat: number, lon: number) {
+  async function fetchByCity(city: string): Promise<void> {
     loading.value = true
     error.value = null
+
     try {
-      weatherData.value = await fetchWeatherByCoords(lat, lon)
-    } catch (err: any) {
-      error.value = err?.message || 'Failed to fetch weather data.'
+      const { weather, location } = await fetchWeatherByCity(city)
+      weatherData.value = weather
+      currentLocation.value = location
+
+      locationStore.setLocation({
+        lat: location.latitude,
+        lon: location.longitude,
+        cityName: location.name,
+        source: 'search',
+      })
+    } catch (err: unknown) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch weather data.'
       weatherData.value = null
     } finally {
       loading.value = false
     }
   }
 
-  return { weatherData, loading, error, fetchByCity, fetchByCoords }
+  function clearError() {
+    error.value = null
+  }
+
+  return {
+    weatherData,
+    loading,
+    error,
+    currentLocation,
+    fetchByCoords,
+    fetchByCity,
+    clearError,
+  }
 }

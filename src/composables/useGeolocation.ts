@@ -11,52 +11,42 @@ export function useGeolocation() {
   const error = ref<string | null>(null)
   const permissionDenied = ref(false)
 
-  function getCurrentPosition(): Promise<GeolocationCoords> {
-    return new Promise((resolve, reject) => {
-      if (!navigator.geolocation) {
-        reject(new Error('Geolocation is not supported by this browser.'))
-        return
-      }
+  async function getCurrentPosition(): Promise<GeolocationCoords | null> {
+    if (!navigator.geolocation) {
+      error.value = 'Geolocation is not supported by your browser.'
+      return null
+    }
 
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          resolve({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          })
-        },
-        (err) => {
-          reject(err)
-        },
-        {
-          timeout: 10000,
-          maximumAge: 300000,
-          enableHighAccuracy: false,
-        }
-      )
-    })
-  }
-
-  async function detectLocation(): Promise<GeolocationCoords | null> {
     loading.value = true
     error.value = null
     permissionDenied.value = false
     coords.value = null
 
     try {
-      const position = await getCurrentPosition()
-      coords.value = position
-      return position
-    } catch (err: any) {
-      if (err && (err.code === 1 || err.code === GeolocationPositionError?.PERMISSION_DENIED)) {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          timeout: 10000,
+          maximumAge: 300000,
+          enableHighAccuracy: false,
+        })
+      })
+
+      coords.value = {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+      }
+      return coords.value
+    } catch (err: unknown) {
+      const geoError = err as GeolocationPositionError
+      if (geoError.code === GeolocationPositionError.PERMISSION_DENIED) {
         permissionDenied.value = true
         error.value = 'Location permission was denied.'
-      } else if (err && err.code === 2) {
-        error.value = 'Location is unavailable.'
-      } else if (err && err.code === 3) {
+      } else if (geoError.code === GeolocationPositionError.POSITION_UNAVAILABLE) {
+        error.value = 'Location information is unavailable.'
+      } else if (geoError.code === GeolocationPositionError.TIMEOUT) {
         error.value = 'Location request timed out.'
       } else {
-        error.value = err?.message || 'Failed to detect location.'
+        error.value = 'An unknown error occurred while retrieving location.'
       }
       return null
     } finally {
@@ -64,5 +54,11 @@ export function useGeolocation() {
     }
   }
 
-  return { coords, loading, error, permissionDenied, detectLocation }
+  return {
+    coords,
+    loading,
+    error,
+    permissionDenied,
+    getCurrentPosition,
+  }
 }
