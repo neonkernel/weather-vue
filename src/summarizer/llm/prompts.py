@@ -1,172 +1,180 @@
-"""PromptBuilder class for constructing LLM prompts for article summarization."""
+"""PromptBuilder: constructs system and user messages for summarization."""
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 
 
-SUMMARY_STYLES = {
-    "concise": (
-        "You are an expert summarizer. Your task is to produce clear, concise summaries "
-        "that capture the most important information. Be brief and direct."
+class SummaryStyle(str, Enum):
+    """Supported summary styles."""
+
+    CONCISE = "concise"
+    DETAILED = "detailed"
+    BULLET_POINTS = "bullet_points"
+    EXECUTIVE = "executive"
+
+
+# System prompt templates keyed by style
+_SYSTEM_PROMPTS: dict[SummaryStyle, str] = {
+    SummaryStyle.CONCISE: (
+        "You are an expert summarization assistant. "
+        "Your task is to produce clear, accurate, and concise summaries of articles. "
+        "Focus on the key facts and main conclusions. "
+        "Write in plain English. Avoid unnecessary filler phrases. "
+        "Output only the summary — no preamble, no meta-commentary."
     ),
-    "detailed": (
-        "You are an expert summarizer. Your task is to produce comprehensive summaries "
-        "that capture all key points, supporting details, and nuances of the content. "
-        "Be thorough while remaining organized."
+    SummaryStyle.DETAILED: (
+        "You are an expert summarization assistant. "
+        "Your task is to produce comprehensive summaries that capture all important "
+        "details, arguments, evidence, and conclusions from the provided article. "
+        "Preserve nuance and supporting data where relevant. "
+        "Write in clear, well-structured prose. "
+        "Output only the summary — no preamble, no meta-commentary."
     ),
-    "bullet": (
-        "You are an expert summarizer. Your task is to produce summaries as structured "
-        "bullet points, organizing key information into clear, scannable lists. "
-        "Use hierarchical bullets where appropriate."
+    SummaryStyle.BULLET_POINTS: (
+        "You are an expert summarization assistant. "
+        "Your task is to extract and present the key points of an article as a "
+        "well-organized bullet-point list. "
+        "Each bullet should capture one distinct fact, argument, or conclusion. "
+        "Use concise, clear language. "
+        "Output only the bullet-point list — no preamble, no meta-commentary."
     ),
-    "executive": (
-        "You are an expert summarizer for business executives. Produce summaries that "
-        "highlight key decisions, outcomes, and actionable insights. Focus on business "
-        "impact and strategic relevance."
+    SummaryStyle.EXECUTIVE: (
+        "You are an expert summarization assistant specializing in executive briefings. "
+        "Produce a structured summary with the following sections:\n"
+        "1. **Key Takeaway** (1-2 sentences)\n"
+        "2. **Context** (2-3 sentences)\n"
+        "3. **Key Points** (3-5 bullet points)\n"
+        "4. **Implications** (1-2 sentences)\n"
+        "Write in professional, concise language suitable for senior decision-makers. "
+        "Output only the structured summary — no preamble, no meta-commentary."
     ),
 }
 
-DEFAULT_STYLE = "concise"
+# User prompt templates
+_USER_PROMPT_TEMPLATE = (
+    "Please summarize the following article:\n\n"
+    "---\n"
+    "{text}\n"
+    "---\n\n"
+    "Provide a {style_instruction} summary."
+)
+
+_CHUNK_USER_PROMPT_TEMPLATE = (
+    "This is part {chunk_index} of {total_chunks} of a longer article. "
+    "Please summarize this section:\n\n"
+    "---\n"
+    "{text}\n"
+    "---\n\n"
+    "Provide a {style_instruction} summary of this section."
+)
+
+_MERGE_USER_PROMPT_TEMPLATE = (
+    "Below are summaries of individual sections of a longer article. "
+    "Please synthesize them into a single coherent summary:\n\n"
+    "---\n"
+    "{text}\n"
+    "---\n\n"
+    "Provide a {style_instruction} unified summary."
+)
+
+_STYLE_INSTRUCTIONS: dict[SummaryStyle, str] = {
+    SummaryStyle.CONCISE: "concise",
+    SummaryStyle.DETAILED: "detailed",
+    SummaryStyle.BULLET_POINTS: "bullet-point",
+    SummaryStyle.EXECUTIVE: "executive-style structured",
+}
 
 
 @dataclass
-class PromptMessages:
-    """Container for system and user prompt messages."""
-    system: str
-    user: str
-
-    def to_openai_messages(self) -> list[dict]:
-        """Convert to OpenAI-compatible message format."""
-        return [
-            {"role": "system", "content": self.system},
-            {"role": "user", "content": self.user},
-        ]
-
-
 class PromptBuilder:
-    """Builds system and user prompts for article summarization.
+    """
+    Builds system + user message lists for the OpenAI chat completions API.
 
     Args:
-        style: Summary style — one of 'concise', 'detailed', 'bullet', 'executive'.
-        max_summary_words: Optional word limit hint for the summary.
+        style: The desired summary style (default: CONCISE).
         custom_system_prompt: Override the default system prompt entirely.
     """
 
-    def __init__(
-        self,
-        style: str = DEFAULT_STYLE,
-        max_summary_words: Optional[int] = None,
-        custom_system_prompt: Optional[str] = None,
-    ) -> None:
-        if style not in SUMMARY_STYLES and custom_system_prompt is None:
-            raise ValueError(
-                f"Unknown style '{style}'. Valid styles: {list(SUMMARY_STYLES.keys())}"
-            )
-        self.style = style
-        self.max_summary_words = max_summary_words
-        self.custom_system_prompt = custom_system_prompt
+    style: SummaryStyle = SummaryStyle.CONCISE
+    custom_system_prompt: Optional[str] = None
 
-    def build_system_prompt(self) -> str:
-        """Build the system prompt based on the configured style."""
+    def _system_prompt(self) -> str:
         if self.custom_system_prompt:
             return self.custom_system_prompt
+        return _SYSTEM_PROMPTS[self.style]
 
-        base_prompt = SUMMARY_STYLES.get(self.style, SUMMARY_STYLES[DEFAULT_STYLE])
+    def _style_instruction(self) -> str:
+        return _STYLE_INSTRUCTIONS.get(self.style, "concise")
 
-        constraints = [
-            "Always produce factually accurate summaries based solely on the provided text.",
-            "Do not add information that is not present in the source material.",
-            "Maintain a neutral, objective tone.",
-        ]
-
-        if self.max_summary_words:
-            constraints.append(
-                f"Keep the summary under {self.max_summary_words} words."
-            )
-
-        constraint_text = "\n".join(f"- {c}" for c in constraints)
-        return f"{base_prompt}\n\nConstraints:\n{constraint_text}"
-
-    def build_user_prompt(self, article_text: str, title: Optional[str] = None) -> str:
-        """Build the user prompt for a given article.
+    def build(self, text: str) -> list[dict[str, str]]:
+        """
+        Build messages for a single-pass summarization.
 
         Args:
-            article_text: The full text of the article to summarize.
-            title: Optional article title to provide context.
+            text: The full article text.
 
         Returns:
-            The formatted user prompt string.
+            A list of message dicts suitable for the OpenAI chat API.
         """
-        parts = []
+        return [
+            {"role": "system", "content": self._system_prompt()},
+            {
+                "role": "user",
+                "content": _USER_PROMPT_TEMPLATE.format(
+                    text=text,
+                    style_instruction=self._style_instruction(),
+                ),
+            },
+        ]
 
-        if title:
-            parts.append(f"Article Title: {title}\n")
-
-        parts.append("Article Text:")
-        parts.append(article_text.strip())
-        parts.append("\nPlease provide a summary of the above article.")
-
-        return "\n".join(parts)
-
-    def build_chunk_user_prompt(self, chunk_text: str, chunk_index: int, total_chunks: int) -> str:
-        """Build a user prompt for summarizing a single chunk in map-reduce mode.
+    def build_chunk(
+        self, text: str, chunk_index: int, total_chunks: int
+    ) -> list[dict[str, str]]:
+        """
+        Build messages for summarizing a single chunk of a larger article.
 
         Args:
-            chunk_text: The text of this chunk.
+            text: The chunk text.
             chunk_index: 1-based index of this chunk.
             total_chunks: Total number of chunks.
 
         Returns:
-            The formatted user prompt for chunk summarization.
+            A list of message dicts suitable for the OpenAI chat API.
         """
-        parts = [
-            f"This is part {chunk_index} of {total_chunks} of a longer article.",
-            "Please summarize the key points from this section:\n",
-            chunk_text.strip(),
-            "\nProvide a concise summary of this section.",
+        return [
+            {"role": "system", "content": self._system_prompt()},
+            {
+                "role": "user",
+                "content": _CHUNK_USER_PROMPT_TEMPLATE.format(
+                    text=text,
+                    chunk_index=chunk_index,
+                    total_chunks=total_chunks,
+                    style_instruction=self._style_instruction(),
+                ),
+            },
         ]
-        return "\n".join(parts)
 
-    def build_reduce_user_prompt(self, chunk_summaries: list[str], title: Optional[str] = None) -> str:
-        """Build a user prompt for combining chunk summaries in the reduce step.
+    def build_merge(self, chunk_summaries: list[str]) -> list[dict[str, str]]:
+        """
+        Build messages to merge multiple chunk summaries into one.
 
         Args:
-            chunk_summaries: List of summaries from individual chunks.
-            title: Optional article title.
+            chunk_summaries: List of summary strings (one per chunk).
 
         Returns:
-            The formatted user prompt for the reduce step.
+            A list of message dicts suitable for the OpenAI chat API.
         """
-        parts = []
-
-        if title:
-            parts.append(f"Article Title: {title}\n")
-
-        parts.append(
-            "Below are summaries of individual sections of a longer article. "
-            "Please synthesize these into a single coherent summary:\n"
+        combined = "\n\n".join(
+            f"[Section {i + 1}]\n{s}" for i, s in enumerate(chunk_summaries)
         )
-
-        for i, summary in enumerate(chunk_summaries, 1):
-            parts.append(f"Section {i} Summary:")
-            parts.append(summary.strip())
-            parts.append("")
-
-        parts.append("Please provide a unified summary that captures all the key points from the sections above.")
-
-        return "\n".join(parts)
-
-    def build(self, article_text: str, title: Optional[str] = None) -> PromptMessages:
-        """Build the complete prompt messages for an article.
-
-        Args:
-            article_text: The full text of the article.
-            title: Optional article title.
-
-        Returns:
-            PromptMessages with system and user prompts.
-        """
-        return PromptMessages(
-            system=self.build_system_prompt(),
-            user=self.build_user_prompt(article_text, title),
-        )
+        return [
+            {"role": "system", "content": self._system_prompt()},
+            {
+                "role": "user",
+                "content": _MERGE_USER_PROMPT_TEMPLATE.format(
+                    text=combined,
+                    style_instruction=self._style_instruction(),
+                ),
+            },
+        ]

@@ -1,182 +1,194 @@
 """Token-aware text splitter and map-reduce summarization pipeline."""
 
 import logging
-from typing import Generator, Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Optional
 
 import tiktoken
 
-from .token_utils import count_tokens, get_encoding, max_chunk_tokens
+from .token_utils import count_tokens, get_context_window
+
+if TYPE_CHECKING:
+    from .client import SummarizerClient
+    from .prompts import PromptBuilder
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CHUNK_OVERLAP = 100  # tokens
-DEFAULT_CHUNK_SIZE_RATIO = 0.85  # Use 85% of available context for chunks
+# Default chunk configuration
+DEFAULT_CHUNK_TOKENS = 3_000
+DEFAULT_OVERLAP_TOKENS = 200
+
+
+@dataclass
+class Chunk:
+    """Represents a text chunk with metadata."""
+
+    text: str
+    index: int  # 0-based
+    token_count: int
+    start_char: Optional[int] = None
+    end_char: Optional[int] = None
 
 
 class TextChunker:
-    """Splits text into overlapping token-aware chunks.
+    """
+    Splits text into overlapping chunks by token count.
 
-    Args:
-        model: The model name to use for token counting.
-        chunk_size: Maximum tokens per chunk. If None, uses model context window.
-        overlap: Number of tokens to overlap between consecutive chunks.
+    Uses tiktoken for accurate token counting so that chunk sizes
+    respect the model's context window.
     """
 
     def __init__(
         self,
         model: str = "gpt-4o-mini",
-        chunk_size: Optional[int] = None,
-        overlap: int = DEFAULT_CHUNK_OVERLAP,
+        chunk_tokens: int = DEFAULT_CHUNK_TOKENS,
+        overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
     ) -> None:
         self.model = model
-        self.overlap = overlap
-        self.encoding = get_encoding(model)
+        self.chunk_tokens = chunk_tokens
+        self.overlap_tokens = overlap_tokens
 
-        if chunk_size is None:
-            available = max_chunk_tokens(model)
-            self.chunk_size = int(available * DEFAULT_CHUNK_SIZE_RATIO)
-        else:
-            self.chunk_size = chunk_size
+        try:
+            self._encoding = tiktoken.encoding_for_model(model)
+        except KeyError:
+            logger.warning(
+                "No encoding for model '%s'; falling back to cl100k_base.", model
+            )
+            self._encoding = tiktoken.get_encoding("cl100k_base")
 
-        logger.debug(
-            "TextChunker initialized: model=%s, chunk_size=%d, overlap=%d",
-            model,
-            self.chunk_size,
-            overlap,
-        )
-
-    def split(self, text: str) -> list[str]:
-        """Split text into overlapping chunks by token count.
+    def split(self, text: str) -> list[Chunk]:
+        """
+        Split *text* into token-bounded chunks with overlap.
 
         Args:
-            text: The text to split.
+            text: The full article text.
 
         Returns:
-            A list of text chunks.
+            Ordered list of Chunk objects.
         """
-        tokens = self.encoding.encode(text)
+        if not text.strip():
+            return []
+
+        tokens = self._encoding.encode(text)
         total_tokens = len(tokens)
 
-        if total_tokens <= self.chunk_size:
-            logger.debug("Text fits in a single chunk (%d tokens)", total_tokens)
-            return [text]
+        if total_tokens == 0:
+            return []
 
-        chunks = []
+        chunks: list[Chunk] = []
         start = 0
         chunk_index = 0
 
         while start < total_tokens:
-            end = min(start + self.chunk_size, total_tokens)
-            chunk_tokens = tokens[start:end]
-            chunk_text = self.encoding.decode(chunk_tokens)
-            chunks.append(chunk_text)
+            end = min(start + self.chunk_tokens, total_tokens)
+            chunk_token_ids = tokens[start:end]
+            chunk_text = self._encoding.decode(chunk_token_ids)
+            chunk_token_count = len(chunk_token_ids)
 
-            chunk_index += 1
+            chunks.append(
+                Chunk(
+                    text=chunk_text,
+                    index=chunk_index,
+                    token_count=chunk_token_count,
+                )
+            )
             logger.debug(
-                "Chunk %d: tokens %d-%d (%d tokens)",
+                "Created chunk %d: tokens %d–%d (%d tokens)",
                 chunk_index,
                 start,
                 end,
-                len(chunk_tokens),
+                chunk_token_count,
             )
+            chunk_index += 1
 
-            if end >= total_tokens:
-                break
+            # Advance by (chunk_tokens - overlap_tokens), but at least 1 token
+            advance = max(1, self.chunk_tokens - self.overlap_tokens)
+            start += advance
 
-            # Advance by chunk_size minus overlap
-            start = end - self.overlap
+            if end == total_tokens:
+                break  # We've consumed all tokens
 
-        logger.info(
-            "Split text (%d tokens) into %d chunks (chunk_size=%d, overlap=%d)",
-            total_tokens,
-            len(chunks),
-            self.chunk_size,
-            self.overlap,
-        )
         return chunks
 
-    def needs_chunking(self, text: str) -> bool:
-        """Check if text needs to be chunked.
+
+class MapReduceSummarizer:
+    """
+    Implements map-reduce summarization for long articles.
+
+    Step 1 (map): Summarize each chunk independently.
+    Step 2 (reduce): Merge all chunk summaries into a final summary.
+    """
+
+    def __init__(
+        self,
+        client: "SummarizerClient",
+        prompt_builder: "PromptBuilder",
+        chunker: Optional[TextChunker] = None,
+    ) -> None:
+        self.client = client
+        self.prompt_builder = prompt_builder
+        self.chunker = chunker or TextChunker(model=client.model)
+
+    def summarize(self, text: str) -> tuple[str, dict]:
+        """
+        Run the map-reduce pipeline on *text*.
 
         Args:
-            text: The text to check.
+            text: The full article text to summarize.
 
         Returns:
-            True if the text exceeds the chunk size.
+            A tuple of (final_summary_text, usage_stats) where usage_stats
+            aggregates token usage across all API calls.
         """
-        return count_tokens(text, self.model) > self.chunk_size
+        chunks = self.chunker.split(text)
+        if not chunks:
+            return "", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-
-def run_map_reduce(
-    text: str,
-    summarize_fn,
-    model: str = "gpt-4o-mini",
-    chunk_size: Optional[int] = None,
-    overlap: int = DEFAULT_CHUNK_OVERLAP,
-    title: Optional[str] = None,
-) -> str:
-    """Run a map-reduce summarization pipeline on long text.
-
-    Splits the text into chunks, summarizes each chunk independently (map),
-    then summarizes the collected summaries (reduce).
-
-    Args:
-        text: The full text to summarize.
-        summarize_fn: Callable(text, title, is_chunk, chunk_index, total_chunks) -> str
-            A function that summarizes a piece of text.
-        model: The model name for token counting.
-        chunk_size: Maximum tokens per chunk.
-        overlap: Token overlap between chunks.
-        title: Optional article title for context.
-
-    Returns:
-        The final combined summary.
-    """
-    chunker = TextChunker(model=model, chunk_size=chunk_size, overlap=overlap)
-    chunks = chunker.split(text)
-
-    if len(chunks) == 1:
-        logger.info("Text fits in a single chunk, skipping map-reduce")
-        return summarize_fn(
-            text=chunks[0],
-            title=title,
-            is_chunk=False,
-            chunk_index=1,
-            total_chunks=1,
+        logger.info(
+            "Map-reduce: processing %d chunks (chunk_tokens=%d, overlap=%d).",
+            len(chunks),
+            self.chunker.chunk_tokens,
+            self.chunker.overlap_tokens,
         )
 
-    logger.info("Starting map phase: summarizing %d chunks", len(chunks))
+        total_usage: dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
 
-    # Map phase: summarize each chunk
-    chunk_summaries = []
-    for i, chunk in enumerate(chunks, 1):
-        logger.debug("Summarizing chunk %d/%d", i, len(chunks))
-        chunk_summary = summarize_fn(
-            text=chunk,
-            title=title,
-            is_chunk=True,
-            chunk_index=i,
-            total_chunks=len(chunks),
-        )
-        chunk_summaries.append(chunk_summary)
-        logger.debug("Chunk %d summarized (%d chars)", i, len(chunk_summary))
+        # --- Map phase ---
+        chunk_summaries: list[str] = []
+        for chunk in chunks:
+            messages = self.prompt_builder.build_chunk(
+                text=chunk.text,
+                chunk_index=chunk.index + 1,
+                total_chunks=len(chunks),
+            )
+            summary_text, usage = self.client.complete(messages)
+            chunk_summaries.append(summary_text)
+            _accumulate_usage(total_usage, usage)
+            logger.debug(
+                "Chunk %d/%d summarized (%d tokens used).",
+                chunk.index + 1,
+                len(chunks),
+                usage.get("total_tokens", 0),
+            )
 
-    logger.info("Map phase complete. Starting reduce phase.")
+        # If there's only one chunk, the map result *is* the final result
+        if len(chunk_summaries) == 1:
+            return chunk_summaries[0], total_usage
 
-    # Reduce phase: summarize the summaries
-    combined_text = "\n\n".join(
-        f"Section {i} Summary:\n{s}" for i, s in enumerate(chunk_summaries, 1)
-    )
+        # --- Reduce phase ---
+        logger.info("Map-reduce: merging %d chunk summaries.", len(chunk_summaries))
+        merge_messages = self.prompt_builder.build_merge(chunk_summaries)
+        final_summary, merge_usage = self.client.complete(merge_messages)
+        _accumulate_usage(total_usage, merge_usage)
 
-    final_summary = summarize_fn(
-        text=combined_text,
-        title=title,
-        is_chunk=False,
-        chunk_index=0,
-        total_chunks=len(chunks),
-        is_reduce=True,
-        chunk_summaries=chunk_summaries,
-    )
+        return final_summary, total_usage
 
-    logger.info("Reduce phase complete.")
-    return final_summary
+
+def _accumulate_usage(total: dict[str, int], new: dict[str, int]) -> None:
+    """Add token counts from *new* into the *total* dict in-place."""
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        total[key] = total.get(key, 0) + new.get(key, 0)
