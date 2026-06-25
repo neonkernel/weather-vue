@@ -1,175 +1,165 @@
-"""SummarizerClient: wraps the OpenAI API with retry logic and token logging."""
+"""SummarizerClient: wraps OpenAI client with retry logic and token logging."""
 
 import logging
-import os
-from typing import Any, Optional
+from typing import Optional, Any
 
 import openai
+from openai import OpenAI
 from tenacity import (
     retry,
-    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
+    retry_if_exception_type,
     before_sleep_log,
-    RetryError,
 )
 
-from .token_utils import count_tokens, estimate_cost
+from ..config import Config
+from .token_utils import estimate_cost
 
 logger = logging.getLogger(__name__)
 
-# Exceptions that should trigger a retry
+# Transient errors that should trigger a retry
 RETRYABLE_EXCEPTIONS = (
     openai.RateLimitError,
-    openai.APIConnectionError,
     openai.APITimeoutError,
+    openai.APIConnectionError,
     openai.InternalServerError,
 )
 
 
-def _is_retryable(exception: BaseException) -> bool:
+def _is_retryable(exc: BaseException) -> bool:
     """Check if an exception is retryable."""
-    return isinstance(exception, RETRYABLE_EXCEPTIONS)
+    return isinstance(exc, RETRYABLE_EXCEPTIONS)
 
 
 class SummarizerClient:
-    """
-    Wraps the OpenAI client for summarization tasks.
+    """Wraps OpenAI client with authentication, retry logic, and token logging.
 
-    Handles:
-    - Authentication via API key
-    - Model selection and configuration
-    - API calls with retry logic (3 attempts, exponential backoff)
-    - Token usage logging and cost estimation
+    Args:
+        config: Configuration object containing API key, model, etc.
+        api_key: Optional API key override (takes precedence over config).
+        base_url: Optional base URL override for compatible endpoints.
     """
 
     def __init__(
         self,
+        config: Optional[Config] = None,
         api_key: Optional[str] = None,
-        model: str = "gpt-4o-mini",
-        temperature: float = 0.3,
-        max_tokens: int = 1024,
         base_url: Optional[str] = None,
-        timeout: float = 60.0,
     ):
-        """
-        Initialize the SummarizerClient.
+        self.config = config or Config()
+        self.model = self.config.model
+        self.temperature = self.config.temperature
+        self.max_tokens = self.config.max_tokens
 
-        Args:
-            api_key: OpenAI API key. Defaults to OPENAI_API_KEY env var.
-            model: Model to use for summarization.
-            temperature: Sampling temperature (0.0-2.0).
-            max_tokens: Maximum tokens in the completion.
-            base_url: Optional custom base URL for OpenAI-compatible endpoints.
-            timeout: Request timeout in seconds.
-        """
-        self.model = model
-        self.temperature = temperature
-        self.max_tokens = max_tokens
+        # Build OpenAI client kwargs
+        client_kwargs: dict[str, Any] = {}
+        resolved_api_key = api_key or self.config.openai_api_key
+        if resolved_api_key:
+            client_kwargs["api_key"] = resolved_api_key
+        if base_url or getattr(self.config, "base_url", None):
+            client_kwargs["base_url"] = base_url or self.config.base_url
 
-        resolved_api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        if not resolved_api_key:
-            raise ValueError(
-                "OpenAI API key must be provided via the 'api_key' parameter "
-                "or the OPENAI_API_KEY environment variable."
-            )
-
-        client_kwargs: dict[str, Any] = {
-            "api_key": resolved_api_key,
-            "timeout": timeout,
-        }
-        if base_url:
-            client_kwargs["base_url"] = base_url
-
-        self._client = openai.OpenAI(**client_kwargs)
-
+        self._client = OpenAI(**client_kwargs)
         logger.info(
-            f"SummarizerClient initialized: model={model}, temperature={temperature}, "
-            f"max_tokens={max_tokens}"
+            "SummarizerClient initialized with model='%s', temperature=%s, max_tokens=%s",
+            self.model,
+            self.temperature,
+            self.max_tokens,
         )
 
-    def complete(self, messages: list[dict]) -> tuple[str, dict]:
-        """
-        Send a chat completion request with retry logic.
+    def complete(
+        self,
+        messages: list[dict],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Make a completion request with retry logic.
 
         Args:
-            messages: List of message dictionaries for the OpenAI API.
+            messages: List of message dicts with 'role' and 'content'.
+            model: Optional model override.
+            temperature: Optional temperature override.
+            max_tokens: Optional max_tokens override.
 
         Returns:
-            A tuple of (response_text, usage_dict).
+            The completion text.
+
+        Raises:
+            openai.OpenAIError: If the API call fails after all retries.
         """
-        return self._complete_with_retry(messages)
+        resolved_model = model or self.model
+        resolved_temperature = temperature if temperature is not None else self.temperature
+        resolved_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        return self._complete_with_retry(
+            messages=messages,
+            model=resolved_model,
+            temperature=resolved_temperature,
+            max_tokens=resolved_max_tokens,
+        )
 
     @retry(
         retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    def _complete_with_retry(self, messages: list[dict]) -> tuple[str, dict]:
-        """
-        Internal method that makes the API call (decorated with retry logic).
+    def _complete_with_retry(
+        self,
+        messages: list[dict],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """Internal method that performs the actual API call with tenacity retry.
 
         Args:
-            messages: List of message dictionaries.
+            messages: List of message dicts.
+            model: Model name.
+            temperature: Sampling temperature.
+            max_tokens: Maximum tokens in response.
 
         Returns:
-            A tuple of (response_text, usage_dict).
+            The completion text.
         """
         logger.debug(
-            f"Sending completion request: model={self.model}, "
-            f"messages={len(messages)}, temperature={self.temperature}"
+            "Calling OpenAI API: model=%s, temperature=%s, max_tokens=%s, messages=%d",
+            model,
+            temperature,
+            max_tokens,
+            len(messages),
         )
 
         response = self._client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
+            model=model,
+            messages=messages,  # type: ignore[arg-type]
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
 
-        response_text = response.choices[0].message.content or ""
+        # Extract usage information and log it
+        usage = response.usage
+        if usage:
+            prompt_tokens = usage.prompt_tokens
+            completion_tokens = usage.completion_tokens
+            total_tokens = usage.total_tokens
+            cost = estimate_cost(prompt_tokens, completion_tokens, model)
 
-        usage = {
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
+            logger.info(
+                "Token usage — prompt: %d, completion: %d, total: %d | estimated cost: $%.6f",
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cost,
+            )
+        else:
+            logger.warning("No usage information returned from API")
 
-        # Log token usage and estimated cost
-        estimated_cost = estimate_cost(
-            usage["prompt_tokens"],
-            usage["completion_tokens"],
-            self.model,
-        )
+        content = response.choices[0].message.content
+        if content is None:
+            raise ValueError("OpenAI returned an empty response")
 
-        logger.info(
-            f"API call complete — model={self.model}, "
-            f"prompt_tokens={usage['prompt_tokens']}, "
-            f"completion_tokens={usage['completion_tokens']}, "
-            f"total_tokens={usage['total_tokens']}, "
-            f"estimated_cost=${estimated_cost:.6f}"
-        )
-
-        return response_text, usage
-
-    def count_message_tokens(self, messages: list[dict]) -> int:
-        """
-        Estimate the token count for a list of messages.
-
-        Args:
-            messages: List of message dictionaries.
-
-        Returns:
-            Estimated token count.
-        """
-        total = 0
-        for message in messages:
-            # Add 4 tokens per message for role/formatting overhead
-            total += 4
-            total += count_tokens(message.get("content", ""), self.model)
-            total += count_tokens(message.get("role", ""), self.model)
-        # Add 2 tokens for reply priming
-        total += 2
-        return total
+        return content.strip()

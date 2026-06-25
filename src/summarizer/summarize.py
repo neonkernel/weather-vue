@@ -1,14 +1,14 @@
 """Top-level orchestration for article summarization."""
 
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Optional
 
-from .llm import SummarizerClient
-from .llm.chunker import TextChunker, MapReduceSummarizer
-from .llm.prompts import PromptBuilder, SummaryStyle
-from .llm.token_utils import count_tokens, estimate_cost, fits_in_context
+from .config import Config
+from .exceptions import SummarizerError
+from .llm.client import SummarizerClient
+from .llm.chunker import MapReduceSummarizer, TextChunker
+from .llm.prompts import PromptBuilder
+from .llm.token_utils import fits_in_context, RESERVED_TOKENS
 from .models import Article, Summary
 
 logger = logging.getLogger(__name__)
@@ -16,112 +16,144 @@ logger = logging.getLogger(__name__)
 
 def summarize(
     article: Article,
+    style: str = "concise",
+    config: Optional[Config] = None,
     client: Optional[SummarizerClient] = None,
-    style: SummaryStyle = SummaryStyle.CONCISE,
-    model: str = "gpt-4o-mini",
-    temperature: float = 0.3,
-    max_tokens: int = 1024,
-    chunk_size: Optional[int] = None,
-    overlap_tokens: int = 100,
-    api_key: Optional[str] = None,
 ) -> Summary:
-    """
-    Summarize an article using the LLM.
+    """Summarize an article, automatically choosing direct or chunked strategy.
 
-    Automatically decides whether to use direct summarization or
-    map-reduce chunking based on the article's token count.
+    For articles that fit within the model's context window, a direct single-pass
+    summarization is used. For longer articles, a map-reduce chunking strategy
+    is applied: the article is split into overlapping chunks, each is summarized
+    independently, and then the chunk summaries are merged into a final summary.
 
     Args:
         article: The Article to summarize.
-        client: Optional pre-configured SummarizerClient. If not provided,
-                one will be created using the other parameters.
-        style: The summary style to use.
-        model: The LLM model to use.
-        temperature: Sampling temperature.
-        max_tokens: Maximum tokens for completion output.
-        chunk_size: Maximum tokens per chunk (for long articles).
-        overlap_tokens: Token overlap between chunks.
-        api_key: OpenAI API key (falls back to OPENAI_API_KEY env var).
+        style: Summary style ('concise', 'detailed', 'bullet', 'executive').
+        config: Optional Config object. Defaults to Config().
+        client: Optional SummarizerClient (useful for testing/injection).
 
     Returns:
-        A Summary dataclass with the generated summary and metadata.
+        A Summary dataclass containing the summary text and metadata.
 
     Raises:
-        ValueError: If no API key is available.
-        openai.OpenAIError: If the API call fails after retries.
+        SummarizerError: If summarization fails.
     """
+    cfg = config or Config()
+
     if client is None:
-        client = SummarizerClient(
-            api_key=api_key,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        client = SummarizerClient(config=cfg)
 
     prompt_builder = PromptBuilder(style=style)
-    chunker = TextChunker(
-        model=model,
-        chunk_size=chunk_size,
-        overlap_tokens=overlap_tokens,
-        reserved_tokens=max_tokens + 500,  # Reserve space for completion + system prompt
-    )
-
-    article_text = article.content
-    token_count = count_tokens(article_text, model)
 
     logger.info(
-        f"Starting summarization: title='{article.title}', "
-        f"tokens={token_count}, style={style.value}, model={model}"
+        "Starting summarization of article '%s' (style='%s', model='%s')",
+        article.title or "(untitled)",
+        style,
+        client.model,
     )
 
-    use_chunking = chunker.needs_chunking(article_text)
+    try:
+        # Determine if the article fits in the context window
+        if fits_in_context(article.text, model=client.model, reserved_tokens=RESERVED_TOKENS):
+            logger.info("Article fits in context window — using direct summarization")
+            summary_text, was_chunked, chunk_count = _direct_summarize(
+                article=article,
+                client=client,
+                prompt_builder=prompt_builder,
+            )
+        else:
+            logger.info(
+                "Article exceeds context window — using map-reduce chunked summarization"
+            )
+            summary_text, was_chunked, chunk_count = _chunked_summarize(
+                article=article,
+                client=client,
+                prompt_builder=prompt_builder,
+                config=cfg,
+            )
 
-    if use_chunking:
+        summary = Summary(
+            text=summary_text,
+            article_title=article.title,
+            style=style,
+            model=client.model,
+            was_chunked=was_chunked,
+            chunk_count=chunk_count,
+        )
+
         logger.info(
-            f"Article exceeds chunk size ({token_count} tokens); "
-            f"using map-reduce summarization"
+            "Summarization complete: %d chars, chunked=%s, chunks=%d",
+            len(summary_text),
+            was_chunked,
+            chunk_count,
         )
-        map_reduce = MapReduceSummarizer(
-            client=client,
-            prompt_builder=prompt_builder,
-            chunker=chunker,
-        )
-        summary_text, usage = map_reduce.summarize(article_text)
-        method = "map_reduce"
-    else:
-        logger.info(
-            f"Article fits in context ({token_count} tokens); "
-            f"using direct summarization"
-        )
-        messages = prompt_builder.build_messages(article_text)
-        summary_text, usage = client.complete(messages)
-        method = "direct"
+        return summary
 
-    # Calculate estimated cost
-    estimated_cost = estimate_cost(
-        usage["prompt_tokens"],
-        usage["completion_tokens"],
-        model,
-    )
+    except Exception as exc:
+        logger.error("Summarization failed: %s", exc, exc_info=True)
+        if isinstance(exc, SummarizerError):
+            raise
+        raise SummarizerError(f"Summarization failed: {exc}") from exc
 
-    summary = Summary(
+
+def _direct_summarize(
+    article: Article,
+    client: SummarizerClient,
+    prompt_builder: PromptBuilder,
+) -> tuple[str, bool, int]:
+    """Perform direct single-pass summarization.
+
+    Args:
+        article: The article to summarize.
+        client: The SummarizerClient.
+        prompt_builder: The PromptBuilder.
+
+    Returns:
+        Tuple of (summary_text, was_chunked=False, chunk_count=1).
+    """
+    messages = prompt_builder.build_direct_messages(
+        article_text=article.text,
         title=article.title,
-        url=article.url,
-        summary=summary_text,
-        style=style.value,
-        model=model,
-        prompt_tokens=usage["prompt_tokens"],
-        completion_tokens=usage["completion_tokens"],
-        total_tokens=usage["total_tokens"],
-        estimated_cost_usd=estimated_cost,
-        method=method,
-        created_at=datetime.now(timezone.utc),
+    )
+    summary_text = client.complete(messages)
+    return summary_text, False, 1
+
+
+def _chunked_summarize(
+    article: Article,
+    client: SummarizerClient,
+    prompt_builder: PromptBuilder,
+    config: Config,
+) -> tuple[str, bool, int]:
+    """Perform map-reduce chunked summarization.
+
+    Args:
+        article: The article to summarize.
+        client: The SummarizerClient.
+        prompt_builder: The PromptBuilder.
+        config: The configuration.
+
+    Returns:
+        Tuple of (summary_text, was_chunked=True, chunk_count).
+    """
+    chunker = TextChunker(
+        model=client.model,
+        max_chunk_tokens=config.max_chunk_tokens,
+        overlap_tokens=config.overlap_tokens,
+    )
+    map_reduce = MapReduceSummarizer(
+        client=client,
+        prompt_builder=prompt_builder,
+        chunker=chunker,
     )
 
-    logger.info(
-        f"Summarization complete: method={method}, "
-        f"total_tokens={usage['total_tokens']}, "
-        f"estimated_cost=${estimated_cost:.6f}"
-    )
+    # Pre-calculate chunk count for metadata
+    chunks = chunker.split(article.text)
+    chunk_count = len(chunks)
 
-    return summary
+    summary_text = map_reduce.summarize(
+        text=article.text,
+        title=article.title,
+    )
+    return summary_text, True, chunk_count

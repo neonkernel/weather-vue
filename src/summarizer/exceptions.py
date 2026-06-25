@@ -1,13 +1,21 @@
-"""Custom exceptions for the summarizer."""
+"""Exceptions for the summarizer package."""
 
 
-class SummarizationError(Exception):
-    """Raised when summarization fails."""
+class SummarizerError(Exception):
+    """Base exception for summarizer errors."""
+    pass
 
 
-class ConfigurationError(Exception):
-    """Raised when the summarizer is misconfigured."""
-
-
-class IngestionError(Exception):
+class IngestionError(SummarizerError):
     """Raised when article ingestion fails."""
+    pass
+
+
+class LLMError(SummarizerError):
+    """Raised when an LLM API call fails."""
+    pass
+
+
+class ConfigurationError(SummarizerError):
+    """Raised when configuration is invalid."""
+    pass
