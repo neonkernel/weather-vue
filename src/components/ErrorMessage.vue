@@ -1,18 +1,24 @@
 <template>
-  <div
-    class="flex items-start gap-3 bg-red-50 border border-red-200 text-red-800 rounded-lg px-4 py-3 text-sm shadow-sm"
-    role="alert"
-  >
-    <span class="text-lg leading-none mt-0.5" aria-hidden="true">⚠️</span>
-    <div>
-      <p class="font-semibold">Error</p>
-      <p class="text-red-700 mt-0.5">{{ message }}</p>
-    </div>
+  <div class="flex flex-col items-center justify-center py-12 text-center">
+    <span class="text-5xl mb-4">⚡</span>
+    <h2 class="text-xl font-semibold text-red-300 mb-2">Something went wrong</h2>
+    <p class="text-blue-200 mb-6 max-w-md">{{ message }}</p>
+    <button
+      v-if="$attrs.onRetry"
+      @click="$emit('retry')"
+      class="px-6 py-2 bg-blue-500 hover:bg-blue-400 rounded-xl text-white font-medium transition-colors"
+    >
+      Try Again
+    </button>
   </div>
 </template>
 
 <script setup lang="ts">
 defineProps<{
   message: string
+}>()
+
+defineEmits<{
+  (e: 'retry'): void
 }>()
 </script>

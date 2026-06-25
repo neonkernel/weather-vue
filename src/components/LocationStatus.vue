@@ -1,19 +1,12 @@
 <template>
-  <div v-if="cityName" class="flex items-center gap-1.5">
-    <span
-      class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border"
+  <div class="flex items-center justify-center">
+    <div class="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium backdrop-blur-sm border"
       :class="badgeClasses"
     >
-      <span>{{ sourceIcon }}</span>
+      <span class="text-base leading-none">{{ sourceIcon }}</span>
       <span>{{ cityName }}</span>
-    </span>
-    <span
-      v-if="source !== 'default'"
-      class="text-xs px-1.5 py-0.5 rounded-full font-medium"
-      :class="sourceTagClasses"
-    >
-      {{ sourceLabel }}
-    </span>
+      <span class="opacity-70 text-xs font-normal">{{ sourceLabel }}</span>
+    </div>
   </div>
 </template>
 
@@ -28,49 +21,32 @@ const props = defineProps<{
 
 const sourceIcon = computed(() => {
   switch (props.source) {
-    case 'geo':
-      return '📍'
-    case 'search':
-      return '🔍'
-    case 'default':
-      return '🌍'
-    default:
-      return '📍'
+    case 'geo': return '📍'
+    case 'search': return '🔍'
+    case 'default': return '🌍'
+    default: return '📍'
   }
 })
 
 const sourceLabel = computed(() => {
   switch (props.source) {
-    case 'geo':
-      return 'GPS'
-    case 'search':
-      return 'Search'
-    default:
-      return ''
+    case 'geo': return '· GPS'
+    case 'search': return '· Search'
+    case 'default': return '· Default'
+    default: return ''
   }
 })
 
 const badgeClasses = computed(() => {
   switch (props.source) {
     case 'geo':
-      return 'bg-green-50 text-green-700 border-green-200'
+      return 'bg-green-500/20 border-green-400/30 text-green-200'
     case 'search':
-      return 'bg-blue-50 text-blue-700 border-blue-200'
+      return 'bg-blue-500/20 border-blue-400/30 text-blue-200'
     case 'default':
-      return 'bg-gray-50 text-gray-600 border-gray-200'
+      return 'bg-white/10 border-white/20 text-blue-200'
     default:
-      return 'bg-gray-50 text-gray-600 border-gray-200'
-  }
-})
-
-const sourceTagClasses = computed(() => {
-  switch (props.source) {
-    case 'geo':
-      return 'bg-green-100 text-green-700'
-    case 'search':
-      return 'bg-blue-100 text-blue-700'
-    default:
-      return ''
+      return 'bg-white/10 border-white/20 text-blue-200'
   }
 })
 </script>

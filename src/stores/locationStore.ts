@@ -16,22 +16,17 @@ export const useLocationStore = defineStore('location', () => {
   const cityName = ref<string>('')
   const source = ref<LocationSource>('default')
 
-  function setLocation(payload: {
-    lat: number
-    lon: number
-    cityName: string
-    source: LocationSource
-  }) {
+  function setLocation(payload: LocationState) {
     lat.value = payload.lat
     lon.value = payload.lon
     cityName.value = payload.cityName
     source.value = payload.source
   }
 
-  function setDefault(city: string, latVal: number, lonVal: number) {
-    lat.value = latVal
-    lon.value = lonVal
-    cityName.value = city
+  function clearLocation() {
+    lat.value = null
+    lon.value = null
+    cityName.value = ''
     source.value = 'default'
   }
 
@@ -41,6 +36,6 @@ export const useLocationStore = defineStore('location', () => {
     cityName,
     source,
     setLocation,
-    setDefault,
+    clearLocation,
   }
 })

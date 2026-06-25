@@ -1,106 +1,119 @@
 import type { WeatherData } from '../types/weather'
+import { getCoordinatesForCity } from './geocodingService'
 
-const BASE_URL = 'https://api.open-meteo.com/v1/forecast'
+const OPEN_METEO_BASE = 'https://api.open-meteo.com/v1'
 
-interface OpenMeteoResponse {
-  latitude: number
-  longitude: number
-  current_weather: {
-    temperature: number
-    windspeed: number
-    weathercode: number
-    time: string
-  }
-  hourly: {
-    time: string[]
-    temperature_2m: number[]
-    relativehumidity_2m: number[]
-    precipitation_probability: number[]
-    weathercode: number[]
-  }
-  daily: {
-    time: string[]
-    temperature_2m_max: number[]
-    temperature_2m_min: number[]
-    weathercode: number[]
-    precipitation_probability_max: number[]
-  }
-}
-
-async function fetchFromOpenMeteo(lat: number, lon: number): Promise<OpenMeteoResponse> {
+async function fetchWeatherFromCoords(lat: number, lon: number, cityName: string): Promise<WeatherData> {
   const params = new URLSearchParams({
     latitude: lat.toString(),
     longitude: lon.toString(),
-    current_weather: 'true',
-    hourly: 'temperature_2m,relativehumidity_2m,precipitation_probability,weathercode',
-    daily: 'temperature_2m_max,temperature_2m_min,weathercode,precipitation_probability_max',
+    current: [
+      'temperature_2m',
+      'relative_humidity_2m',
+      'apparent_temperature',
+      'weather_code',
+      'wind_speed_10m',
+      'wind_direction_10m',
+      'surface_pressure',
+      'visibility',
+    ].join(','),
+    hourly: 'temperature_2m,precipitation_probability,weather_code',
+    daily: [
+      'weather_code',
+      'temperature_2m_max',
+      'temperature_2m_min',
+      'precipitation_sum',
+      'wind_speed_10m_max',
+      'sunrise',
+      'sunset',
+    ].join(','),
     timezone: 'auto',
     forecast_days: '7',
   })
 
-  const response = await fetch(`${BASE_URL}?${params}`)
+  const response = await fetch(`${OPEN_METEO_BASE}/forecast?${params}`)
+
   if (!response.ok) {
     throw new Error(`Weather API error: ${response.status} ${response.statusText}`)
   }
 
-  return response.json()
-}
+  const data = await response.json()
 
-function mapToWeatherData(data: OpenMeteoResponse, cityName?: string): WeatherData {
-  return {
-    city: cityName || `${data.latitude.toFixed(2)}, ${data.longitude.toFixed(2)}`,
-    lat: data.latitude,
-    lon: data.longitude,
-    current: {
-      temperature: data.current_weather.temperature,
-      windspeed: data.current_weather.windspeed,
-      weathercode: data.current_weather.weathercode,
-      time: data.current_weather.time,
-    },
-    hourly: {
-      time: data.hourly.time,
-      temperature: data.hourly.temperature_2m,
-      humidity: data.hourly.relativehumidity_2m,
-      precipitationProbability: data.hourly.precipitation_probability,
-      weathercode: data.hourly.weathercode,
-    },
-    daily: {
-      time: data.daily.time,
-      tempMax: data.daily.temperature_2m_max,
-      tempMin: data.daily.temperature_2m_min,
-      weathercode: data.daily.weathercode,
-      precipitationProbabilityMax: data.daily.precipitation_probability_max,
-    },
-  }
-}
-
-export async function fetchWeatherByCoords(
-  lat: number,
-  lon: number,
-  cityName?: string
-): Promise<WeatherData> {
-  const data = await fetchFromOpenMeteo(lat, lon)
-  return mapToWeatherData(data, cityName)
+  return mapApiResponseToWeatherData(data, cityName, lat, lon)
 }
 
 export async function fetchWeatherByCity(city: string): Promise<WeatherData> {
-  // First geocode the city to get coordinates
-  const geocodeUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`
-  const geocodeResponse = await fetch(geocodeUrl)
+  const coords = await getCoordinatesForCity(city)
+  return fetchWeatherFromCoords(coords.lat, coords.lon, coords.name || city)
+}
 
-  if (!geocodeResponse.ok) {
-    throw new Error(`Geocoding API error: ${geocodeResponse.status}`)
+export async function fetchWeatherByCoords(lat: number, lon: number, cityName?: string): Promise<WeatherData> {
+  // Reverse geocode to get city name if not provided
+  let resolvedCityName = cityName || ''
+  if (!resolvedCityName) {
+    try {
+      const reverseParams = new URLSearchParams({
+        latitude: lat.toString(),
+        longitude: lon.toString(),
+        count: '1',
+      })
+      const geoResponse = await fetch(
+        `https://geocoding-api.open-meteo.com/v1/reverse?${reverseParams}`
+      )
+      if (geoResponse.ok) {
+        const geoData = await geoResponse.json()
+        if (geoData.results && geoData.results.length > 0) {
+          const r = geoData.results[0]
+          resolvedCityName = r.name || `${lat.toFixed(2)}, ${lon.toFixed(2)}`
+        }
+      }
+    } catch {
+      resolvedCityName = `${lat.toFixed(2)}, ${lon.toFixed(2)}`
+    }
   }
 
-  const geocodeData = await geocodeResponse.json()
+  return fetchWeatherFromCoords(lat, lon, resolvedCityName)
+}
 
-  if (!geocodeData.results || geocodeData.results.length === 0) {
-    throw new Error(`City not found: ${city}`)
+function mapApiResponseToWeatherData(data: any, cityName: string, lat: number, lon: number): WeatherData {
+  const current = data.current || {}
+  const daily = data.daily || {}
+  const hourly = data.hourly || {}
+
+  const dailyForecasts = (daily.time || []).map((time: string, i: number) => ({
+    date: time,
+    weatherCode: daily.weather_code?.[i] ?? 0,
+    tempMax: daily.temperature_2m_max?.[i] ?? 0,
+    tempMin: daily.temperature_2m_min?.[i] ?? 0,
+    precipitationSum: daily.precipitation_sum?.[i] ?? 0,
+    windSpeedMax: daily.wind_speed_10m_max?.[i] ?? 0,
+    sunrise: daily.sunrise?.[i] ?? '',
+    sunset: daily.sunset?.[i] ?? '',
+  }))
+
+  const hourlyForecasts = (hourly.time || []).slice(0, 24).map((time: string, i: number) => ({
+    time,
+    temperature: hourly.temperature_2m?.[i] ?? 0,
+    precipitationProbability: hourly.precipitation_probability?.[i] ?? 0,
+    weatherCode: hourly.weather_code?.[i] ?? 0,
+  }))
+
+  return {
+    city: cityName,
+    lat,
+    lon,
+    timezone: data.timezone || 'UTC',
+    current: {
+      temperature: current.temperature_2m ?? 0,
+      apparentTemperature: current.apparent_temperature ?? 0,
+      humidity: current.relative_humidity_2m ?? 0,
+      weatherCode: current.weather_code ?? 0,
+      windSpeed: current.wind_speed_10m ?? 0,
+      windDirection: current.wind_direction_10m ?? 0,
+      pressure: current.surface_pressure ?? 0,
+      visibility: current.visibility ?? 0,
+    },
+    daily: dailyForecasts,
+    hourly: hourlyForecasts,
   }
-
-  const { latitude, longitude, name, country } = geocodeData.results[0]
-  const cityLabel = country ? `${name}, ${country}` : name
-
-  const data = await fetchFromOpenMeteo(latitude, longitude)
-  return mapToWeatherData(data, cityLabel)
 }

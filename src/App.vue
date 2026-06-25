@@ -1,183 +1,157 @@
 <template>
-  <div class="min-h-screen bg-gradient-to-br from-blue-50 via-sky-50 to-indigo-100">
-    <div class="max-w-4xl mx-auto px-4 py-8">
+  <div class="min-h-screen bg-gradient-to-br from-blue-900 via-blue-800 to-indigo-900 text-white">
+    <div class="container mx-auto px-4 py-8 max-w-5xl">
       <!-- Header -->
-      <header class="mb-8 text-center">
-        <h1 class="text-3xl font-bold text-gray-800 mb-1">
-          🌤 Weather Dashboard
-        </h1>
-        <p class="text-gray-500 text-sm">Real-time weather information</p>
+      <header class="mb-8">
+        <h1 class="text-3xl font-bold text-center mb-2">🌤 Weather Dashboard</h1>
+        <p class="text-blue-200 text-center text-sm">Real-time weather powered by Open-Meteo</p>
       </header>
 
       <!-- Search Bar -->
-      <div class="mb-4">
-        <SearchBar
-          :loading="weatherLoading"
-          :geo-loading="geoLoading"
-          @search="handleCitySearch"
-          @use-location="handleUseMyLocation"
-        />
-      </div>
-
-      <!-- Detecting location state -->
-      <div v-if="detectingLocation" class="mb-4 flex items-center gap-2 text-blue-600 text-sm">
-        <span class="animate-spin">⏳</span>
-        <span>Detecting your location...</span>
-      </div>
-
-      <!-- Location Status -->
-      <div class="mb-4">
-        <LocationStatus
-          v-if="locationStore.cityName"
-          :city-name="locationStore.cityName"
-          :source="locationStore.source"
-        />
-      </div>
+      <SearchBar
+        @search="handleSearch"
+        @use-location="handleUseLocation"
+        :loading="geoLoading"
+        class="mb-4"
+      />
 
       <!-- Permission Notice -->
-      <div class="mb-4">
-        <PermissionNotice
-          v-if="showPermissionNotice"
-          :fallback-city="DEFAULT_CITY"
-        />
-      </div>
+      <PermissionNotice
+        v-if="showPermissionNotice"
+        :fallback-city="locationStore.cityName"
+        @dismiss="showPermissionNotice = false"
+        class="mb-4"
+      />
 
-      <!-- Error Message -->
-      <div v-if="weatherError" class="mb-4">
-        <ErrorMessage :message="weatherError" />
-      </div>
+      <!-- Location Status -->
+      <LocationStatus
+        v-if="locationStore.cityName"
+        :city-name="locationStore.cityName"
+        :source="locationStore.source"
+        class="mb-6"
+      />
 
-      <!-- Loading Spinner -->
-      <div v-if="weatherLoading" class="flex justify-center py-16">
+      <!-- Detecting Location State -->
+      <div v-if="geoLoading" class="flex flex-col items-center justify-center py-16">
         <LoadingSpinner />
+        <p class="mt-4 text-blue-200 text-lg animate-pulse">Detecting your location...</p>
       </div>
 
       <!-- Weather Dashboard -->
       <WeatherDashboard
-        v-else-if="weatherData"
-        :weather-data="weatherData"
+        v-else-if="weather"
+        :weather="weather"
       />
 
-      <!-- Empty state -->
-      <div
-        v-else-if="!weatherLoading && !weatherError"
-        class="text-center py-16 text-gray-400"
-      >
-        <div class="text-6xl mb-4">🌍</div>
-        <p class="text-lg font-medium">No weather data yet</p>
-        <p class="text-sm mt-1">Search for a city or allow location access</p>
+      <!-- Loading Weather -->
+      <div v-else-if="weatherLoading" class="flex flex-col items-center justify-center py-16">
+        <LoadingSpinner />
+        <p class="mt-4 text-blue-200">Loading weather data...</p>
+      </div>
+
+      <!-- Error State -->
+      <ErrorMessage
+        v-else-if="weatherError"
+        :message="weatherError"
+        @retry="handleRetry"
+      />
+
+      <!-- Initial State -->
+      <div v-else class="flex flex-col items-center justify-center py-16 text-blue-200">
+        <span class="text-6xl mb-4">🌍</span>
+        <p class="text-lg">Enter a city name or allow location access to get started.</p>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useLocationStore } from './stores/locationStore'
 import { useGeolocation } from './composables/useGeolocation'
 import { useWeatherApi } from './composables/useWeatherApi'
-import { fetchWeatherByCoords } from './services/weatherService'
-
 import SearchBar from './components/SearchBar.vue'
+import WeatherDashboard from './components/WeatherDashboard.vue'
+import LoadingSpinner from './components/LoadingSpinner.vue'
+import ErrorMessage from './components/ErrorMessage.vue'
 import LocationStatus from './components/LocationStatus.vue'
 import PermissionNotice from './components/PermissionNotice.vue'
-import ErrorMessage from './components/ErrorMessage.vue'
-import LoadingSpinner from './components/LoadingSpinner.vue'
-import WeatherDashboard from './components/WeatherDashboard.vue'
 
 const DEFAULT_CITY = 'New York'
 const DEFAULT_LAT = 40.7128
 const DEFAULT_LON = -74.006
 
 const locationStore = useLocationStore()
-const { detectLocation, loading: geoLoading, permissionDenied } = useGeolocation()
-const { weatherData, loading: weatherLoading, error: weatherError, fetchByCoords, fetchByCity } = useWeatherApi()
+const { loading: geoLoading, permissionDenied, detectLocation } = useGeolocation()
+const { weather, loading: weatherLoading, error: weatherError, fetchByCity, fetchByCoords } = useWeatherApi()
 
-const detectingLocation = ref(false)
 const showPermissionNotice = ref(false)
+let lastLat: number | null = null
+let lastLon: number | null = null
 
-async function handleUseMyLocation() {
-  detectingLocation.value = true
+async function handleUseLocation() {
   showPermissionNotice.value = false
-
   const coords = await detectLocation()
 
   if (coords) {
+    lastLat = coords.latitude
+    lastLon = coords.longitude
+    await fetchByCoords(coords.latitude, coords.longitude)
+
     locationStore.setLocation({
-      lat: coords.lat,
-      lon: coords.lon,
-      cityName: 'Your Location',
+      lat: coords.latitude,
+      lon: coords.longitude,
+      cityName: weather.value?.city || `${coords.latitude.toFixed(2)}, ${coords.longitude.toFixed(2)}`,
       source: 'geo',
     })
-    await fetchByCoords(coords.lat, coords.lon)
-
-    // Update city name from fetched data if available
-    if (weatherData.value?.city) {
-      locationStore.setLocation({
-        lat: coords.lat,
-        lon: coords.lon,
-        cityName: weatherData.value.city,
-        source: 'geo',
-      })
-    }
+  } else if (permissionDenied.value) {
+    showPermissionNotice.value = true
+    await loadDefault()
   } else {
-    // Geolocation failed – fall back to default
-    showPermissionNotice.value = permissionDenied.value
-    await fallbackToDefault()
+    await loadDefault()
   }
-
-  detectingLocation.value = false
 }
 
-async function handleCitySearch(city: string) {
+async function handleSearch(city: string) {
   showPermissionNotice.value = false
   await fetchByCity(city)
 
-  if (weatherData.value) {
+  if (weather.value) {
+    lastLat = weather.value.lat
+    lastLon = weather.value.lon
     locationStore.setLocation({
-      lat: weatherData.value.lat,
-      lon: weatherData.value.lon,
-      cityName: weatherData.value.city,
+      lat: weather.value.lat,
+      lon: weather.value.lon,
+      cityName: weather.value.city,
       source: 'search',
     })
   }
 }
 
-async function fallbackToDefault() {
-  locationStore.setDefault(DEFAULT_CITY, DEFAULT_LAT, DEFAULT_LON)
-  await fetchByCoords(DEFAULT_LAT, DEFAULT_LON, DEFAULT_CITY)
+async function loadDefault() {
+  lastLat = DEFAULT_LAT
+  lastLon = DEFAULT_LON
+  await fetchByCoords(DEFAULT_LAT, DEFAULT_LON)
+
+  locationStore.setLocation({
+    lat: DEFAULT_LAT,
+    lon: DEFAULT_LON,
+    cityName: weather.value?.city || DEFAULT_CITY,
+    source: 'default',
+  })
+}
+
+async function handleRetry() {
+  if (lastLat !== null && lastLon !== null) {
+    await fetchByCoords(lastLat, lastLon)
+  } else if (locationStore.cityName) {
+    await fetchByCity(locationStore.cityName)
+  } else {
+    await loadDefault()
+  }
 }
 
 onMounted(async () => {
-  detectingLocation.value = true
-
-  const coords = await detectLocation()
-
-  if (coords) {
-    locationStore.setLocation({
-      lat: coords.lat,
-      lon: coords.lon,
-      cityName: 'Your Location',
-      source: 'geo',
-    })
-    await fetchByCoords(coords.lat, coords.lon)
-
-    // Update city name from fetched data
-    if (weatherData.value?.city) {
-      locationStore.setLocation({
-        lat: coords.lat,
-        lon: coords.lon,
-        cityName: weatherData.value.city,
-        source: 'geo',
-      })
-    }
-  } else {
-    if (permissionDenied.value) {
-      showPermissionNotice.value = true
-    }
-    await fallbackToDefault()
-  }
-
-  detectingLocation.value = false
+  await handleUseLocation()
 })
 </script>
