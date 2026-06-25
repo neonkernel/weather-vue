@@ -1,25 +1,16 @@
-"""Configuration for the summarizer package."""
+"""Configuration management for the summarizer."""
+
+from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
 class Config:
-    """Configuration for the summarizer.
+    """Runtime configuration, populated from environment variables or explicit values."""
 
-    Attributes:
-        openai_api_key: OpenAI API key. Falls back to OPENAI_API_KEY env var.
-        model: Model to use for summarization.
-        temperature: Sampling temperature (0.0 to 2.0).
-        max_tokens: Maximum tokens in the response.
-        base_url: Optional base URL for compatible endpoints.
-        max_chunk_tokens: Maximum tokens per chunk for long articles.
-        overlap_tokens: Token overlap between chunks.
-    """
-
-    openai_api_key: Optional[str] = field(
+    openai_api_key: str | None = field(
         default_factory=lambda: os.environ.get("OPENAI_API_KEY")
     )
     model: str = field(
@@ -31,12 +22,9 @@ class Config:
     max_tokens: int = field(
         default_factory=lambda: int(os.environ.get("SUMMARIZER_MAX_TOKENS", "1024"))
     )
-    base_url: Optional[str] = field(
-        default_factory=lambda: os.environ.get("OPENAI_BASE_URL")
+    chunk_size: int = field(
+        default_factory=lambda: int(os.environ.get("SUMMARIZER_CHUNK_SIZE", "3000"))
     )
-    max_chunk_tokens: int = field(
-        default_factory=lambda: int(os.environ.get("SUMMARIZER_MAX_CHUNK_TOKENS", "4000"))
-    )
-    overlap_tokens: int = field(
-        default_factory=lambda: int(os.environ.get("SUMMARIZER_OVERLAP_TOKENS", "200"))
+    chunk_overlap: int = field(
+        default_factory=lambda: int(os.environ.get("SUMMARIZER_CHUNK_OVERLAP", "200"))
     )

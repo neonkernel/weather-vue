@@ -1,165 +1,146 @@
-"""SummarizerClient: wraps OpenAI client with retry logic and token logging."""
+"""SummarizerClient: wraps openai.OpenAI with retry logic and prompt building."""
+
+from __future__ import annotations
 
 import logging
-from typing import Optional, Any
+from dataclasses import dataclass, field
+from typing import Any
 
 import openai
-from openai import OpenAI
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
     before_sleep_log,
 )
 
-from ..config import Config
-from .token_utils import estimate_cost
+from .prompts import PromptBuilder, SummaryStyle
+from .token_utils import estimate_cost, fits_in_context
+from .chunker import map_reduce_summarize
 
 logger = logging.getLogger(__name__)
 
-# Transient errors that should trigger a retry
-RETRYABLE_EXCEPTIONS = (
-    openai.RateLimitError,
+# Transient errors that warrant a retry
+_RETRYABLE_EXCEPTIONS = (
     openai.APITimeoutError,
     openai.APIConnectionError,
+    openai.RateLimitError,
     openai.InternalServerError,
 )
 
+DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_TEMPERATURE = 0.3
+DEFAULT_MAX_TOKENS = 1_024
 
-def _is_retryable(exc: BaseException) -> bool:
-    """Check if an exception is retryable."""
-    return isinstance(exc, RETRYABLE_EXCEPTIONS)
 
-
+@dataclass
 class SummarizerClient:
-    """Wraps OpenAI client with authentication, retry logic, and token logging.
+    """High-level client for producing text summaries via the OpenAI API."""
 
-    Args:
-        config: Configuration object containing API key, model, etc.
-        api_key: Optional API key override (takes precedence over config).
-        base_url: Optional base URL override for compatible endpoints.
-    """
+    api_key: str | None = None
+    model: str = DEFAULT_MODEL
+    temperature: float = DEFAULT_TEMPERATURE
+    max_tokens: int = DEFAULT_MAX_TOKENS
+    style: SummaryStyle = "concise"
+    base_url: str | None = None  # Override for compatible endpoints
+    extra_instructions: str = ""
 
-    def __init__(
-        self,
-        config: Optional[Config] = None,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-    ):
-        self.config = config or Config()
-        self.model = self.config.model
-        self.temperature = self.config.temperature
-        self.max_tokens = self.config.max_tokens
+    # Set after __post_init__
+    _client: openai.OpenAI = field(init=False, repr=False)
+    prompt_builder: PromptBuilder = field(init=False, repr=False)
 
-        # Build OpenAI client kwargs
+    def __post_init__(self) -> None:
         client_kwargs: dict[str, Any] = {}
-        resolved_api_key = api_key or self.config.openai_api_key
-        if resolved_api_key:
-            client_kwargs["api_key"] = resolved_api_key
-        if base_url or getattr(self.config, "base_url", None):
-            client_kwargs["base_url"] = base_url or self.config.base_url
-
-        self._client = OpenAI(**client_kwargs)
-        logger.info(
-            "SummarizerClient initialized with model='%s', temperature=%s, max_tokens=%s",
-            self.model,
-            self.temperature,
-            self.max_tokens,
+        if self.api_key:
+            client_kwargs["api_key"] = self.api_key
+        if self.base_url:
+            client_kwargs["base_url"] = self.base_url
+        self._client = openai.OpenAI(**client_kwargs)
+        self.prompt_builder = PromptBuilder(
+            style=self.style,
+            extra_instructions=self.extra_instructions,
         )
 
-    def complete(
-        self,
-        messages: list[dict],
-        model: Optional[str] = None,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-    ) -> str:
-        """Make a completion request with retry logic.
+    # ------------------------------------------------------------------
+    # Internal API call (with retry)
+    # ------------------------------------------------------------------
 
-        Args:
-            messages: List of message dicts with 'role' and 'content'.
-            model: Optional model override.
-            temperature: Optional temperature override.
-            max_tokens: Optional max_tokens override.
+    def _call_api(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
+        """Call the OpenAI chat completions endpoint with retry logic.
 
         Returns:
-            The completion text.
-
-        Raises:
-            openai.OpenAIError: If the API call fails after all retries.
+            (content_text, usage_dict)
         """
-        resolved_model = model or self.model
-        resolved_temperature = temperature if temperature is not None else self.temperature
-        resolved_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+        return self._call_api_with_retry(messages)
 
-        return self._complete_with_retry(
-            messages=messages,
-            model=resolved_model,
-            temperature=resolved_temperature,
-            max_tokens=resolved_max_tokens,
+    @property
+    def _retry_decorator(self):
+        return retry(
+            retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=2, max=30),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
+            reraise=True,
         )
 
-    @retry(
-        retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-        reraise=True,
-    )
-    def _complete_with_retry(
-        self,
-        messages: list[dict],
-        model: str,
-        temperature: float,
-        max_tokens: int,
-    ) -> str:
-        """Internal method that performs the actual API call with tenacity retry.
+    def _call_api_with_retry(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
+        """Wrapped API call with exponential backoff retry."""
 
-        Args:
-            messages: List of message dicts.
-            model: Model name.
-            temperature: Sampling temperature.
-            max_tokens: Maximum tokens in response.
-
-        Returns:
-            The completion text.
-        """
-        logger.debug(
-            "Calling OpenAI API: model=%s, temperature=%s, max_tokens=%s, messages=%d",
-            model,
-            temperature,
-            max_tokens,
-            len(messages),
+        @retry(
+            retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=2, max=30),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
+            reraise=True,
         )
-
-        response = self._client.chat.completions.create(
-            model=model,
-            messages=messages,  # type: ignore[arg-type]
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-
-        # Extract usage information and log it
-        usage = response.usage
-        if usage:
-            prompt_tokens = usage.prompt_tokens
-            completion_tokens = usage.completion_tokens
-            total_tokens = usage.total_tokens
-            cost = estimate_cost(prompt_tokens, completion_tokens, model)
-
+        def _inner() -> tuple[str, dict[str, int]]:
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=messages,  # type: ignore[arg-type]
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+            content = response.choices[0].message.content or ""
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                "total_tokens": response.usage.total_tokens if response.usage else 0,
+            }
+            cost = estimate_cost(usage["prompt_tokens"], usage["completion_tokens"], self.model)
             logger.info(
-                "Token usage — prompt: %d, completion: %d, total: %d | estimated cost: $%.6f",
-                prompt_tokens,
-                completion_tokens,
-                total_tokens,
+                "API call complete — model=%s prompt_tokens=%d completion_tokens=%d "
+                "total_tokens=%d estimated_cost=$%.6f",
+                self.model,
+                usage["prompt_tokens"],
+                usage["completion_tokens"],
+                usage["total_tokens"],
                 cost,
             )
+            return content.strip(), usage
+
+        return _inner()
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def summarize(self, text: str) -> tuple[str, dict[str, int]]:
+        """Summarize *text*, using chunking if it exceeds the context window.
+
+        Returns:
+            (summary_text, usage_dict)
+            Note: for chunked summarization the usage dict reflects only the
+            final (reduce) call; individual chunk usages are logged separately.
+        """
+        if fits_in_context(text, self.model):
+            messages = self.prompt_builder.build_messages(text)
+            return self._call_api(messages)
         else:
-            logger.warning("No usage information returned from API")
-
-        content = response.choices[0].message.content
-        if content is None:
-            raise ValueError("OpenAI returned an empty response")
-
-        return content.strip()
+            logger.info(
+                "Text exceeds context window for model '%s'; switching to map-reduce.",
+                self.model,
+            )
+            summary = map_reduce_summarize(text, client=self, style=self.style)
+            # Return empty usage for the overall call (individual calls are logged)
+            return summary, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}

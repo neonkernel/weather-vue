@@ -1,21 +1,19 @@
-"""Exceptions for the summarizer package."""
+"""Custom exceptions for the summarizer."""
+
+from __future__ import annotations
 
 
 class SummarizerError(Exception):
-    """Base exception for summarizer errors."""
-    pass
+    """Base exception for all summarizer errors."""
 
 
 class IngestionError(SummarizerError):
-    """Raised when article ingestion fails."""
-    pass
+    """Raised when article content cannot be fetched or parsed."""
 
 
 class LLMError(SummarizerError):
-    """Raised when an LLM API call fails."""
-    pass
+    """Raised when the LLM API returns an unrecoverable error."""
 
 
 class ConfigurationError(SummarizerError):
-    """Raised when configuration is invalid."""
-    pass
+    """Raised for invalid configuration values."""
