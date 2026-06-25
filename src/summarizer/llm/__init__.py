@@ -1,4 +1,4 @@
-"""LLM integration package for summarization."""
+"""LLM integration package for the summarizer."""
 
 from .client import SummarizerClient
 

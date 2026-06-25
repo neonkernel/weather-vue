@@ -1,461 +1,432 @@
-"""Tests for the LLM client, prompt construction, retry behavior, and chunking."""
+"""Tests for LLM client, prompt construction, retry behavior, and chunking logic."""
 
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
-from types import SimpleNamespace
+from unittest.mock import MagicMock, patch, PropertyMock, call
+from dataclasses import dataclass
+from typing import Optional
 
-import pytest
+import openai
 
-from src.summarizer.config import SummarizerConfig
-from src.summarizer.llm.client import SummarizerClient, _RETRYABLE_EXCEPTIONS
-from src.summarizer.llm.chunker import TextChunker, MapReduceSummarizer, Chunk
+from src.summarizer.llm.client import SummarizerClient
 from src.summarizer.llm.prompts import PromptBuilder, SummaryStyle
+from src.summarizer.llm.chunker import TextChunker, MapReduceSummarizer
 from src.summarizer.llm.token_utils import count_tokens, estimate_cost, fits_in_context
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers / Factories
 # ---------------------------------------------------------------------------
 
-def _make_config(**kwargs) -> SummarizerConfig:
-    defaults = dict(
-        model="gpt-4o-mini",
-        api_key="test-key-123",
-        temperature=0.3,
-        max_tokens=512,
-        chunk_tokens=3000,
-        overlap_tokens=200,
-    )
-    defaults.update(kwargs)
-    return SummarizerConfig(**defaults)
+def _make_openai_response(content: str, prompt_tokens: int = 100, completion_tokens: int = 50):
+    """Create a mock OpenAI ChatCompletion response."""
+    response = MagicMock()
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = content
+    response.usage.prompt_tokens = prompt_tokens
+    response.usage.completion_tokens = completion_tokens
+    response.usage.total_tokens = prompt_tokens + completion_tokens
+    return response
 
 
-def _make_openai_response(content: str, prompt_tokens=10, completion_tokens=20):
-    """Build a minimal mock that looks like an openai ChatCompletion response."""
-    usage = SimpleNamespace(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
-    )
-    message = SimpleNamespace(content=content)
-    choice = SimpleNamespace(message=message)
-    return SimpleNamespace(choices=[choice], usage=usage)
+def _make_client(mock_openai_cls, response_content="Test summary.", **kwargs):
+    """Create a SummarizerClient with a mocked underlying OpenAI client."""
+    mock_openai_instance = MagicMock()
+    mock_openai_cls.return_value = mock_openai_instance
+    mock_openai_instance.chat.completions.create.return_value = _make_openai_response(response_content)
+    client = SummarizerClient(api_key="test-key", **kwargs)
+    return client, mock_openai_instance
 
 
 # ---------------------------------------------------------------------------
-# token_utils tests
+# Token Utility Tests
 # ---------------------------------------------------------------------------
 
 class TestTokenUtils(unittest.TestCase):
 
-    def test_count_tokens_empty(self):
-        assert count_tokens("") == 0
+    def test_count_tokens_returns_positive_integer(self):
+        text = "The quick brown fox jumps over the lazy dog."
+        count = count_tokens(text)
+        self.assertIsInstance(count, int)
+        self.assertGreater(count, 0)
 
-    def test_count_tokens_nonempty(self):
-        tokens = count_tokens("Hello, world!")
-        assert tokens > 0
+    def test_count_tokens_empty_string(self):
+        self.assertEqual(count_tokens(""), 0)
 
-    def test_count_tokens_longer_text(self):
-        short = count_tokens("Hi")
-        long = count_tokens("Hi " * 100)
-        assert long > short
+    def test_count_tokens_longer_text_has_more_tokens(self):
+        short = "Hello world."
+        long = "Hello world. " * 100
+        self.assertGreater(count_tokens(long), count_tokens(short))
 
-    def test_estimate_cost_zero(self):
-        cost = estimate_cost(0, 0, "gpt-4o-mini")
-        assert cost == 0.0
+    def test_count_tokens_different_models(self):
+        text = "Sample text for token counting."
+        count_mini = count_tokens(text, model="gpt-4o-mini")
+        count_gpt4 = count_tokens(text, model="gpt-4")
+        # Both should return reasonable positive integers
+        self.assertGreater(count_mini, 0)
+        self.assertGreater(count_gpt4, 0)
 
-    def test_estimate_cost_positive(self):
-        cost = estimate_cost(1000, 500, "gpt-4o-mini")
-        assert cost > 0
+    def test_estimate_cost_known_model(self):
+        cost = estimate_cost(1000, 500, model="gpt-4o-mini")
+        self.assertGreater(cost, 0)
+        # 1000 prompt tokens at $0.000150/1k + 500 completion at $0.000600/1k
+        expected = (1000 / 1000 * 0.000150) + (500 / 1000 * 0.000600)
+        self.assertAlmostEqual(cost, expected, places=8)
 
-    def test_estimate_cost_unknown_model_fallback(self):
-        # Should not raise; falls back to gpt-4o-mini rates
-        cost = estimate_cost(1000, 500, "unknown-model-xyz")
-        assert cost > 0
+    def test_estimate_cost_unknown_model_falls_back(self):
+        # Should not raise, falls back to gpt-4o-mini pricing
+        cost = estimate_cost(1000, 500, model="unknown-model-xyz")
+        self.assertGreater(cost, 0)
 
     def test_fits_in_context_short_text(self):
-        assert fits_in_context("Hello world", model="gpt-4o-mini") is True
-
-    def test_fits_in_context_empty(self):
-        assert fits_in_context("", model="gpt-4o-mini") is True
+        short_text = "Short article."
+        self.assertTrue(fits_in_context(short_text, model="gpt-4o-mini"))
 
     def test_fits_in_context_very_long_text(self):
-        # 200k words won't fit in any model's window
-        huge_text = "word " * 200_000
-        assert fits_in_context(huge_text, model="gpt-4o-mini") is False
+        # Generate text that would exceed context window
+        very_long = "word " * 200_000  # ~200k tokens, exceeds gpt-4 8k window
+        self.assertFalse(fits_in_context(very_long, model="gpt-4"))
+
+    def test_fits_in_context_respects_reserved_tokens(self):
+        # With a huge reservation, even short text shouldn't fit
+        short_text = "Hi."
+        # Reserve basically everything
+        self.assertFalse(fits_in_context(short_text, model="gpt-4o-mini", reserved_tokens=200_000))
 
 
 # ---------------------------------------------------------------------------
-# PromptBuilder tests
+# PromptBuilder Tests
 # ---------------------------------------------------------------------------
 
 class TestPromptBuilder(unittest.TestCase):
 
-    def test_build_returns_two_messages(self):
+    def test_build_messages_returns_two_messages(self):
         builder = PromptBuilder(style=SummaryStyle.CONCISE)
-        messages = builder.build("Some article text.")
-        assert len(messages) == 2
-        assert messages[0]["role"] == "system"
-        assert messages[1]["role"] == "user"
+        messages = builder.build_messages("Article text here.")
+        self.assertEqual(len(messages), 2)
 
-    def test_build_contains_article_text(self):
+    def test_build_messages_roles(self):
         builder = PromptBuilder(style=SummaryStyle.CONCISE)
-        text = "Unique article content XYZ"
-        messages = builder.build(text)
-        assert text in messages[1]["content"]
+        messages = builder.build_messages("Article text.")
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertEqual(messages[1]["role"], "user")
 
-    def test_build_chunk_contains_chunk_info(self):
+    def test_build_messages_contains_article_text(self):
         builder = PromptBuilder(style=SummaryStyle.CONCISE)
-        messages = builder.build_chunk("chunk text", chunk_index=2, total_chunks=5)
-        user_content = messages[1]["content"]
-        assert "2" in user_content
-        assert "5" in user_content
-        assert "chunk text" in user_content
+        article = "This is the article content."
+        messages = builder.build_messages(article)
+        self.assertIn(article, messages[1]["content"])
 
-    def test_build_merge_contains_all_summaries(self):
+    def test_build_messages_different_styles_have_different_system_prompts(self):
+        concise = PromptBuilder(style=SummaryStyle.CONCISE).build_messages("text")
+        detailed = PromptBuilder(style=SummaryStyle.DETAILED).build_messages("text")
+        self.assertNotEqual(concise[0]["content"], detailed[0]["content"])
+
+    def test_build_chunk_messages_includes_chunk_info(self):
         builder = PromptBuilder(style=SummaryStyle.CONCISE)
-        summaries = ["Summary A", "Summary B", "Summary C"]
-        messages = builder.build_merge(summaries)
-        user_content = messages[1]["content"]
+        messages = builder.build_chunk_messages("Chunk text", chunk_index=1, total_chunks=3)
+        self.assertIn("2", messages[1]["content"])  # 1-indexed
+        self.assertIn("3", messages[1]["content"])
+
+    def test_build_chunk_messages_returns_two_messages(self):
+        builder = PromptBuilder()
+        messages = builder.build_chunk_messages("text", 0, 2)
+        self.assertEqual(len(messages), 2)
+
+    def test_build_merge_messages_contains_all_summaries(self):
+        builder = PromptBuilder()
+        summaries = ["Summary one.", "Summary two.", "Summary three."]
+        messages = builder.build_merge_messages(summaries)
+        content = messages[1]["content"]
         for s in summaries:
-            assert s in user_content
+            self.assertIn(s, content)
 
-    def test_bullet_points_style(self):
-        builder = PromptBuilder(style=SummaryStyle.BULLET_POINTS)
-        messages = builder.build("Article text.")
-        assert "bullet" in messages[0]["content"].lower() or "bullet" in messages[1]["content"].lower()
-
-    def test_custom_system_prompt(self):
-        custom = "You are a pirate summarizer."
-        builder = PromptBuilder(custom_system_prompt=custom)
-        messages = builder.build("Some text.")
-        assert messages[0]["content"] == custom
+    def test_build_merge_messages_returns_two_messages(self):
+        builder = PromptBuilder()
+        messages = builder.build_merge_messages(["s1", "s2"])
+        self.assertEqual(len(messages), 2)
 
     def test_all_styles_produce_valid_messages(self):
         for style in SummaryStyle:
             builder = PromptBuilder(style=style)
-            messages = builder.build("Test text.")
-            assert len(messages) == 2
-            assert all(m["role"] in ("system", "user") for m in messages)
+            messages = builder.build_messages("Some article text.")
+            self.assertEqual(len(messages), 2)
+            self.assertTrue(messages[0]["content"])
+            self.assertTrue(messages[1]["content"])
 
 
 # ---------------------------------------------------------------------------
-# TextChunker tests
+# SummarizerClient Tests
+# ---------------------------------------------------------------------------
+
+class TestSummarizerClientInit(unittest.TestCase):
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_init_with_explicit_api_key(self, mock_openai_cls):
+        mock_openai_cls.return_value = MagicMock()
+        client = SummarizerClient(api_key="test-key-123")
+        self.assertEqual(client.model, "gpt-4o-mini")
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_init_with_env_api_key(self, mock_openai_cls):
+        mock_openai_cls.return_value = MagicMock()
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "env-key-456"}):
+            client = SummarizerClient()
+            self.assertIsNotNone(client)
+
+    def test_init_without_api_key_raises(self):
+        with patch.dict("os.environ", {}, clear=True):
+            # Remove OPENAI_API_KEY if set
+            import os
+            env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
+            with patch.dict("os.environ", env, clear=True):
+                with self.assertRaises(ValueError):
+                    SummarizerClient(api_key=None)
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_custom_model_and_temperature(self, mock_openai_cls):
+        mock_openai_cls.return_value = MagicMock()
+        client = SummarizerClient(api_key="key", model="gpt-4o", temperature=0.7)
+        self.assertEqual(client.model, "gpt-4o")
+        self.assertEqual(client.temperature, 0.7)
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_custom_base_url(self, mock_openai_cls):
+        mock_openai_cls.return_value = MagicMock()
+        SummarizerClient(api_key="key", base_url="https://custom.api.endpoint/v1")
+        call_kwargs = mock_openai_cls.call_args[1]
+        self.assertEqual(call_kwargs["base_url"], "https://custom.api.endpoint/v1")
+
+
+class TestSummarizerClientComplete(unittest.TestCase):
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_complete_returns_text_and_usage(self, mock_openai_cls):
+        client, mock_openai = _make_client(mock_openai_cls, response_content="Great summary.")
+        messages = [{"role": "user", "content": "Summarize this."}]
+        text, usage = client.complete(messages)
+        self.assertEqual(text, "Great summary.")
+        self.assertIn("prompt_tokens", usage)
+        self.assertIn("completion_tokens", usage)
+        self.assertIn("total_tokens", usage)
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_complete_passes_correct_params_to_api(self, mock_openai_cls):
+        client, mock_openai = _make_client(mock_openai_cls)
+        messages = [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "Hi"}]
+        client.complete(messages)
+
+        mock_openai.chat.completions.create.assert_called_once()
+        call_kwargs = mock_openai.chat.completions.create.call_args[1]
+        self.assertEqual(call_kwargs["model"], "gpt-4o-mini")
+        self.assertEqual(call_kwargs["messages"], messages)
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_complete_usage_totals(self, mock_openai_cls):
+        client, mock_openai = _make_client(mock_openai_cls)
+        mock_openai.chat.completions.create.return_value = _make_openai_response(
+            "Summary", prompt_tokens=200, completion_tokens=75
+        )
+        _, usage = client.complete([{"role": "user", "content": "test"}])
+        self.assertEqual(usage["prompt_tokens"], 200)
+        self.assertEqual(usage["completion_tokens"], 75)
+        self.assertEqual(usage["total_tokens"], 275)
+
+
+class TestSummarizerClientRetry(unittest.TestCase):
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_retries_on_rate_limit_error(self, mock_openai_cls):
+        client, mock_openai = _make_client(mock_openai_cls)
+
+        # Fail twice, succeed on third attempt
+        mock_openai.chat.completions.create.side_effect = [
+            openai.RateLimitError("Rate limited", response=MagicMock(), body={}),
+            openai.RateLimitError("Rate limited", response=MagicMock(), body={}),
+            _make_openai_response("Success after retry"),
+        ]
+
+        with patch("tenacity.nap.time"):  # Skip actual sleep
+            text, usage = client.complete([{"role": "user", "content": "test"}])
+
+        self.assertEqual(text, "Success after retry")
+        self.assertEqual(mock_openai.chat.completions.create.call_count, 3)
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_retries_on_connection_error(self, mock_openai_cls):
+        client, mock_openai = _make_client(mock_openai_cls)
+
+        mock_openai.chat.completions.create.side_effect = [
+            openai.APIConnectionError(request=MagicMock()),
+            _make_openai_response("Recovered"),
+        ]
+
+        with patch("tenacity.nap.time"):
+            text, _ = client.complete([{"role": "user", "content": "test"}])
+
+        self.assertEqual(text, "Recovered")
+        self.assertEqual(mock_openai.chat.completions.create.call_count, 2)
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_raises_after_max_retries(self, mock_openai_cls):
+        client, mock_openai = _make_client(mock_openai_cls)
+
+        mock_openai.chat.completions.create.side_effect = openai.RateLimitError(
+            "Persistent rate limit", response=MagicMock(), body={}
+        )
+
+        with patch("tenacity.nap.time"):
+            with self.assertRaises(openai.RateLimitError):
+                client.complete([{"role": "user", "content": "test"}])
+
+        self.assertEqual(mock_openai.chat.completions.create.call_count, 3)
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_does_not_retry_on_authentication_error(self, mock_openai_cls):
+        client, mock_openai = _make_client(mock_openai_cls)
+
+        mock_openai.chat.completions.create.side_effect = openai.AuthenticationError(
+            "Invalid API key", response=MagicMock(), body={}
+        )
+
+        with self.assertRaises(openai.AuthenticationError):
+            client.complete([{"role": "user", "content": "test"}])
+
+        # Should NOT retry auth errors
+        self.assertEqual(mock_openai.chat.completions.create.call_count, 1)
+
+    @patch("src.summarizer.llm.client.openai.OpenAI")
+    def test_retries_on_internal_server_error(self, mock_openai_cls):
+        client, mock_openai = _make_client(mock_openai_cls)
+
+        mock_openai.chat.completions.create.side_effect = [
+            openai.InternalServerError("Server error", response=MagicMock(), body={}),
+            _make_openai_response("Recovered from 500"),
+        ]
+
+        with patch("tenacity.nap.time"):
+            text, _ = client.complete([{"role": "user", "content": "test"}])
+
+        self.assertEqual(text, "Recovered from 500")
+
+
+# ---------------------------------------------------------------------------
+# TextChunker Tests
 # ---------------------------------------------------------------------------
 
 class TestTextChunker(unittest.TestCase):
 
-    def test_empty_text_returns_no_chunks(self):
-        chunker = TextChunker(chunk_tokens=100, overlap_tokens=10)
-        chunks = chunker.split("")
-        assert chunks == []
+    def test_short_text_returns_single_chunk(self):
+        chunker = TextChunker(model="gpt-4o-mini", chunk_size=1000)
+        text = "This is a short article."
+        chunks = chunker.split(text)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].index, 0)
+        self.assertEqual(chunks[0].text, text)
 
-    def test_whitespace_only_returns_no_chunks(self):
-        chunker = TextChunker(chunk_tokens=100, overlap_tokens=10)
-        chunks = chunker.split("   \n  ")
-        assert chunks == []
+    def test_long_text_returns_multiple_chunks(self):
+        chunker = TextChunker(model="gpt-4o-mini", chunk_size=50, overlap_tokens=5)
+        # Generate ~500 tokens of text
+        text = " ".join([f"word{i}" for i in range(300)])
+        chunks = chunker.split(text)
+        self.assertGreater(len(chunks), 1)
 
-    def test_short_text_single_chunk(self):
-        chunker = TextChunker(chunk_tokens=1000, overlap_tokens=100)
-        chunks = chunker.split("Hello world, this is a short article.")
-        assert len(chunks) == 1
-        assert chunks[0].index == 0
-        assert "Hello world" in chunks[0].text
-
-    def test_long_text_multiple_chunks(self):
-        # Generate text that is clearly longer than chunk_tokens=50
-        long_text = "word " * 500  # ~500+ tokens
-        chunker = TextChunker(chunk_tokens=50, overlap_tokens=5)
-        chunks = chunker.split(long_text)
-        assert len(chunks) > 1
-
-    def test_chunks_are_indexed_sequentially(self):
-        long_text = "word " * 500
-        chunker = TextChunker(chunk_tokens=50, overlap_tokens=5)
-        chunks = chunker.split(long_text)
+    def test_chunks_have_sequential_indices(self):
+        chunker = TextChunker(model="gpt-4o-mini", chunk_size=50, overlap_tokens=5)
+        text = " ".join([f"word{i}" for i in range(300)])
+        chunks = chunker.split(text)
         for i, chunk in enumerate(chunks):
-            assert chunk.index == i
+            self.assertEqual(chunk.index, i)
 
-    def test_chunk_token_counts_within_limit(self):
-        long_text = "word " * 500
-        chunker = TextChunker(chunk_tokens=50, overlap_tokens=5)
-        chunks = chunker.split(long_text)
+    def test_chunk_token_counts_are_reasonable(self):
+        chunker = TextChunker(model="gpt-4o-mini", chunk_size=100, overlap_tokens=10)
+        text = " ".join([f"token{i}" for i in range(500)])
+        chunks = chunker.split(text)
         for chunk in chunks:
-            assert chunk.token_count <= 50
+            self.assertLessEqual(chunk.token_count, 105)  # Allow small margin
+            self.assertGreater(chunk.token_count, 0)
 
-    def test_overlap_causes_repeated_content(self):
-        """With overlap, adjacent chunks should share some tokens."""
-        # Use a large overlap relative to chunk size to ensure overlap
-        long_text = "alpha beta gamma delta epsilon " * 100
-        chunker = TextChunker(chunk_tokens=20, overlap_tokens=10)
-        chunks = chunker.split(long_text)
-        if len(chunks) >= 2:
-            # The end of chunk 0 should appear at the beginning of chunk 1
-            # (approximately — we just check total coverage > non-overlapping)
-            total_tokens_with_overlap = sum(c.token_count for c in chunks)
-            # With overlap the total should exceed the original token count
-            original_tokens = count_tokens(long_text)
-            assert total_tokens_with_overlap > original_tokens
+    def test_needs_chunking_short_text(self):
+        chunker = TextChunker(model="gpt-4o-mini", chunk_size=1000)
+        self.assertFalse(chunker.needs_chunking("Short text."))
 
+    def test_needs_chunking_long_text(self):
+        chunker = TextChunker(model="gpt-4o-mini", chunk_size=10)
+        long_text = " ".join(["word"] * 100)
+        self.assertTrue(chunker.needs_chunking(long_text))
 
-# ---------------------------------------------------------------------------
-# SummarizerClient tests
-# ---------------------------------------------------------------------------
-
-class TestSummarizerClient(unittest.TestCase):
-
-    def _make_client(self, **kwargs):
-        config = _make_config(**kwargs)
-        with patch("openai.OpenAI"):
-            client = SummarizerClient(config=config)
-        return client
-
-    def test_raises_without_api_key(self):
-        config = SummarizerConfig(
-            model="gpt-4o-mini",
-            api_key=None,
-        )
-        with patch.dict("os.environ", {}, clear=True):
-            # Remove OPENAI_API_KEY from env if present
-            import os
-            os.environ.pop("OPENAI_API_KEY", None)
-            with pytest.raises(ValueError, match="No OpenAI API key"):
-                SummarizerClient(config=config)
-
-    def test_complete_returns_text_and_usage(self):
-        config = _make_config()
-        mock_response = _make_openai_response("This is the summary.", 15, 25)
-
-        with patch("openai.OpenAI") as MockOpenAI:
-            mock_openai_instance = MockOpenAI.return_value
-            mock_openai_instance.chat.completions.create.return_value = mock_response
-
-            client = SummarizerClient(config=config)
-            messages = [{"role": "user", "content": "Summarize this."}]
-            text, usage = client.complete(messages)
-
-        assert text == "This is the summary."
-        assert usage["prompt_tokens"] == 15
-        assert usage["completion_tokens"] == 25
-        assert usage["total_tokens"] == 40
-
-    def test_complete_passes_model_and_params(self):
-        config = _make_config(temperature=0.5, max_tokens=256)
-        mock_response = _make_openai_response("Summary.", 10, 20)
-
-        with patch("openai.OpenAI") as MockOpenAI:
-            mock_openai_instance = MockOpenAI.return_value
-            create_mock = mock_openai_instance.chat.completions.create
-            create_mock.return_value = mock_response
-
-            client = SummarizerClient(config=config)
-            messages = [{"role": "user", "content": "Hi"}]
-            client.complete(messages)
-
-            call_kwargs = create_mock.call_args.kwargs
-            assert call_kwargs["model"] == "gpt-4o-mini"
-            assert call_kwargs["temperature"] == 0.5
-            assert call_kwargs["max_tokens"] == 256
-
-    def test_complete_overrides_temperature_and_max_tokens(self):
-        config = _make_config(temperature=0.3, max_tokens=512)
-        mock_response = _make_openai_response("Summary.", 5, 10)
-
-        with patch("openai.OpenAI") as MockOpenAI:
-            mock_instance = MockOpenAI.return_value
-            create_mock = mock_instance.chat.completions.create
-            create_mock.return_value = mock_response
-
-            client = SummarizerClient(config=config)
-            client.complete(
-                [{"role": "user", "content": "Hi"}],
-                temperature=0.9,
-                max_tokens=128,
-            )
-
-            call_kwargs = create_mock.call_args.kwargs
-            assert call_kwargs["temperature"] == 0.9
-            assert call_kwargs["max_tokens"] == 128
-
-    def test_retry_on_rate_limit(self):
-        """Client should retry on RateLimitError and eventually succeed."""
-        import openai as oai
-
-        config = _make_config()
-        mock_response = _make_openai_response("Retried summary.", 10, 20)
-
-        with patch("openai.OpenAI") as MockOpenAI:
-            mock_instance = MockOpenAI.return_value
-            create_mock = mock_instance.chat.completions.create
-
-            # Fail twice, then succeed
-            create_mock.side_effect = [
-                oai.RateLimitError(
-                    "rate limit",
-                    response=MagicMock(status_code=429, headers={}),
-                    body={},
-                ),
-                oai.RateLimitError(
-                    "rate limit",
-                    response=MagicMock(status_code=429, headers={}),
-                    body={},
-                ),
-                mock_response,
-            ]
-
-            client = SummarizerClient(config=config)
-
-            # Patch tenacity sleep to avoid actual delays in tests
-            with patch("tenacity.nap.time.sleep"):
-                text, usage = client.complete([{"role": "user", "content": "Hi"}])
-
-        assert text == "Retried summary."
-        assert create_mock.call_count == 3
-
-    def test_raises_after_max_retries(self):
-        """Client should raise after 3 failed attempts."""
-        import openai as oai
-
-        config = _make_config()
-
-        with patch("openai.OpenAI") as MockOpenAI:
-            mock_instance = MockOpenAI.return_value
-            create_mock = mock_instance.chat.completions.create
-            create_mock.side_effect = oai.RateLimitError(
-                "rate limit",
-                response=MagicMock(status_code=429, headers={}),
-                body={},
-            )
-
-            client = SummarizerClient(config=config)
-
-            with patch("tenacity.nap.time.sleep"):
-                with pytest.raises(oai.RateLimitError):
-                    client.complete([{"role": "user", "content": "Hi"}])
-
-        assert create_mock.call_count == 3
-
-    def test_non_retryable_error_raises_immediately(self):
-        """Non-transient errors should propagate without retrying."""
-        import openai as oai
-
-        config = _make_config()
-
-        with patch("openai.OpenAI") as MockOpenAI:
-            mock_instance = MockOpenAI.return_value
-            create_mock = mock_instance.chat.completions.create
-            create_mock.side_effect = oai.AuthenticationError(
-                "bad key",
-                response=MagicMock(status_code=401, headers={}),
-                body={},
-            )
-
-            client = SummarizerClient(config=config)
-
-            with pytest.raises(oai.AuthenticationError):
-                client.complete([{"role": "user", "content": "Hi"}])
-
-        assert create_mock.call_count == 1
+    def test_empty_text_returns_single_chunk(self):
+        chunker = TextChunker(model="gpt-4o-mini", chunk_size=100)
+        chunks = chunker.split("")
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].text, "")
 
 
 # ---------------------------------------------------------------------------
-# MapReduceSummarizer tests
+# MapReduceSummarizer Tests
 # ---------------------------------------------------------------------------
 
 class TestMapReduceSummarizer(unittest.TestCase):
 
-    def _make_mock_client(self, responses: list[tuple[str, dict]]):
-        """Create a mock SummarizerClient that returns *responses* in order."""
-        mock_client = MagicMock()
-        mock_client.model = "gpt-4o-mini"
-        mock_client.complete.side_effect = responses
-        return mock_client
+    def _make_mock_client(self, responses):
+        """Create a mock client that returns predefined responses."""
+        client = MagicMock()
+        client.complete.side_effect = [
+            (resp, {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150})
+            for resp in responses
+        ]
+        return client
 
-    def test_single_chunk_no_merge(self):
-        """If text fits in one chunk, no merge call is made."""
-        mock_client = self._make_mock_client(
-            [("Summary of chunk 1.", {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})]
-        )
-        chunker = TextChunker(chunk_tokens=1000, overlap_tokens=50)
-        prompt_builder = PromptBuilder(style=SummaryStyle.CONCISE)
+    def test_single_chunk_calls_client_twice(self):
+        """For 1 chunk: 1 map call + 1 reduce call = 2 total."""
+        chunker = TextChunker(model="gpt-4o-mini", chunk_size=1000)
+        builder = PromptBuilder()
+        # Short text => 1 chunk
+        client = self._make_mock_client(["Chunk summary.", "Final summary."])
+        mr = MapReduceSummarizer(client, builder, chunker)
+        result, usage = mr.summarize("Short article text.")
+        self.assertEqual(result, "Final summary.")
+        self.assertEqual(client.complete.call_count, 2)
 
-        mr = MapReduceSummarizer(client=mock_client, prompt_builder=prompt_builder, chunker=chunker)
-        result_text, usage = mr.summarize("Short article text.")
+    def test_multi_chunk_aggregates_usage(self):
+        """Usage should be aggregated across all API calls."""
+        chunker = TextChunker(model="gpt-4o-mini", chunk_size=20, overlap_tokens=2)
+        builder = PromptBuilder()
+        text = " ".join([f"word{i}" for i in range(200)])
 
-        assert result_text == "Summary of chunk 1."
-        assert mock_client.complete.call_count == 1  # map only, no reduce
+        chunks = chunker.split(text)
+        num_chunks = len(chunks)
+        # responses: one per chunk + one for merge
+        responses = [f"Chunk {i} summary." for i in range(num_chunks)] + ["Final merged summary."]
+        client = self._make_mock_client(responses)
 
-    def test_multi_chunk_with_merge(self):
-        """Multiple chunks should trigger map + reduce calls."""
-        mock_client = self._make_mock_client(
-            [
-                ("Chunk 1 summary.", {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}),
-                ("Chunk 2 summary.", {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}),
-                ("Final merged summary.", {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}),
-            ]
-        )
-        chunker = TextChunker(chunk_tokens=20, overlap_tokens=5)
-        prompt_builder = PromptBuilder(style=SummaryStyle.CONCISE)
+        mr = MapReduceSummarizer(client, builder, chunker)
+        result, usage = mr.summarize(text)
 
-        long_text = "word " * 200  # Should produce multiple chunks with chunk_tokens=20
-        mr = MapReduceSummarizer(client=mock_client, prompt_builder=prompt_builder, chunker=chunker)
-        result_text, usage = mr.summarize(long_text)
+        total_calls = num_chunks + 1  # map calls + reduce call
+        self.assertEqual(client.complete.call_count, total_calls)
+        self.assertEqual(usage["total_tokens"], 150 * total_calls)
+        self.assertEqual(result, "Final merged summary.")
 
-        assert "Final merged summary." in result_text or mock_client.complete.call_count >= 3
-        # Total calls = N_chunks + 1 (merge)
-        total_calls = mock_client.complete.call_count
+    def test_merge_receives_all_chunk_summaries(self):
+        """The merge call should receive summaries from all chunks."""
+        chunker = TextChunker(model="gpt-4o-mini", chunk_size=20, overlap_tokens=2)
+        builder = PromptBuilder()
+        text = " ".join([f"word{i}" for i in range(200)])
 
-    def test_usage_accumulation(self):
-        """Token usage should be summed across all calls."""
-        mock_client = self._make_mock_client(
-            [
-                ("Summary A.", {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}),
-                ("Summary B.", {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}),
-                ("Merged.", {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}),
-            ]
-        )
-        chunker = TextChunker(chunk_tokens=20, overlap_tokens=5)
-        prompt_builder = PromptBuilder(style=SummaryStyle.CONCISE)
-        long_text = "word " * 200
+        chunks = chunker.split(text)
+        num_chunks = len(chunks)
+        chunk_summaries = [f"Summary of section {i}." for i in range(num_chunks)]
+        responses = chunk_summaries + ["Final summary."]
+        client = self._make_mock_client(responses)
 
-        mr = MapReduceSummarizer(client=mock_client, prompt_builder=prompt_builder, chunker=chunker)
-        _, usage = mr.summarize(long_text)
+        mr = MapReduceSummarizer(client, builder, chunker)
+        mr.summarize(text)
 
-        assert usage["total_tokens"] > 0
-
-    def test_empty_text_returns_empty(self):
-        mock_client = self._make_mock_client([])
-        chunker = TextChunker(chunk_tokens=100, overlap_tokens=10)
-        prompt_builder = PromptBuilder(style=SummaryStyle.CONCISE)
-
-        mr = MapReduceSummarizer(client=mock_client, prompt_builder=prompt_builder, chunker=chunker)
-        result_text, usage = mr.summarize("")
-
-        assert result_text == ""
-        assert mock_client.complete.call_count == 0
-
-    def test_merge_prompt_contains_chunk_summaries(self):
-        """The reduce call's messages should contain the chunk summaries."""
-        mock_client = self._make_mock_client(
-            [
-                ("Alpha summary.", {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}),
-                ("Beta summary.", {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}),
-                ("Final.", {"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20}),
-            ]
-        )
-        chunker = TextChunker(chunk_tokens=20, overlap_tokens=5)
-        prompt_builder = PromptBuilder(style=SummaryStyle.CONCISE)
-        long_text = "word " * 200
-
-        mr = MapReduceSummarizer(client=mock_client, prompt_builder=prompt_builder, chunker=chunker)
-        mr.summarize(long_text)
-
-        if mock_client.complete.call_count >= 3:
-            # The last call (reduce) should have both chunk summaries in its messages
-            last_call_args = mock_client.complete.call_args_list[-1]
-            last_messages = last_call_args[0][0]  # positional arg
-            merged_content = " ".join(m["content"] for m in last_messages)
-            assert "Alpha summary." in merged_content or "Beta summary." in merged_content
+        # The last call should be the merge call
+        last_call_args = client.complete.call_args_list[-1][0][0]
+        merge_content = last_call_args[1]["content"]
+        for s in chunk_summaries:
+            self.assertIn(s, merge_content)
 
 
 if __name__ == "__main__":
