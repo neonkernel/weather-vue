@@ -16,27 +16,31 @@ export const useLocationStore = defineStore('location', () => {
   const cityName = ref<string>('')
   const source = ref<LocationSource>('default')
 
-  function setLocation(payload: {
-    lat: number
-    lon: number
-    cityName: string
-    source: LocationSource
-  }) {
+  function setLocation(payload: LocationState) {
     lat.value = payload.lat
     lon.value = payload.lon
     cityName.value = payload.cityName
     source.value = payload.source
   }
 
-  function setDefaultLocation() {
-    lat.value = 40.7128
-    lon.value = -74.006
-    cityName.value = 'New York'
-    source.value = 'default'
+  function setCoords(newLat: number, newLon: number) {
+    lat.value = newLat
+    lon.value = newLon
   }
 
   function setCityName(name: string) {
     cityName.value = name
+  }
+
+  function setSource(newSource: LocationSource) {
+    source.value = newSource
+  }
+
+  function reset() {
+    lat.value = null
+    lon.value = null
+    cityName.value = ''
+    source.value = 'default'
   }
 
   return {
@@ -45,7 +49,9 @@ export const useLocationStore = defineStore('location', () => {
     cityName,
     source,
     setLocation,
-    setDefaultLocation,
+    setCoords,
     setCityName,
+    setSource,
+    reset,
   }
 })

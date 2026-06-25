@@ -1,22 +1,24 @@
 import { ref } from 'vue'
 import { weatherService } from '../services/weatherService'
-import type { WeatherData, ForecastDay } from '../types/weather'
+import type { WeatherData, ForecastData } from '../types/weather'
 
 export function useWeatherApi() {
   const currentWeather = ref<WeatherData | null>(null)
-  const forecast = ref<ForecastDay[]>([])
+  const forecast = ref<ForecastData[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const resolvedCityName = ref<string | null>(null)
 
-  async function fetchByCity(cityName: string) {
+  async function fetchByCoords(lat: number, lon: number) {
     loading.value = true
     error.value = null
     try {
-      const result = await weatherService.fetchWeatherByCity(cityName)
+      const result = await weatherService.fetchByCoords(lat, lon)
       currentWeather.value = result.current
       forecast.value = result.forecast
+      resolvedCityName.value = result.cityName ?? null
     } catch (err: any) {
-      error.value = err?.message || 'Failed to fetch weather data.'
+      error.value = err?.message ?? 'Failed to fetch weather data.'
       currentWeather.value = null
       forecast.value = []
     } finally {
@@ -24,15 +26,16 @@ export function useWeatherApi() {
     }
   }
 
-  async function fetchByCoords(lat: number, lon: number) {
+  async function fetchByCity(city: string) {
     loading.value = true
     error.value = null
     try {
-      const result = await weatherService.fetchWeatherByCoords(lat, lon)
+      const result = await weatherService.fetchByCity(city)
       currentWeather.value = result.current
       forecast.value = result.forecast
+      resolvedCityName.value = result.cityName ?? city
     } catch (err: any) {
-      error.value = err?.message || 'Failed to fetch weather data.'
+      error.value = err?.message ?? 'Failed to fetch weather data.'
       currentWeather.value = null
       forecast.value = []
     } finally {
@@ -45,7 +48,8 @@ export function useWeatherApi() {
     forecast,
     loading,
     error,
-    fetchByCity,
+    resolvedCityName,
     fetchByCoords,
+    fetchByCity,
   }
 }
