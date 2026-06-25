@@ -2,21 +2,22 @@ export interface WeatherData {
   temperature: number
   feelsLike: number
   humidity: number
-  weatherCode: number
   windSpeed: number
   windDirection: number
-  precipitation: number
   pressure: number
-  visibility: number
-  uvIndex: number
-  time: string
+  visibility: number | null
+  weatherCode: number
+  description: string
+  icon: string
+  unit: 'C' | 'F'
 }
 
-export interface ForecastData {
-  time: string
+export interface ForecastDay {
+  date: string
   weatherCode: number
+  description: string
+  icon: string
   tempMax: number
   tempMin: number
-  precipitationSum: number
-  windSpeedMax: number
+  precipitationProbability: number
 }

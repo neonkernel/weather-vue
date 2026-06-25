@@ -1,63 +1,51 @@
 import { ref } from 'vue'
-import { fetchWeatherByCoords, type WeatherData } from '../services/weatherService'
-import { searchCity } from '../services/geocodingService'
+import { weatherService } from '../services/weatherService'
+import type { WeatherData, ForecastDay } from '../types/weather'
 
 export function useWeatherApi() {
-  const weatherData = ref<WeatherData | null>(null)
+  const currentWeather = ref<WeatherData | null>(null)
+  const forecast = ref<ForecastDay[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
 
-  async function fetchByCoords(lat: number, lon: number): Promise<WeatherData | null> {
+  async function fetchByCity(cityName: string) {
     loading.value = true
     error.value = null
-
     try {
-      const data = await fetchWeatherByCoords(lat, lon)
-      weatherData.value = data
-      return data
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : 'Failed to fetch weather data'
-      weatherData.value = null
-      return null
+      const result = await weatherService.fetchWeatherByCity(cityName)
+      currentWeather.value = result.current
+      forecast.value = result.forecast
+    } catch (err: any) {
+      error.value = err?.message || 'Failed to fetch weather data.'
+      currentWeather.value = null
+      forecast.value = []
     } finally {
       loading.value = false
     }
   }
 
-  async function fetchByCity(cityName: string): Promise<WeatherData | null> {
+  async function fetchByCoords(lat: number, lon: number) {
     loading.value = true
     error.value = null
-
     try {
-      const results = await searchCity(cityName)
-
-      if (!results.length) {
-        throw new Error(`No results found for "${cityName}"`)
-      }
-
-      const { latitude, longitude } = results[0]
-      const data = await fetchWeatherByCoords(latitude, longitude)
-      weatherData.value = data
-      return data
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : 'Failed to fetch weather data'
-      weatherData.value = null
-      return null
+      const result = await weatherService.fetchWeatherByCoords(lat, lon)
+      currentWeather.value = result.current
+      forecast.value = result.forecast
+    } catch (err: any) {
+      error.value = err?.message || 'Failed to fetch weather data.'
+      currentWeather.value = null
+      forecast.value = []
     } finally {
       loading.value = false
     }
-  }
-
-  function clearError() {
-    error.value = null
   }
 
   return {
-    weatherData,
+    currentWeather,
+    forecast,
     loading,
     error,
-    fetchByCoords,
     fetchByCity,
-    clearError,
+    fetchByCoords,
   }
 }
