@@ -1,11 +1,11 @@
 <template>
-  <div class="flex items-center justify-center py-12">
+  <div class="flex flex-col items-center gap-3 text-blue-500" role="status" aria-label="Loading">
     <svg
-      class="animate-spin text-blue-400"
-      :class="sizeClass"
+      class="animate-spin w-10 h-10"
       xmlns="http://www.w3.org/2000/svg"
       fill="none"
       viewBox="0 0 24 24"
+      aria-hidden="true"
     >
       <circle
         class="opacity-25"
@@ -21,21 +21,6 @@
         d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
       />
     </svg>
+    <span class="text-sm text-gray-500 font-medium">Loading weather data...</span>
   </div>
 </template>
-
-<script setup lang="ts">
-import { computed } from 'vue'
-
-const props = defineProps<{
-  size?: 'sm' | 'md' | 'lg'
-}>()
-
-const sizeClass = computed(() => {
-  switch (props.size) {
-    case 'sm': return 'h-5 w-5'
-    case 'lg': return 'h-12 w-12'
-    default: return 'h-8 w-8'
-  }
-})
-</script>

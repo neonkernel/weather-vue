@@ -1,54 +1,42 @@
 import { ref } from 'vue'
-import { weatherService } from '../services/weatherService'
-import type { WeatherData, ForecastData } from '../types/weather'
+import { fetchWeatherByCoords, fetchWeatherByCity } from '../services/weatherService'
+import type { WeatherData } from '../types/weather'
 
 export function useWeatherApi() {
-  const currentWeather = ref<WeatherData | null>(null)
-  const forecast = ref<ForecastData[]>([])
+  const weatherData = ref<WeatherData | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
-  const resolvedCityName = ref<string | null>(null)
 
-  async function fetchByCoords(lat: number, lon: number) {
+  async function fetchByCoords(lat: number, lon: number): Promise<void> {
     loading.value = true
     error.value = null
     try {
-      const result = await weatherService.fetchByCoords(lat, lon)
-      currentWeather.value = result.current
-      forecast.value = result.forecast
-      resolvedCityName.value = result.cityName ?? null
+      weatherData.value = await fetchWeatherByCoords(lat, lon)
     } catch (err: any) {
-      error.value = err?.message ?? 'Failed to fetch weather data.'
-      currentWeather.value = null
-      forecast.value = []
+      error.value = err.message || 'Failed to fetch weather data.'
+      weatherData.value = null
     } finally {
       loading.value = false
     }
   }
 
-  async function fetchByCity(city: string) {
+  async function fetchByCity(city: string): Promise<void> {
     loading.value = true
     error.value = null
     try {
-      const result = await weatherService.fetchByCity(city)
-      currentWeather.value = result.current
-      forecast.value = result.forecast
-      resolvedCityName.value = result.cityName ?? city
+      weatherData.value = await fetchWeatherByCity(city)
     } catch (err: any) {
-      error.value = err?.message ?? 'Failed to fetch weather data.'
-      currentWeather.value = null
-      forecast.value = []
+      error.value = err.message || 'Failed to fetch weather data.'
+      weatherData.value = null
     } finally {
       loading.value = false
     }
   }
 
   return {
-    currentWeather,
-    forecast,
+    weatherData,
     loading,
     error,
-    resolvedCityName,
     fetchByCoords,
     fetchByCity,
   }

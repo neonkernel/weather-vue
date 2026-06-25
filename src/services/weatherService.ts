@@ -1,114 +1,106 @@
-import type { WeatherData, ForecastData } from '../types/weather'
+import type { WeatherData } from '../types/weather'
 
-const BASE_URL = 'https://api.open-meteo.com/v1'
-const GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1'
+const BASE_URL = 'https://api.open-meteo.com/v1/forecast'
 
-export interface WeatherApiResponse {
-  current: WeatherData
-  forecast: ForecastData[]
-  cityName?: string
+interface OpenMeteoResponse {
+  latitude: number
+  longitude: number
+  current_weather: {
+    temperature: number
+    windspeed: number
+    weathercode: number
+    time: string
+  }
+  hourly: {
+    time: string[]
+    temperature_2m: number[]
+    relativehumidity_2m: number[]
+    precipitation_probability: number[]
+    weathercode: number[]
+  }
+  daily: {
+    time: string[]
+    temperature_2m_max: number[]
+    temperature_2m_min: number[]
+    weathercode: number[]
+    precipitation_probability_max: number[]
+  }
 }
 
-async function fetchWeatherByCoords(lat: number, lon: number): Promise<WeatherApiResponse> {
+async function fetchFromOpenMeteo(lat: number, lon: number): Promise<OpenMeteoResponse> {
   const params = new URLSearchParams({
     latitude: lat.toString(),
     longitude: lon.toString(),
-    current: [
-      'temperature_2m',
-      'apparent_temperature',
-      'relative_humidity_2m',
-      'wind_speed_10m',
-      'wind_direction_10m',
-      'weather_code',
-      'precipitation',
-      'pressure_msl',
-      'visibility',
-      'uv_index',
-    ].join(','),
-    daily: [
-      'weather_code',
-      'temperature_2m_max',
-      'temperature_2m_min',
-      'precipitation_sum',
-      'wind_speed_10m_max',
-    ].join(','),
+    current_weather: 'true',
+    hourly: 'temperature_2m,relativehumidity_2m,precipitation_probability,weathercode',
+    daily: 'temperature_2m_max,temperature_2m_min,weathercode,precipitation_probability_max',
     timezone: 'auto',
     forecast_days: '7',
   })
 
-  const response = await fetch(`${BASE_URL}/forecast?${params}`)
+  const response = await fetch(`${BASE_URL}?${params}`)
   if (!response.ok) {
     throw new Error(`Weather API error: ${response.status} ${response.statusText}`)
   }
 
-  const data = await response.json()
-  return parseApiResponse(data)
+  return response.json()
 }
 
-async function fetchWeatherByCity(city: string): Promise<WeatherApiResponse> {
-  // First geocode the city
-  const geoParams = new URLSearchParams({
-    name: city,
-    count: '1',
-    language: 'en',
-    format: 'json',
-  })
+function mapToWeatherData(data: OpenMeteoResponse, cityName?: string): WeatherData {
+  return {
+    city: cityName || `${data.latitude.toFixed(2)}, ${data.longitude.toFixed(2)}`,
+    lat: data.latitude,
+    lon: data.longitude,
+    current: {
+      temperature: data.current_weather.temperature,
+      windspeed: data.current_weather.windspeed,
+      weathercode: data.current_weather.weathercode,
+      time: data.current_weather.time,
+    },
+    hourly: {
+      time: data.hourly.time,
+      temperature: data.hourly.temperature_2m,
+      humidity: data.hourly.relativehumidity_2m,
+      precipitationProbability: data.hourly.precipitation_probability,
+      weathercode: data.hourly.weathercode,
+    },
+    daily: {
+      time: data.daily.time,
+      tempMax: data.daily.temperature_2m_max,
+      tempMin: data.daily.temperature_2m_min,
+      weathercode: data.daily.weathercode,
+      precipitationProbabilityMax: data.daily.precipitation_probability_max,
+    },
+  }
+}
 
-  const geoResponse = await fetch(`${GEOCODING_URL}/search?${geoParams}`)
-  if (!geoResponse.ok) {
-    throw new Error(`Geocoding API error: ${geoResponse.status} ${geoResponse.statusText}`)
+export async function fetchWeatherByCoords(
+  lat: number,
+  lon: number,
+  cityName?: string
+): Promise<WeatherData> {
+  const data = await fetchFromOpenMeteo(lat, lon)
+  return mapToWeatherData(data, cityName)
+}
+
+export async function fetchWeatherByCity(city: string): Promise<WeatherData> {
+  // First geocode the city to get coordinates
+  const geocodeUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`
+  const geocodeResponse = await fetch(geocodeUrl)
+
+  if (!geocodeResponse.ok) {
+    throw new Error(`Geocoding API error: ${geocodeResponse.status}`)
   }
 
-  const geoData = await geoResponse.json()
-  if (!geoData.results || geoData.results.length === 0) {
+  const geocodeData = await geocodeResponse.json()
+
+  if (!geocodeData.results || geocodeData.results.length === 0) {
     throw new Error(`City not found: ${city}`)
   }
 
-  const location = geoData.results[0]
-  const weatherData = await fetchWeatherByCoords(location.latitude, location.longitude)
+  const { latitude, longitude, name, country } = geocodeData.results[0]
+  const cityLabel = country ? `${name}, ${country}` : name
 
-  return {
-    ...weatherData,
-    cityName: `${location.name}${location.admin1 ? ', ' + location.admin1 : ''}, ${location.country}`,
-  }
-}
-
-function parseApiResponse(data: any): WeatherApiResponse {
-  const current: WeatherData = {
-    temperature: data.current?.temperature_2m ?? 0,
-    apparentTemperature: data.current?.apparent_temperature ?? 0,
-    humidity: data.current?.relative_humidity_2m ?? 0,
-    windSpeed: data.current?.wind_speed_10m ?? 0,
-    windDirection: data.current?.wind_direction_10m ?? 0,
-    weatherCode: data.current?.weather_code ?? 0,
-    precipitation: data.current?.precipitation ?? 0,
-    pressure: data.current?.pressure_msl ?? 0,
-    visibility: data.current?.visibility ?? 0,
-    uvIndex: data.current?.uv_index ?? 0,
-    time: data.current?.time ?? '',
-    unit: data.current_units?.temperature_2m ?? '°C',
-  }
-
-  const forecast: ForecastData[] = []
-  if (data.daily) {
-    const days = data.daily
-    const count = days.time?.length ?? 0
-    for (let i = 0; i < count; i++) {
-      forecast.push({
-        date: days.time[i],
-        weatherCode: days.weather_code?.[i] ?? 0,
-        tempMax: days.temperature_2m_max?.[i] ?? 0,
-        tempMin: days.temperature_2m_min?.[i] ?? 0,
-        precipitation: days.precipitation_sum?.[i] ?? 0,
-        windSpeedMax: days.wind_speed_10m_max?.[i] ?? 0,
-      })
-    }
-  }
-
-  return { current, forecast }
-}
-
-export const weatherService = {
-  fetchByCoords: fetchWeatherByCoords,
-  fetchByCity: fetchWeatherByCity,
+  const data = await fetchFromOpenMeteo(latitude, longitude)
+  return mapToWeatherData(data, cityLabel)
 }

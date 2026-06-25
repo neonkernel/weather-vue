@@ -1,40 +1,14 @@
-<script setup lang="ts">
-import { ref } from 'vue'
-
-const props = defineProps<{
-  detectingLocation?: boolean
-}>()
-
-const emit = defineEmits<{
-  search: [city: string]
-  'use-my-location': []
-}>()
-
-const query = ref('')
-
-function handleSubmit() {
-  const trimmed = query.value.trim()
-  if (!trimmed) return
-  emit('search', trimmed)
-  query.value = ''
-}
-
-function handleUseMyLocation() {
-  emit('use-my-location')
-}
-</script>
-
 <template>
-  <div class="flex flex-col sm:flex-row gap-3">
-    <!-- Search Input -->
-    <div class="flex flex-1 gap-2">
+  <div class="w-full">
+    <div class="flex items-center gap-2">
       <div class="relative flex-1">
-        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+        <div class="absolute inset-y-0 left-3 flex items-center pointer-events-none">
           <svg
-            class="w-5 h-5 text-slate-400"
+            class="w-4 h-4 text-gray-400"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
+            aria-hidden="true"
           >
             <path
               stroke-linecap="round"
@@ -48,71 +22,79 @@ function handleUseMyLocation() {
           v-model="query"
           type="text"
           placeholder="Search for a city..."
-          class="w-full pl-10 pr-4 py-3 bg-slate-800/60 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-          @keydown.enter="handleSubmit"
+          class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 bg-white/80 backdrop-blur-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition shadow-sm"
+          @keyup.enter="handleSearch"
+          :disabled="loading"
+          aria-label="Search for a city"
         />
       </div>
+
       <button
-        type="button"
-        :disabled="!query.trim()"
-        class="px-5 py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-medium rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
-        @click="handleSubmit"
+        @click="handleSearch"
+        :disabled="loading || !query.trim()"
+        class="px-4 py-2.5 bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white rounded-xl font-medium transition shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 whitespace-nowrap"
+        aria-label="Search"
       >
         Search
       </button>
-    </div>
 
-    <!-- Use My Location Button -->
-    <button
-      type="button"
-      :disabled="detectingLocation"
-      class="flex items-center justify-center gap-2 px-4 py-3 bg-slate-800/60 hover:bg-slate-700/80 disabled:opacity-60 disabled:cursor-not-allowed border border-slate-700 hover:border-blue-500 text-slate-300 hover:text-white font-medium rounded-xl transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 whitespace-nowrap"
-      title="Use my current location"
-      @click="handleUseMyLocation"
-    >
-      <!-- Spinner when detecting -->
-      <svg
-        v-if="detectingLocation"
-        class="w-5 h-5 animate-spin text-blue-400"
-        fill="none"
-        viewBox="0 0 24 24"
+      <button
+        @click="handleUseMyLocation"
+        :disabled="geoLoading"
+        :title="geoLoading ? 'Detecting location...' : 'Use my current location'"
+        class="flex items-center justify-center w-10 h-10 rounded-xl border border-gray-200 bg-white/80 backdrop-blur-sm hover:bg-gray-50 disabled:opacity-50 transition shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 flex-shrink-0"
+        aria-label="Use my location"
       >
-        <circle
-          class="opacity-25"
-          cx="12"
-          cy="12"
-          r="10"
+        <span v-if="geoLoading" class="animate-spin text-base">⏳</span>
+        <svg
+          v-else
+          class="w-5 h-5 text-gray-500"
+          fill="none"
           stroke="currentColor"
-          stroke-width="4"
-        />
-        <path
-          class="opacity-75"
-          fill="currentColor"
-          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-        />
-      </svg>
-      <!-- Location icon when idle -->
-      <svg
-        v-else
-        class="w-5 h-5"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"
-        />
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"
-        />
-      </svg>
-      <span>{{ detectingLocation ? 'Detecting...' : 'Use My Location' }}</span>
-    </button>
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"
+          />
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"
+          />
+        </svg>
+      </button>
+    </div>
   </div>
 </template>
+
+<script setup lang="ts">
+import { ref } from 'vue'
+
+const props = defineProps<{
+  loading?: boolean
+  geoLoading?: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'search', city: string): void
+  (e: 'useLocation'): void
+}>()
+
+const query = ref('')
+
+function handleSearch() {
+  const trimmed = query.value.trim()
+  if (!trimmed || props.loading) return
+  emit('search', trimmed)
+}
+
+function handleUseMyLocation() {
+  if (props.geoLoading) return
+  emit('useLocation')
+}
+</script>

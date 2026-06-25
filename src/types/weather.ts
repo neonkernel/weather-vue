@@ -1,23 +1,31 @@
-export interface WeatherData {
+export interface CurrentWeather {
   temperature: number
-  feelsLike: number
-  humidity: number
-  windSpeed: number
-  windDirection: number
-  pressure: number
-  visibility: number | null
-  weatherCode: number
-  description: string
-  icon: string
-  unit: 'C' | 'F'
+  windspeed: number
+  weathercode: number
+  time: string
 }
 
-export interface ForecastDay {
-  date: string
-  weatherCode: number
-  description: string
-  icon: string
-  tempMax: number
-  tempMin: number
-  precipitationProbability: number
+export interface HourlyWeather {
+  time: string[]
+  temperature: number[]
+  humidity: number[]
+  precipitationProbability: number[]
+  weathercode: number[]
+}
+
+export interface DailyWeather {
+  time: string[]
+  tempMax: number[]
+  tempMin: number[]
+  weathercode: number[]
+  precipitationProbabilityMax: number[]
+}
+
+export interface WeatherData {
+  city: string
+  lat: number
+  lon: number
+  current: CurrentWeather
+  hourly: HourlyWeather
+  daily: DailyWeather
 }
