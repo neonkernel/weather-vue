@@ -1,95 +1,64 @@
-"""PromptBuilder: constructs system and user messages for the LLM."""
+"""Prompt templates for each SummaryStyle."""
 
-from __future__ import annotations
+SYSTEM_PROMPT = (
+    "You are an expert summarizer. Your task is to summarize the provided text "
+    "accurately and concisely, following the specific style instructions given."
+)
 
-from dataclasses import dataclass, field
-from typing import Literal
-
-SummaryStyle = Literal["concise", "detailed", "bullet"]
-
-SYSTEM_PROMPTS: dict[SummaryStyle, str] = {
-    "concise": (
-        "You are an expert summarizer. Your task is to produce a clear, concise summary "
-        "of the provided article. The summary should:\n"
-        "- Capture the most important information\n"
-        "- Be written in plain, accessible English\n"
-        "- Be 2–4 sentences long\n"
-        "- Preserve factual accuracy — do not add information not present in the source\n"
-        "- Avoid filler phrases like 'This article discusses…'\n"
-        "Respond with only the summary text, no preamble."
+PROMPT_TEMPLATES = {
+    "brief": (
+        "Please provide a concise executive brief of the following text. "
+        "Write 2-4 sentences that capture the most important points. "
+        "Focus on key findings, decisions, or conclusions.\n\n"
+        "Text to summarize:\n{text}"
+    ),
+    "bullets": (
+        "Please summarize the following text as a structured bullet-point list. "
+        "Use clear, concise bullet points (5-10 points) that highlight the key ideas, "
+        "facts, and takeaways. Start each bullet with a dash (-).\n\n"
+        "Text to summarize:\n{text}"
     ),
     "detailed": (
-        "You are an expert summarizer. Your task is to produce a thorough summary "
-        "of the provided article. The summary should:\n"
-        "- Cover all key points, arguments, and conclusions\n"
-        "- Be written in clear, professional English\n"
-        "- Be 1–3 paragraphs long\n"
-        "- Preserve factual accuracy — do not add information not present in the source\n"
-        "Respond with only the summary text, no preamble."
+        "Please provide a comprehensive and detailed summary of the following text. "
+        "Cover all major topics, arguments, evidence, and conclusions. "
+        "Organize your summary into logical paragraphs. "
+        "Aim for thoroughness while remaining clear and readable.\n\n"
+        "Text to summarize:\n{text}"
     ),
-    "bullet": (
-        "You are an expert summarizer. Your task is to summarize the provided article "
-        "as a structured list of bullet points. Each bullet should:\n"
-        "- Represent one distinct key point or finding\n"
-        "- Be concise (one sentence each)\n"
-        "- Begin with a dash (-)\n"
-        "- Be factually accurate and grounded in the source text\n"
-        "Respond with only the bullet list, no preamble."
+    "eli5": (
+        "Please explain the following text as if you were talking to a curious 10-year-old. "
+        "Use simple words, short sentences, and helpful analogies or examples. "
+        "Avoid jargon and technical terms — if you must use them, explain what they mean. "
+        "Make it fun and easy to understand.\n\n"
+        "Text to summarize:\n{text}"
+    ),
+    "tldr": (
+        "Please provide an ultra-short TL;DR (Too Long; Didn't Read) summary of the following text. "
+        "Write exactly 1-2 sentences that capture the absolute essence of the content. "
+        "Be as brief as possible while retaining the core message.\n\n"
+        "Text to summarize:\n{text}"
     ),
 }
 
-CHUNK_SYSTEM_PROMPT = (
-    "You are an expert summarizer. You will be given a portion of a longer article. "
-    "Summarize this portion, capturing the key points. Be concise but complete — "
-    "your summary will later be combined with summaries of other portions. "
-    "Respond with only the summary text, no preamble."
-)
 
-REDUCE_SYSTEM_PROMPT = (
-    "You are an expert summarizer. You will be given a series of partial summaries "
-    "of different sections of the same article. Combine these into a single, coherent "
-    "summary that covers all the key points without redundancy. "
-    "Respond with only the final summary text, no preamble."
-)
+def get_prompt(style_key: str, text: str) -> str:
+    """
+    Get a formatted prompt for the given style and text.
 
+    Args:
+        style_key: The prompt template key (e.g., 'brief', 'bullets').
+        text: The text to summarize.
 
-@dataclass
-class PromptBuilder:
-    """Builds OpenAI-compatible message lists for summarization tasks."""
+    Returns:
+        A formatted prompt string ready to send to the LLM.
 
-    style: SummaryStyle = "concise"
-    extra_instructions: str = ""
-
-    def build_messages(self, article_text: str) -> list[dict[str, str]]:
-        """Build messages for a direct (single-pass) summarization."""
-        system_content = SYSTEM_PROMPTS[self.style]
-        if self.extra_instructions:
-            system_content += f"\n\nAdditional instructions: {self.extra_instructions}"
-
-        user_content = f"Please summarize the following article:\n\n{article_text}"
-
-        return [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
-        ]
-
-    def build_chunk_messages(self, chunk_text: str, chunk_index: int, total_chunks: int) -> list[dict[str, str]]:
-        """Build messages for summarizing a single chunk in the map phase."""
-        user_content = (
-            f"Article section {chunk_index + 1} of {total_chunks}:\n\n{chunk_text}"
+    Raises:
+        KeyError: If the style_key is not recognized.
+    """
+    if style_key not in PROMPT_TEMPLATES:
+        available = ", ".join(PROMPT_TEMPLATES.keys())
+        raise KeyError(
+            f"Unknown style key '{style_key}'. Available styles: {available}"
         )
-        return [
-            {"role": "system", "content": CHUNK_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
-
-    def build_reduce_messages(self, partial_summaries: list[str]) -> list[dict[str, str]]:
-        """Build messages for combining chunk summaries in the reduce phase."""
-        numbered = "\n\n".join(
-            f"Section {i + 1} summary:\n{s}" for i, s in enumerate(partial_summaries)
-        )
-        user_content = f"Please combine the following partial summaries into one:\n\n{numbered}"
-        return [
-            {"role": "system", "content": REDUCE_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
+    template = PROMPT_TEMPLATES[style_key]
+    return template.format(text=text)

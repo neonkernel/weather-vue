@@ -1,86 +1,196 @@
-# 🌤️ Weather Dashboard
+# Summarizer
 
-A modern, responsive weather dashboard built with Vue 3, TypeScript, and Tailwind CSS.
+A command-line tool that ingests web articles or local files and produces AI-generated summaries using an LLM backend.
 
-## Tech Stack
+---
 
-- **Framework**: Vue 3 (Composition API)
-- **Build Tool**: Vite
-- **Language**: TypeScript
-- **Styling**: Tailwind CSS
-- **Code Quality**: ESLint + Prettier
-
-## Project Structure
-
-```
-src/
-├── assets/
-│   └── styles/
-│       └── main.css        # Global styles & Tailwind directives
-├── components/
-│   ├── WeatherDashboard.vue # Main dashboard container
-│   ├── CurrentWeather.vue   # Current conditions display
-│   ├── ForecastStrip.vue    # 7-day forecast strip
-│   └── ForecastCard.vue     # Single forecast day card
-├── data/
-│   └── mockWeather.ts       # Hardcoded mock weather data
-├── types/
-│   └── weather.ts           # TypeScript interfaces
-├── App.vue                  # Root component
-└── main.ts                  # App entry point
-```
-
-## Setup Instructions
-
-### Prerequisites
-
-- Node.js >= 18.x
-- npm >= 9.x
-
-### Installation
+## Installation
 
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd weather-dashboard
-
-# Install dependencies
-npm install
-
-# Start development server
-npm run dev
+pip install -e .
 ```
 
-### Available Scripts
+---
+
+## Quick Start
 
 ```bash
-npm run dev        # Start Vite dev server (http://localhost:5173)
-npm run build      # Production build
-npm run preview    # Preview production build
-npm run lint       # Run ESLint
-npm run format     # Run Prettier formatter
-npm run type-check # TypeScript type checking
+# Summarize a URL with default settings (brief style, plain text output)
+summarize https://example.com/article
+
+# Summarize a local file
+summarize path/to/article.txt
 ```
 
-## Phase Roadmap
+---
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| **Phase 1** | Project Foundation & Static UI Shell | ✅ Complete |
-| **Phase 2** | API Integration (OpenWeatherMap) | 🔜 Planned |
-| **Phase 3** | Search & Geolocation | 🔜 Planned |
-| **Phase 4** | Animations & Polish | 🔜 Planned |
-| **Phase 5** | PWA & Offline Support | 🔜 Planned |
+## CLI Reference
 
-## Phase 1 Details
+```
+Usage: summarize [OPTIONS] URL_OR_FILE
 
-- Vite + Vue 3 Composition API + TypeScript project scaffold
-- Tailwind CSS with custom weather-themed color palette
-- Component hierarchy: `App` → `WeatherDashboard` → `CurrentWeather` + `ForecastStrip` → `ForecastCard`
-- Hardcoded mock data for immediate visual review
-- ESLint + Prettier configured for code quality
-- Path aliases (`@/`) configured in Vite and TypeScript
+  Summarize a URL or local file using an LLM.
 
-## License
+  URL_OR_FILE can be an HTTP/HTTPS URL or a path to a local text/HTML file.
 
-MIT
+Options:
+  --style [bullets|brief|detailed|eli5|tldr]
+                                  Summary style to use.  [default: brief]
+  --format [text|markdown|json]   Output format.  [default: text]
+  -o, --output PATH               Write output to a file instead of stdout.
+  --model TEXT                    LLM model to use (overrides config default).
+  -v, --verbose                   Enable verbose logging.
+  --help                          Show this message and exit.
+```
+
+---
+
+## Summary Styles
+
+| Style      | Description                                                        |
+|------------|--------------------------------------------------------------------|
+| `brief`    | 2–4 sentence executive summary of the most important points        |
+| `bullets`  | 5–10 bullet points covering key ideas, facts, and takeaways        |
+| `detailed` | Comprehensive multi-paragraph summary covering all major topics    |
+| `eli5`     | Simple explanation using plain language, as if for a 10-year-old  |
+| `tldr`     | Ultra-short 1–2 sentence TL;DR capturing the core message         |
+
+---
+
+## Output Formats
+
+| Format     | Description                                                        |
+|------------|--------------------------------------------------------------------|
+| `text`     | Plain text — title (if available), body, and metadata footer       |
+| `markdown` | Markdown document with `# Title`, `## Metadata`, `## Summary`      |
+| `json`     | JSON object containing all fields from the Summary data model      |
+
+### JSON Schema
+
+```json
+{
+  "body": "string",
+  "title": "string | null",
+  "source_url": "string | null",
+  "model": "string | null",
+  "word_count": "integer | null",
+  "style": "string | null",
+  "created_at": "ISO 8601 datetime string"
+}
+```
+
+---
+
+## Examples
+
+### Style Examples
+
+```bash
+# Default: brief executive summary
+summarize https://example.com/article
+
+# Bullet-point list
+summarize https://example.com/article --style bullets
+
+# Comprehensive detailed summary
+summarize https://example.com/article --style detailed
+
+# Explain like I'm 5
+summarize https://example.com/article --style eli5
+
+# One-sentence TL;DR
+summarize https://example.com/article --style tldr
+```
+
+### Format Examples
+
+```bash
+# Plain text (default)
+summarize https://example.com/article --format text
+
+# Markdown output
+summarize https://example.com/article --format markdown
+
+# JSON output
+summarize https://example.com/article --format json
+```
+
+### Combined Style + Format Examples
+
+```bash
+# Bullet points in Markdown — great for documentation
+summarize https://example.com/article --style bullets --format markdown
+
+# Detailed summary as JSON — useful for downstream processing
+summarize https://example.com/article --style detailed --format json
+
+# ELI5 as Markdown
+summarize https://example.com/article --style eli5 --format markdown
+
+# Brief TL;DR as JSON
+summarize https://example.com/article --style tldr --format json
+```
+
+### Writing to a File
+
+```bash
+# Save a Markdown summary to a file
+summarize https://example.com/article \
+  --style bullets \
+  --format markdown \
+  --output summary.md
+
+# Save a JSON summary
+summarize https://example.com/article \
+  --style detailed \
+  --format json \
+  --output summary.json
+
+# Short form using -o flag
+summarize path/to/article.txt --style brief -o output.txt
+```
+
+### Using a Specific Model
+
+```bash
+# Override the default model
+summarize https://example.com/article --model gpt-4o --style detailed
+```
+
+---
+
+## Configuration
+
+The default LLM model and API settings can be configured in `src/summarizer/config.py` or via environment variables. See that file for available options.
+
+---
+
+## Development
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run style tests only
+pytest tests/test_styles.py -v
+
+# Run formatter tests only
+pytest tests/test_formatter.py -v
+```
+
+### Project Structure
+
+```
+src/summarizer/
+├── cli.py          # Click CLI entry point
+├── config.py       # Configuration and defaults
+├── formatter.py    # Formatter class (text / Markdown / JSON)
+├── models.py       # Summary dataclass
+├── styles.py       # SummaryStyle and OutputFormat enums
+├── llm/
+│   ├── prompts.py  # Style-specific prompt templates
+│   └── client.py   # LLM API client
+└── ingestion/      # URL and file ingestion logic
+```

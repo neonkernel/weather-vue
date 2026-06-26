@@ -1,36 +1,23 @@
-"""Domain models for the summarizer."""
-
-from __future__ import annotations
+"""Data models for the summarizer."""
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 
 @dataclass
-class Article:
-    """Represents an article fetched from a URL."""
-
-    url: str
-    title: str = ""
-    content: str = ""
-    html: str = ""
-    fetched_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
-
-
-@dataclass
 class Summary:
-    """Represents the result of a summarization operation."""
+    """Represents a generated summary with metadata."""
 
-    url: str
-    summary: str
-    title: str = ""
-    model: str = "gpt-4o-mini"
-    style: str = "concise"
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    created_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    body: str
+    title: Optional[str] = None
+    source_url: Optional[str] = None
+    model: Optional[str] = None
+    word_count: Optional[int] = None
+    style: Optional[str] = None
+    created_at: Optional[datetime] = field(default_factory=datetime.utcnow)
 
-    @property
-    def total_tokens(self) -> int:
-        return self.prompt_tokens + self.completion_tokens
+    def __post_init__(self):
+        # Auto-calculate word count if not provided
+        if self.word_count is None and self.body:
+            self.word_count = len(self.body.split())
