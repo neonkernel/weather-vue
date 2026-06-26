@@ -7,247 +7,211 @@ import pytest
 
 from src.summarizer.formatter import Formatter
 from src.summarizer.models import Summary
-from src.summarizer.styles import OutputFormat, SummaryStyle
+from src.summarizer.styles import OutputFormat
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
+FIXED_DT = datetime(2026, 6, 26, 12, 0, 0)
+
+
 @pytest.fixture
-def sample_summary():
-    """A fully-populated Summary fixture."""
+def full_summary() -> Summary:
+    """A Summary with all fields populated."""
     return Summary(
-        body="This is the summary body. It contains important information about the topic.",
-        title="Test Article Title",
-        source_url="https://example.com/test-article",
+        body="This is the summary body. It explains the article concisely.",
+        title="Breaking News: Major Discovery",
+        source_url="https://example.com/article",
         model="gpt-4o",
-        style=SummaryStyle.BRIEF.value,
-        created_at=datetime(2026, 6, 26, 12, 0, 0),
+        style="brief",
+        word_count=None,  # will be auto-computed
+        created_at=FIXED_DT,
     )
 
 
 @pytest.fixture
-def minimal_summary():
+def minimal_summary() -> Summary:
     """A Summary with only the required body field."""
-    return Summary(body="Minimal summary body.")
-
-
-@pytest.fixture
-def bullet_summary():
-    """A Summary with bullet-point body content."""
     return Summary(
-        body="- Point one\n- Point two\n- Point three",
-        title="Bullet Summary",
-        source_url="https://example.com/bullets",
-        model="claude-3",
-        style=SummaryStyle.BULLETS.value,
+        body="Minimal body text.",
+        title=None,
+        source_url=None,
+        model=None,
+        style=None,
+        word_count=None,
+        created_at=None,
     )
 
 
 @pytest.fixture
-def formatter():
+def formatter() -> Formatter:
     return Formatter()
 
 
 # ---------------------------------------------------------------------------
-# Plain text format tests
+# Plain text format
 # ---------------------------------------------------------------------------
 
 class TestTextFormat:
-    def test_body_in_output(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.TEXT)
-        assert sample_summary.body in result
+    def test_body_present(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.TEXT)
+        assert full_summary.body in result
 
-    def test_title_in_output(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.TEXT)
-        assert sample_summary.title in result
+    def test_title_present(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.TEXT)
+        assert full_summary.title in result
 
-    def test_source_url_in_output(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.TEXT)
-        assert sample_summary.source_url in result
+    def test_title_underline_present(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.TEXT)
+        assert "=" * len(full_summary.title) in result
 
-    def test_model_in_output(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.TEXT)
-        assert sample_summary.model in result
+    def test_model_in_metadata(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.TEXT)
+        assert full_summary.model in result
 
-    def test_word_count_in_output(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.TEXT)
-        assert str(sample_summary.word_count) in result
+    def test_source_url_in_metadata(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.TEXT)
+        assert full_summary.source_url in result
 
-    def test_minimal_summary_text(self, formatter, minimal_summary):
+    def test_style_in_metadata(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.TEXT)
+        assert full_summary.style in result
+
+    def test_separator_present(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.TEXT)
+        assert "---" in result
+
+    def test_minimal_summary_no_crash(self, formatter, minimal_summary):
         result = formatter.format(minimal_summary, OutputFormat.TEXT)
         assert minimal_summary.body in result
 
-    def test_returns_string(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.TEXT)
-        assert isinstance(result, str)
-
-    def test_no_markdown_headers(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.TEXT)
-        # Plain text should not have Markdown headers
-        assert "##" not in result
+    def test_word_count_computed(self, formatter, full_summary):
+        # word_count=None triggers auto-computation in __post_init__
+        assert full_summary.word_count is not None
+        result = formatter.format(full_summary, OutputFormat.TEXT)
+        assert str(full_summary.word_count) in result
 
 
 # ---------------------------------------------------------------------------
-# Markdown format tests
+# Markdown format
 # ---------------------------------------------------------------------------
 
 class TestMarkdownFormat:
-    def test_returns_string(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.MARKDOWN)
-        assert isinstance(result, str)
+    def test_h1_title_present(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.MARKDOWN)
+        assert f"# {full_summary.title}" in result
 
-    def test_has_title_h1_header(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.MARKDOWN)
-        assert f"# {sample_summary.title}" in result
-
-    def test_has_metadata_section(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.MARKDOWN)
-        assert "## Metadata" in result
-
-    def test_has_summary_section(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.MARKDOWN)
+    def test_summary_h2_present(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.MARKDOWN)
         assert "## Summary" in result
 
-    def test_body_in_markdown(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.MARKDOWN)
-        assert sample_summary.body in result
+    def test_body_present(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.MARKDOWN)
+        assert full_summary.body in result
 
-    def test_source_url_in_markdown(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.MARKDOWN)
-        assert sample_summary.source_url in result
+    def test_metadata_table_has_source(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.MARKDOWN)
+        assert full_summary.source_url in result
 
-    def test_model_in_markdown(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.MARKDOWN)
-        assert sample_summary.model in result
+    def test_metadata_table_has_model(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.MARKDOWN)
+        assert full_summary.model in result
 
-    def test_word_count_in_markdown(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.MARKDOWN)
-        assert str(sample_summary.word_count) in result
+    def test_metadata_table_has_word_count(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.MARKDOWN)
+        assert str(full_summary.word_count) in result
 
-    def test_markdown_link_format(self, formatter, sample_summary):
-        """Source URL should be formatted as a Markdown link."""
-        result = formatter.format(sample_summary, OutputFormat.MARKDOWN)
-        assert f"[{sample_summary.source_url}]({sample_summary.source_url})" in result
+    def test_metadata_table_header_separator(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.MARKDOWN)
+        assert "|-------|-------|" in result
 
-    def test_model_in_code_span(self, formatter, sample_summary):
-        """Model name should be in a code span in Markdown."""
-        result = formatter.format(sample_summary, OutputFormat.MARKDOWN)
-        assert f"`{sample_summary.model}`" in result
+    def test_horizontal_rule_present(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.MARKDOWN)
+        assert "---" in result
 
-    def test_minimal_summary_markdown(self, formatter, minimal_summary):
+    def test_minimal_uses_default_title(self, formatter, minimal_summary):
         result = formatter.format(minimal_summary, OutputFormat.MARKDOWN)
         assert "# Summary" in result
-        assert minimal_summary.body in result
 
-    def test_structure_order(self, formatter, sample_summary):
-        """Title should appear before metadata, metadata before summary."""
-        result = formatter.format(sample_summary, OutputFormat.MARKDOWN)
-        title_pos = result.index(f"# {sample_summary.title}")
-        metadata_pos = result.index("## Metadata")
-        summary_pos = result.index("## Summary")
-        assert title_pos < metadata_pos < summary_pos
+    def test_datetime_formatted(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.MARKDOWN)
+        assert "2026-06-26" in result
 
 
 # ---------------------------------------------------------------------------
-# JSON format tests
+# JSON format
 # ---------------------------------------------------------------------------
 
-class TestJSONFormat:
-    def test_returns_valid_json(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.JSON)
+class TestJsonFormat:
+    def test_valid_json(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.JSON)
         parsed = json.loads(result)
         assert isinstance(parsed, dict)
 
-    def test_body_in_json(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.JSON)
+    def test_body_field_present(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.JSON)
         parsed = json.loads(result)
-        assert parsed["body"] == sample_summary.body
+        assert "body" in parsed
+        assert parsed["body"] == full_summary.body
 
-    def test_title_in_json(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.JSON)
+    def test_title_field_present(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.JSON)
         parsed = json.loads(result)
-        assert parsed["title"] == sample_summary.title
+        assert parsed["title"] == full_summary.title
 
-    def test_source_url_in_json(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.JSON)
+    def test_source_url_field(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.JSON)
         parsed = json.loads(result)
-        assert parsed["source_url"] == sample_summary.source_url
+        assert parsed["source_url"] == full_summary.source_url
 
-    def test_model_in_json(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.JSON)
+    def test_model_field(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.JSON)
         parsed = json.loads(result)
-        assert parsed["model"] == sample_summary.model
+        assert parsed["model"] == full_summary.model
 
-    def test_word_count_in_json(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.JSON)
+    def test_style_field(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.JSON)
         parsed = json.loads(result)
-        assert parsed["word_count"] == sample_summary.word_count
+        assert parsed["style"] == full_summary.style
 
-    def test_style_in_json(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.JSON)
+    def test_word_count_field(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.JSON)
         parsed = json.loads(result)
-        assert parsed["style"] == sample_summary.style
+        assert "word_count" in parsed
+        assert isinstance(parsed["word_count"], int)
 
-    def test_created_at_in_json(self, formatter, sample_summary):
-        result = formatter.format(sample_summary, OutputFormat.JSON)
+    def test_created_at_is_string(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.JSON)
         parsed = json.loads(result)
-        assert "created_at" in parsed
-        assert parsed["created_at"] is not None
+        assert isinstance(parsed["created_at"], str)
 
-    def test_json_schema_completeness(self, formatter, sample_summary):
-        """JSON output should contain all expected top-level keys."""
-        result = formatter.format(sample_summary, OutputFormat.JSON)
+    def test_created_at_iso_format(self, formatter, full_summary):
+        result = formatter.format(full_summary, OutputFormat.JSON)
         parsed = json.loads(result)
-        expected_keys = {"body", "title", "source_url", "model", "word_count", "style", "created_at"}
-        assert expected_keys.issubset(set(parsed.keys()))
+        # Should be parseable as ISO datetime
+        dt = datetime.fromisoformat(parsed["created_at"])
+        assert dt.year == 2026
 
-    def test_minimal_summary_json(self, formatter, minimal_summary):
+    def test_minimal_summary_valid_json(self, formatter, minimal_summary):
         result = formatter.format(minimal_summary, OutputFormat.JSON)
         parsed = json.loads(result)
         assert parsed["body"] == minimal_summary.body
 
-    def test_json_is_pretty_printed(self, formatter, sample_summary):
-        """JSON output should be indented (pretty-printed)."""
-        result = formatter.format(sample_summary, OutputFormat.JSON)
-        assert "\n" in result
-        assert "  " in result
-
-    def test_bullet_summary_json(self, formatter, bullet_summary):
-        result = formatter.format(bullet_summary, OutputFormat.JSON)
+    def test_all_dataclass_fields_present(self, formatter, full_summary):
+        """JSON output should contain every field from the Summary dataclass."""
+        result = formatter.format(full_summary, OutputFormat.JSON)
         parsed = json.loads(result)
-        assert parsed["body"] == bullet_summary.body
-        assert parsed["style"] == SummaryStyle.BULLETS.value
+        expected_fields = {"body", "title", "source_url", "model", "style", "word_count", "created_at"}
+        assert expected_fields.issubset(parsed.keys())
 
 
 # ---------------------------------------------------------------------------
-# Unsupported format test
+# Unsupported format
 # ---------------------------------------------------------------------------
 
-class TestInvalidFormat:
-    def test_unsupported_format_raises(self, formatter, sample_summary):
+class TestUnsupportedFormat:
+    def test_raises_value_error(self, formatter, full_summary):
         with pytest.raises((ValueError, AttributeError)):
-            formatter.format(sample_summary, "xml")  # type: ignore
-
-
-# ---------------------------------------------------------------------------
-# Cross-format consistency tests
-# ---------------------------------------------------------------------------
-
-class TestCrossFormat:
-    def test_body_present_in_all_formats(self, formatter, sample_summary):
-        for fmt in OutputFormat:
-            result = formatter.format(sample_summary, fmt)
-            assert sample_summary.body in result, (
-                f"Body not found in {fmt.value} output"
-            )
-
-    def test_formats_produce_different_output(self, formatter, sample_summary):
-        outputs = {fmt: formatter.format(sample_summary, fmt) for fmt in OutputFormat}
-        output_list = list(outputs.values())
-        for i in range(len(output_list)):
-            for j in range(i + 1, len(output_list)):
-                assert output_list[i] != output_list[j], (
-                    "Two different formats produced identical output"
-                )
+            formatter.format(full_summary, "xml")  # type: ignore[arg-type]

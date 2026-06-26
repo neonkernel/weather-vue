@@ -1,4 +1,4 @@
-"""Formatter class for rendering Summary objects in various output formats."""
+"""Formatter: renders a Summary object as plain text, Markdown, or JSON."""
 
 import json
 from dataclasses import asdict
@@ -9,18 +9,17 @@ from .styles import OutputFormat
 
 
 class Formatter:
-    """Renders a Summary object as plain text, Markdown, or JSON."""
+    """Renders Summary objects in various output formats."""
 
     def format(self, summary: Summary, fmt: OutputFormat) -> str:
-        """
-        Format a Summary object according to the specified OutputFormat.
+        """Format a Summary object according to the specified OutputFormat.
 
         Args:
-            summary: The Summary object to format.
-            fmt: The desired output format.
+            summary: The Summary dataclass instance to render.
+            fmt: The desired OutputFormat (TEXT, MARKDOWN, or JSON).
 
         Returns:
-            A string representation of the summary in the requested format.
+            A string representation in the requested format.
         """
         if fmt == OutputFormat.TEXT:
             return self._format_text(summary)
@@ -35,59 +34,71 @@ class Formatter:
         """Render summary as plain text."""
         lines = []
 
-        if hasattr(summary, "title") and summary.title:
+        if summary.title:
             lines.append(summary.title)
             lines.append("=" * len(summary.title))
             lines.append("")
 
         lines.append(summary.body)
+        lines.append("")
 
-        metadata_parts = []
-        if hasattr(summary, "word_count") and summary.word_count is not None:
-            metadata_parts.append(f"Word count: {summary.word_count}")
-        if hasattr(summary, "source_url") and summary.source_url:
-            metadata_parts.append(f"Source: {summary.source_url}")
-        if hasattr(summary, "model") and summary.model:
-            metadata_parts.append(f"Model: {summary.model}")
+        # Metadata footer
+        meta_parts = []
+        if summary.word_count is not None:
+            meta_parts.append(f"Words: {summary.word_count}")
+        if summary.model:
+            meta_parts.append(f"Model: {summary.model}")
+        if summary.source_url:
+            meta_parts.append(f"Source: {summary.source_url}")
+        if summary.style:
+            meta_parts.append(f"Style: {summary.style}")
+        if summary.created_at:
+            if isinstance(summary.created_at, datetime):
+                meta_parts.append(f"Generated: {summary.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+            else:
+                meta_parts.append(f"Generated: {summary.created_at}")
 
-        if metadata_parts:
-            lines.append("")
+        if meta_parts:
             lines.append("---")
-            lines.extend(metadata_parts)
+            lines.extend(meta_parts)
 
         return "\n".join(lines)
 
     def _format_markdown(self, summary: Summary) -> str:
-        """Render summary as Markdown with title header and metadata."""
+        """Render summary as Markdown with title, metadata, and body."""
         lines = []
 
         # Title header
-        title = getattr(summary, "title", None) or "Summary"
+        title = summary.title or "Summary"
         lines.append(f"# {title}")
         lines.append("")
 
-        # Metadata block
-        metadata_lines = []
-        if hasattr(summary, "word_count") and summary.word_count is not None:
-            metadata_lines.append(f"- **Word count:** {summary.word_count}")
-        if hasattr(summary, "source_url") and summary.source_url:
-            metadata_lines.append(f"- **Source:** [{summary.source_url}]({summary.source_url})")
-        if hasattr(summary, "model") and summary.model:
-            metadata_lines.append(f"- **Model:** `{summary.model}`")
-        if hasattr(summary, "style") and summary.style:
-            style_value = summary.style.value if hasattr(summary.style, "value") else summary.style
-            metadata_lines.append(f"- **Style:** {style_value}")
-        if hasattr(summary, "created_at") and summary.created_at:
+        # Metadata table
+        meta_rows = []
+        if summary.source_url:
+            meta_rows.append(f"| **Source** | {summary.source_url} |")
+        if summary.model:
+            meta_rows.append(f"| **Model** | `{summary.model}` |")
+        if summary.style:
+            meta_rows.append(f"| **Style** | {summary.style} |")
+        if summary.word_count is not None:
+            meta_rows.append(f"| **Word Count** | {summary.word_count} |")
+        if summary.created_at:
             if isinstance(summary.created_at, datetime):
-                metadata_lines.append(f"- **Generated:** {summary.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                ts = summary.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
             else:
-                metadata_lines.append(f"- **Generated:** {summary.created_at}")
+                ts = str(summary.created_at)
+            meta_rows.append(f"| **Generated** | {ts} |")
 
-        if metadata_lines:
-            lines.append("## Metadata")
+        if meta_rows:
+            lines.append("| Field | Value |")
+            lines.append("|-------|-------|")
+            lines.extend(meta_rows)
             lines.append("")
-            lines.extend(metadata_lines)
-            lines.append("")
+
+        # Divider
+        lines.append("---")
+        lines.append("")
 
         # Summary body
         lines.append("## Summary")
@@ -98,28 +109,12 @@ class Formatter:
         return "\n".join(lines)
 
     def _format_json(self, summary: Summary) -> str:
-        """Render summary as JSON, serializing the full Summary dataclass."""
-        try:
-            data = asdict(summary)
-        except TypeError:
-            # Fallback for non-dataclass Summary objects
-            data = {k: v for k, v in vars(summary).items()}
+        """Render summary as a JSON string."""
+        data = asdict(summary)
 
-        # Convert non-serializable types
-        data = self._make_serializable(data)
+        # Convert datetime objects to ISO strings for JSON serialization
+        for key, value in data.items():
+            if isinstance(value, datetime):
+                data[key] = value.isoformat()
 
         return json.dumps(data, indent=2, ensure_ascii=False)
-
-    def _make_serializable(self, obj):
-        """Recursively convert non-JSON-serializable objects."""
-        if isinstance(obj, dict):
-            return {k: self._make_serializable(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [self._make_serializable(item) for item in obj]
-        elif isinstance(obj, datetime):
-            return obj.isoformat()
-        elif hasattr(obj, "value"):
-            # Handle Enum types
-            return obj.value
-        else:
-            return obj

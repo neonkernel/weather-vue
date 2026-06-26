@@ -5,24 +5,25 @@ from pathlib import Path
 
 import click
 
-from .formatter import Formatter
 from .styles import OutputFormat, SummaryStyle
+from .formatter import Formatter
+from .config import Config
 
 
 @click.command()
-@click.argument("url_or_file", metavar="URL_OR_FILE")
+@click.argument("source", required=False)
 @click.option(
     "--style",
     type=click.Choice([s.value for s in SummaryStyle], case_sensitive=False),
     default=SummaryStyle.BRIEF.value,
     show_default=True,
     help=(
-        "Summary style to use. "
-        "'brief' = short executive summary; "
-        "'bullets' = bullet-point list; "
-        "'detailed' = comprehensive paragraphs; "
-        "'eli5' = explain like I'm 5; "
-        "'tldr' = one-sentence TL;DR."
+        "Summary style: "
+        "'brief' (executive brief), "
+        "'bullets' (bullet points), "
+        "'detailed' (full analysis), "
+        "'eli5' (explain like I'm 5), "
+        "'tldr' (one-sentence TL;DR)."
     ),
 )
 @click.option(
@@ -31,166 +32,151 @@ from .styles import OutputFormat, SummaryStyle
     type=click.Choice([f.value for f in OutputFormat], case_sensitive=False),
     default=OutputFormat.TEXT.value,
     show_default=True,
-    help=(
-        "Output format. "
-        "'text' = plain text; "
-        "'markdown' = Markdown with headers and metadata; "
-        "'json' = JSON object with full metadata."
-    ),
+    help="Output format: 'text' (plain text), 'markdown', or 'json'.",
 )
 @click.option(
     "--output",
     "-o",
     type=click.Path(dir_okay=False, writable=True),
     default=None,
-    help="Write output to a file instead of stdout.",
+    help="Write output to FILE instead of stdout.",
 )
 @click.option(
     "--model",
     default=None,
-    help="LLM model to use for summarization (overrides config default).",
+    help="Override the LLM model specified in config.",
 )
 @click.option(
-    "--verbose",
-    "-v",
+    "--url",
+    default=None,
+    help="Source URL to attach as metadata (used when SOURCE is a local file or stdin).",
+)
+@click.option(
+    "--mock",
     is_flag=True,
     default=False,
-    help="Enable verbose logging.",
+    hidden=True,
+    help="Use mock data instead of calling the LLM (for testing).",
 )
-def main(url_or_file: str, style: str, output_format: str, output: str, model: str, verbose: bool):
+@click.version_option()
+def main(
+    source: str | None,
+    style: str,
+    output_format: str,
+    output: str | None,
+    model: str | None,
+    url: str | None,
+    mock: bool,
+) -> None:
+    """Summarize an article from a URL, local file, or stdin.
+
+    SOURCE can be a URL (https://…), a local file path, or omitted to read from stdin.
+
+    Examples:\n
+        summarizer https://example.com/article\n
+        summarizer article.txt --style bullets --format markdown\n
+        summarizer https://example.com/article --style detailed --format json -o out.json\n
+        cat article.txt | summarizer --style eli5\n
+        summarizer https://example.com/article --style tldr
     """
-    Summarize a URL or local file using an LLM.
-
-    URL_OR_FILE can be an HTTP/HTTPS URL or a path to a local text/HTML file.
-
-    Examples:
-
-    \b
-        # Brief summary (default) printed to stdout
-        summarize https://example.com/article
-
-    \b
-        # Bullet-point summary in Markdown format
-        summarize https://example.com/article --style bullets --format markdown
-
-    \b
-        # Detailed summary saved to a file
-        summarize https://example.com/article --style detailed --output summary.md --format markdown
-
-    \b
-        # ELI5 summary as JSON
-        summarize https://example.com/article --style eli5 --format json
-
-    \b
-        # TL;DR to stdout
-        summarize https://example.com/article --style tldr
-    """
-    # Resolve enums from string values
-    summary_style = SummaryStyle(style.lower())
-    fmt = OutputFormat(output_format.lower())
-
     try:
-        summary = _run_summarization(url_or_file, summary_style, model, verbose)
-    except Exception as exc:
+        style_enum = SummaryStyle(style.lower())
+        format_enum = OutputFormat(output_format.lower())
+    except ValueError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
+    # Resolve config
+    try:
+        config = Config.load()
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Configuration error: {exc}", err=True)
+        sys.exit(1)
+
+    if model:
+        config.model = model
+
+    # Ingest article text
+    article_text, source_url = _ingest(source, url)
+    if not article_text:
+        click.echo("Error: no input text provided.", err=True)
+        sys.exit(1)
+
+    # Summarize
+    if mock:
+        from .data.mockWeather import get_mock_summary  # type: ignore[import]
+        summary = get_mock_summary()
+    else:
+        from .summarize import summarize
+
+        try:
+            summary = summarize(
+                text=article_text,
+                style=style_enum,
+                config=config,
+                source_url=source_url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            click.echo(f"Summarization failed: {exc}", err=True)
+            sys.exit(1)
+
+    # Format output
     formatter = Formatter()
-    result = formatter.format(summary, fmt)
+    rendered = formatter.format(summary, format_enum)
 
+    # Write output
     if output:
-        output_path = Path(output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(result, encoding="utf-8")
-        click.echo(f"Summary written to {output_path}", err=True)
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(rendered, encoding="utf-8")
+        click.echo(f"Output written to {out_path}", err=True)
     else:
-        click.echo(result)
+        click.echo(rendered)
 
 
-def _run_summarization(url_or_file: str, style: SummaryStyle, model: str | None, verbose: bool):
+def _ingest(source: str | None, url_override: str | None) -> tuple[str, str | None]:
+    """Read article text from a URL, file path, or stdin.
+
+    Returns:
+        A tuple of (article_text, source_url).
     """
-    Orchestrate ingestion → LLM summarization → return Summary object.
+    source_url: str | None = url_override
 
-    This function wires together the ingestion layer, prompt selection,
-    and LLM client. It imports lazily so that missing optional dependencies
-    only raise errors when actually needed.
-    """
-    from .llm.prompts import get_prompt
-    from .models import Summary
-    from .styles import STYLE_PROMPT_MAP
+    if source is None:
+        # Read from stdin
+        if sys.stdin.isatty():
+            raise click.UsageError(
+                "No SOURCE provided and stdin is a terminal. "
+                "Provide a URL, file path, or pipe text via stdin."
+            )
+        article_text = sys.stdin.read()
+        return article_text, source_url
 
-    # --- Ingestion ---
-    text, source_url, title = _ingest(url_or_file, verbose)
+    if source.startswith("http://") or source.startswith("https://"):
+        source_url = source_url or source
+        article_text = _fetch_url(source)
+        return article_text, source_url
 
-    # --- Build prompt ---
-    style_key = STYLE_PROMPT_MAP[style]
-    prompt = get_prompt(style_key, text)
-
-    # --- Call LLM ---
-    body, used_model = _call_llm(prompt, model, verbose)
-
-    # --- Assemble Summary ---
-    summary = Summary(
-        body=body,
-        title=title,
-        source_url=source_url,
-        model=used_model,
-        style=style.value,
-    )
-    return summary
+    # Local file
+    file_path = Path(source)
+    if not file_path.exists():
+        raise click.BadParameter(f"File not found: {source}", param_hint="SOURCE")
+    article_text = file_path.read_text(encoding="utf-8")
+    return article_text, source_url
 
 
-def _ingest(url_or_file: str, verbose: bool):
-    """Ingest content from a URL or local file. Returns (text, source_url, title)."""
+def _fetch_url(url: str) -> str:
+    """Fetch and extract text from a URL using the ingestion service."""
     try:
-        from .ingestion import ingest  # type: ignore
-        result = ingest(url_or_file)
-        if isinstance(result, tuple):
-            if len(result) == 3:
-                return result
-            elif len(result) == 2:
-                return result[0], result[1], None
-        # Plain string returned
-        return str(result), url_or_file, None
+        from .ingestion import fetch_article  # type: ignore[import]
+        return fetch_article(url)
     except ImportError:
-        pass
+        # Fallback: plain urllib fetch
+        import urllib.request
 
-    # Fallback: read as local file or raise
-    path = Path(url_or_file)
-    if path.exists():
-        if verbose:
-            click.echo(f"Reading local file: {path}", err=True)
-        return path.read_text(encoding="utf-8"), str(path), path.stem
-    else:
-        raise FileNotFoundError(
-            f"Cannot ingest '{url_or_file}': not a valid file path and ingestion module unavailable."
-        )
-
-
-def _call_llm(prompt: str, model: str | None, verbose: bool):
-    """Call the LLM with the prompt. Returns (response_text, model_name)."""
-    try:
-        from .llm import client as llm_client  # type: ignore
-        response = llm_client.complete(prompt, model=model)
-        if isinstance(response, tuple):
-            return response  # (text, model_name)
-        return str(response), model or "unknown"
-    except ImportError:
-        pass
-
-    try:
-        from .llm.client import LLMClient  # type: ignore
-        client = LLMClient(model=model)
-        response = client.complete(prompt)
-        if isinstance(response, tuple):
-            return response
-        return str(response), model or client.model
-    except (ImportError, AttributeError):
-        pass
-
-    raise RuntimeError(
-        "LLM client is not available. Please ensure the LLM module is properly installed."
-    )
+        with urllib.request.urlopen(url, timeout=15) as response:  # noqa: S310
+            raw = response.read().decode("utf-8", errors="replace")
+        return raw
 
 
 if __name__ == "__main__":

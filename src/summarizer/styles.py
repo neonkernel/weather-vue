@@ -1,4 +1,4 @@
-"""Summary styles and output format enumerations."""
+"""Summary styles and output format enums."""
 
 from enum import Enum
 
@@ -19,11 +19,11 @@ class OutputFormat(Enum):
     JSON = "json"
 
 
-# Maps each SummaryStyle to its prompt template key
-STYLE_PROMPT_MAP = {
-    SummaryStyle.BULLETS: "bullets",
-    SummaryStyle.BRIEF: "brief",
-    SummaryStyle.DETAILED: "detailed",
-    SummaryStyle.ELI5: "eli5",
-    SummaryStyle.TLDR: "tldr",
+# Human-readable descriptions for each style
+STYLE_DESCRIPTIONS = {
+    SummaryStyle.BULLETS: "Bullet-point summary highlighting key facts",
+    SummaryStyle.BRIEF: "Concise executive brief (2-3 paragraphs)",
+    SummaryStyle.DETAILED: "Comprehensive detailed analysis",
+    SummaryStyle.ELI5: "Explain Like I'm 5 — simple, accessible language",
+    SummaryStyle.TLDR: "One-sentence TL;DR",
 }

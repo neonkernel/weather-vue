@@ -1,88 +1,58 @@
-"""Top-level orchestration: takes an Article, returns a Summary."""
+"""Core summarization logic."""
 
-from __future__ import annotations
-
-import logging
-from datetime import datetime, timezone
-
+from .models import Summary
+from .styles import SummaryStyle
 from .config import Config
-from .llm import SummarizerClient
-from .llm.prompts import SummaryStyle
-from .models import Article, Summary
-
-logger = logging.getLogger(__name__)
 
 
 def summarize(
-    article: Article,
-    config: Config | None = None,
-    style: SummaryStyle = "concise",
-    model: str | None = None,
-    temperature: float | None = None,
-    max_tokens: int | None = None,
-    extra_instructions: str = "",
+    text: str,
+    style: SummaryStyle,
+    config: "Config",
+    source_url: str | None = None,
 ) -> Summary:
-    """Summarize an *Article* and return a *Summary* dataclass.
+    """Generate a summary for the provided text.
 
     Args:
-        article: The article to summarize.
-        config: Optional Config instance; falls back to defaults if not provided.
-        style: One of 'concise', 'detailed', or 'bullet'.
-        model: Override the model specified in config.
-        temperature: Override the sampling temperature.
-        max_tokens: Override the maximum completion tokens.
-        extra_instructions: Additional freeform instructions appended to the system prompt.
+        text: The article text to summarize.
+        style: The SummaryStyle to use.
+        config: Loaded Config instance containing API credentials and model info.
+        source_url: Optional source URL to attach as metadata.
 
     Returns:
         A populated Summary dataclass.
-
-    Raises:
-        ValueError: If the article has no content to summarize.
-        openai.OpenAIError: On unrecoverable API errors (after retries are exhausted).
     """
-    if not article.content or not article.content.strip():
-        raise ValueError(f"Article '{article.url}' has no content to summarize.")
+    from .llm.prompts import get_prompt
+    from .llm import get_client  # type: ignore[import]
 
-    cfg = config or Config()
+    prompt = get_prompt(style, text)
+    client = get_client(config)
 
-    resolved_model = model or getattr(cfg, "model", "gpt-4o-mini")
-    resolved_temperature = temperature if temperature is not None else getattr(cfg, "temperature", 0.3)
-    resolved_max_tokens = max_tokens or getattr(cfg, "max_tokens", 1_024)
-    api_key = getattr(cfg, "openai_api_key", None)
-
-    logger.info(
-        "Starting summarization — url=%s model=%s style=%s",
-        article.url,
-        resolved_model,
-        style,
+    response_text = client.complete(
+        system=prompt["system"],
+        user=prompt["user"],
+        model=config.model,
     )
 
-    client = SummarizerClient(
-        api_key=api_key,
-        model=resolved_model,
-        temperature=resolved_temperature,
-        max_tokens=resolved_max_tokens,
-        style=style,
-        extra_instructions=extra_instructions,
+    # Attempt to extract a title from the first non-empty line if it looks like one
+    title = _extract_title(response_text)
+
+    return Summary(
+        body=response_text,
+        title=title,
+        source_url=source_url,
+        model=config.model,
+        style=style.value,
     )
 
-    summary_text, usage = client.summarize(article.content)
 
-    summary = Summary(
-        url=article.url,
-        title=article.title,
-        summary=summary_text,
-        model=resolved_model,
-        style=style,
-        prompt_tokens=usage.get("prompt_tokens", 0),
-        completion_tokens=usage.get("completion_tokens", 0),
-        created_at=datetime.now(tz=timezone.utc),
-    )
-
-    logger.info(
-        "Summarization complete — url=%s tokens_used=%d",
-        article.url,
-        usage.get("total_tokens", 0),
-    )
-
-    return summary
+def _extract_title(text: str) -> str | None:
+    """Heuristically extract a title from the first line of a response."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    first = lines[0]
+    # Use as title only if it's short enough to be a heading
+    if len(first) <= 120 and not first.endswith("."):
+        return first
+    return None
