@@ -1,85 +1,71 @@
 """Prompt templates for each SummaryStyle."""
 
-from ..styles import SummaryStyle
-
-# ---------------------------------------------------------------------------
-# Style-specific system prompts
-# ---------------------------------------------------------------------------
-
-_SYSTEM_BASE = (
-    "You are an expert summarization assistant. "
-    "Your task is to summarize the provided article text accurately and faithfully. "
-    "Do not add information that is not present in the source material."
+# Base system prompt used across all styles
+SYSTEM_PROMPT = (
+    "You are an expert summarizer. Your task is to read the provided text and "
+    "produce a high-quality summary according to the requested style. "
+    "Be accurate, concise, and faithful to the source material."
 )
 
-STYLE_PROMPTS: dict[SummaryStyle, dict[str, str]] = {
-    SummaryStyle.BRIEF: {
-        "system": (
-            f"{_SYSTEM_BASE} "
-            "Produce a concise executive brief of 2–3 short paragraphs. "
-            "Lead with the most important finding, then cover key supporting points, "
-            "and close with implications or next steps if relevant."
-        ),
-        "user_prefix": "Write a concise executive brief of the following article:\n\n",
-    },
-    SummaryStyle.BULLETS: {
-        "system": (
-            f"{_SYSTEM_BASE} "
-            "Produce a bullet-point summary. "
-            "Use clear, parallel bullet points (•) that each capture one key fact or idea. "
-            "Aim for 5–10 bullets. Do not use sub-bullets unless absolutely necessary."
-        ),
-        "user_prefix": "Summarize the following article as a bullet-point list of key facts:\n\n",
-    },
-    SummaryStyle.DETAILED: {
-        "system": (
-            f"{_SYSTEM_BASE} "
-            "Produce a comprehensive, detailed analysis. "
-            "Include background context, main arguments, supporting evidence, counterpoints if any, "
-            "and a conclusion. Use clear paragraph breaks. "
-            "Your response should be thorough — between 400 and 800 words."
-        ),
-        "user_prefix": "Write a detailed, comprehensive analysis of the following article:\n\n",
-    },
-    SummaryStyle.ELI5: {
-        "system": (
-            f"{_SYSTEM_BASE} "
-            "Explain the article as if you are talking to a curious 10-year-old child. "
-            "Use simple vocabulary, short sentences, and relatable analogies. "
-            "Avoid jargon. Make it engaging and easy to understand."
-        ),
-        "user_prefix": (
-            "Explain the following article in very simple terms, "
-            "as if explaining to a young child:\n\n"
-        ),
-    },
-    SummaryStyle.TLDR: {
-        "system": (
-            f"{_SYSTEM_BASE} "
-            "Produce a single TL;DR sentence — no more than 30 words — "
-            "that captures the single most important takeaway from the article. "
-            "Start your response with 'TL;DR:'"
-        ),
-        "user_prefix": "Write a one-sentence TL;DR for the following article:\n\n",
-    },
+# Style-specific prompt templates.
+# Each template accepts a single `{text}` placeholder.
+PROMPT_TEMPLATES = {
+    "bullets": (
+        "Read the following text and produce a bullet-point list of the key "
+        "takeaways. Each bullet should be a concise, self-contained point. "
+        "Use plain '-' characters to denote bullets. Aim for 5-10 bullets.\n\n"
+        "Text:\n{text}\n\n"
+        "Bullet-point summary:"
+    ),
+    "brief": (
+        "Read the following text and write a brief executive summary in 2-3 "
+        "short paragraphs. Focus on the most important ideas and conclusions. "
+        "Write in clear, professional prose.\n\n"
+        "Text:\n{text}\n\n"
+        "Executive summary:"
+    ),
+    "detailed": (
+        "Read the following text and produce a comprehensive, detailed summary. "
+        "Cover all major points, supporting arguments, evidence, and conclusions. "
+        "Organise the summary into clearly labelled sections where appropriate. "
+        "Write in clear, formal prose and aim for thoroughness over brevity.\n\n"
+        "Text:\n{text}\n\n"
+        "Detailed summary:"
+    ),
+    "eli5": (
+        "Read the following text and explain the main ideas as if you were "
+        "talking to a 5-year-old child. Use very simple words, short sentences, "
+        "and everyday analogies. Avoid jargon entirely.\n\n"
+        "Text:\n{text}\n\n"
+        "Simple explanation:"
+    ),
+    "tldr": (
+        "Read the following text and write a single-sentence TL;DR summary that "
+        "captures the absolute essence of the content. The sentence must be no "
+        "longer than 30 words.\n\n"
+        "Text:\n{text}\n\n"
+        "TL;DR:"
+    ),
 }
 
 
-def get_prompt(style: SummaryStyle, article_text: str) -> dict[str, str]:
-    """Return system and user messages for the given style.
+def get_prompt(style_key: str, text: str) -> str:
+    """
+    Build the user prompt for the given style key and source text.
 
     Args:
-        style: A SummaryStyle enum value.
-        article_text: The raw article text to summarize.
+        style_key: One of the keys in PROMPT_TEMPLATES (e.g. 'brief').
+        text: The source text to summarize.
 
     Returns:
-        A dict with keys ``system`` and ``user``.
-    """
-    template = STYLE_PROMPTS.get(style)
-    if template is None:
-        raise ValueError(f"No prompt template registered for style: {style}")
+        The fully-rendered prompt string.
 
-    return {
-        "system": template["system"],
-        "user": f"{template['user_prefix']}{article_text}",
-    }
+    Raises:
+        KeyError: If style_key is not a recognised style.
+    """
+    if style_key not in PROMPT_TEMPLATES:
+        raise KeyError(
+            f"Unknown style key '{style_key}'. "
+            f"Valid keys: {list(PROMPT_TEMPLATES.keys())}"
+        )
+    return PROMPT_TEMPLATES[style_key].format(text=text)

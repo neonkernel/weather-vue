@@ -1,114 +1,100 @@
-"""Tests for SummaryStyle prompt generation."""
+"""Tests verifying that each SummaryStyle generates a distinctly different prompt."""
 
 import pytest
 
-from src.summarizer.styles import SummaryStyle
-from src.summarizer.llm.prompts import get_prompt, STYLE_PROMPTS
-
+from src.summarizer.styles import SummaryStyle, STYLE_PROMPT_KEYS
+from src.summarizer.llm.prompts import get_prompt, PROMPT_TEMPLATES, SYSTEM_PROMPT
 
 SAMPLE_TEXT = (
-    "Scientists announced today that they have developed a new battery technology "
-    "that can charge a smartphone in under 60 seconds and lasts twice as long as "
-    "current lithium-ion batteries. The breakthrough uses a novel graphene-based "
-    "anode material and is expected to reach consumer devices within three years."
+    "Researchers at the university have discovered a new species of deep-sea fish "
+    "that can produce its own light using a biochemical process never seen before. "
+    "The discovery was published in the journal Nature and has excited marine biologists "
+    "around the world. The fish, found at a depth of 3,000 metres, uses the light to "
+    "attract prey in the otherwise pitch-black environment."
 )
 
 
-class TestSummaryStyleCoverage:
-    """Every SummaryStyle must have a registered prompt template."""
+class TestSummaryStyleEnum:
+    """Tests for the SummaryStyle enum itself."""
 
-    def test_all_styles_have_prompts(self):
+    def test_all_styles_defined(self):
+        """All expected style values are present."""
+        expected = {"bullets", "brief", "detailed", "eli5", "tldr"}
+        actual = {s.value for s in SummaryStyle}
+        assert actual == expected
+
+    def test_each_style_has_prompt_key(self):
+        """Every SummaryStyle has an entry in STYLE_PROMPT_KEYS."""
         for style in SummaryStyle:
-            assert style in STYLE_PROMPTS, (
-                f"SummaryStyle.{style.name} has no entry in STYLE_PROMPTS"
-            )
+            assert style in STYLE_PROMPT_KEYS, f"{style} missing from STYLE_PROMPT_KEYS"
 
-    def test_all_templates_have_system_key(self):
-        for style, template in STYLE_PROMPTS.items():
-            assert "system" in template, (
-                f"Template for {style.name} is missing 'system' key"
-            )
-
-    def test_all_templates_have_user_prefix_key(self):
-        for style, template in STYLE_PROMPTS.items():
-            assert "user_prefix" in template, (
-                f"Template for {style.name} is missing 'user_prefix' key"
+    def test_each_style_key_has_template(self):
+        """Every style key maps to an existing prompt template."""
+        for style in SummaryStyle:
+            key = STYLE_PROMPT_KEYS[style]
+            assert key in PROMPT_TEMPLATES, (
+                f"Style {style} maps to key '{key}' which is missing from PROMPT_TEMPLATES"
             )
 
 
-class TestGetPrompt:
-    """get_prompt() should return correctly structured dicts."""
+class TestPromptTemplates:
+    """Tests verifying that each style produces a distinct, non-trivial prompt."""
 
-    @pytest.mark.parametrize("style", list(SummaryStyle))
-    def test_returns_system_and_user_keys(self, style):
-        result = get_prompt(style, SAMPLE_TEXT)
-        assert "system" in result
-        assert "user" in result
+    def _get_rendered(self, style: SummaryStyle) -> str:
+        key = STYLE_PROMPT_KEYS[style]
+        return get_prompt(key, SAMPLE_TEXT)
 
-    @pytest.mark.parametrize("style", list(SummaryStyle))
-    def test_user_contains_article_text(self, style):
-        result = get_prompt(style, SAMPLE_TEXT)
-        assert SAMPLE_TEXT in result["user"]
+    def test_all_prompts_contain_source_text(self):
+        """Every rendered prompt contains the source text."""
+        for style in SummaryStyle:
+            rendered = self._get_rendered(style)
+            assert SAMPLE_TEXT in rendered, (
+                f"Prompt for {style} does not contain the source text"
+            )
 
-    @pytest.mark.parametrize("style", list(SummaryStyle))
-    def test_system_is_non_empty_string(self, style):
-        result = get_prompt(style, SAMPLE_TEXT)
-        assert isinstance(result["system"], str)
-        assert len(result["system"]) > 20
+    def test_all_prompts_are_distinct(self):
+        """Each style produces a different prompt (no two are identical)."""
+        rendered = [self._get_rendered(style) for style in SummaryStyle]
+        # Compare every pair
+        for i, a in enumerate(rendered):
+            for j, b in enumerate(rendered):
+                if i != j:
+                    assert a != b, (
+                        f"Prompts for {list(SummaryStyle)[i]} and "
+                        f"{list(SummaryStyle)[j]} are identical"
+                    )
 
-    def test_raises_for_unknown_style(self):
-        """get_prompt should raise ValueError for unrecognised styles."""
-        # Simulate an unregistered style by temporarily removing one
-        from src.summarizer.llm import prompts
+    def test_bullets_prompt_mentions_bullet(self):
+        """Bullets style prompt instructs the model to use bullet points."""
+        rendered = self._get_rendered(SummaryStyle.BULLETS)
+        assert "bullet" in rendered.lower()
 
-        original = dict(prompts.STYLE_PROMPTS)
-        prompts.STYLE_PROMPTS.clear()
-        try:
-            with pytest.raises(ValueError, match="No prompt template"):
-                get_prompt(SummaryStyle.BRIEF, SAMPLE_TEXT)
-        finally:
-            prompts.STYLE_PROMPTS.update(original)
+    def test_brief_prompt_mentions_executive(self):
+        """Brief style prompt uses executive-brief language."""
+        rendered = self._get_rendered(SummaryStyle.BRIEF)
+        assert "executive" in rendered.lower() or "brief" in rendered.lower()
 
+    def test_detailed_prompt_mentions_comprehensive(self):
+        """Detailed style prompt requests a comprehensive summary."""
+        rendered = self._get_rendered(SummaryStyle.DETAILED)
+        assert "comprehensive" in rendered.lower() or "detailed" in rendered.lower()
 
-class TestPromptsAreDistinct:
-    """Each SummaryStyle should produce a distinctly different prompt."""
+    def test_eli5_prompt_mentions_simple_language(self):
+        """ELI5 style prompt requests simple / child-friendly language."""
+        rendered = self._get_rendered(SummaryStyle.ELI5)
+        assert "5" in rendered or "child" in rendered.lower() or "simple" in rendered.lower()
 
-    def test_system_prompts_are_unique(self):
-        system_prompts = [
-            get_prompt(style, SAMPLE_TEXT)["system"] for style in SummaryStyle
-        ]
-        assert len(system_prompts) == len(set(system_prompts)), (
-            "Two or more SummaryStyle values share an identical system prompt"
-        )
+    def test_tldr_prompt_mentions_single_sentence(self):
+        """TLDR style prompt requests a single-sentence summary."""
+        rendered = self._get_rendered(SummaryStyle.TLDR)
+        assert "sentence" in rendered.lower() or "tl;dr" in rendered.lower()
 
-    def test_user_prefixes_are_unique(self):
-        prefixes = [
-            STYLE_PROMPTS[style]["user_prefix"] for style in SummaryStyle
-        ]
-        assert len(prefixes) == len(set(prefixes)), (
-            "Two or more SummaryStyle values share an identical user_prefix"
-        )
+    def test_get_prompt_raises_on_unknown_key(self):
+        """get_prompt raises KeyError for an unrecognised style key."""
+        with pytest.raises(KeyError, match="Unknown style key"):
+            get_prompt("nonexistent_style", SAMPLE_TEXT)
 
-    def test_brief_mentions_executive(self):
-        prompt = get_prompt(SummaryStyle.BRIEF, SAMPLE_TEXT)
-        assert "executive" in prompt["system"].lower()
-
-    def test_bullets_mentions_bullet(self):
-        prompt = get_prompt(SummaryStyle.BULLETS, SAMPLE_TEXT)
-        combined = (prompt["system"] + prompt["user"]).lower()
-        assert "bullet" in combined
-
-    def test_detailed_mentions_comprehensive_or_detailed(self):
-        prompt = get_prompt(SummaryStyle.DETAILED, SAMPLE_TEXT)
-        combined = (prompt["system"] + prompt["user"]).lower()
-        assert "comprehensive" in combined or "detailed" in combined
-
-    def test_eli5_mentions_simple_or_child(self):
-        prompt = get_prompt(SummaryStyle.ELI5, SAMPLE_TEXT)
-        combined = (prompt["system"] + prompt["user"]).lower()
-        assert "simple" in combined or "child" in combined or "10-year" in combined
-
-    def test_tldr_mentions_tldr_or_sentence(self):
-        prompt = get_prompt(SummaryStyle.TLDR, SAMPLE_TEXT)
-        combined = (prompt["system"] + prompt["user"]).lower()
-        assert "tl;dr" in combined or "tldr" in combined or "sentence" in combined
+    def test_system_prompt_is_non_empty(self):
+        """The shared system prompt is a non-empty string."""
+        assert isinstance(SYSTEM_PROMPT, str)
+        assert len(SYSTEM_PROMPT) > 20

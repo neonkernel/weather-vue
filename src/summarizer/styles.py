@@ -1,4 +1,4 @@
-"""Summary styles and output format enums."""
+"""Summary styles and output format enumerations."""
 
 from enum import Enum
 
@@ -21,9 +21,18 @@ class OutputFormat(Enum):
 
 # Human-readable descriptions for each style
 STYLE_DESCRIPTIONS = {
-    SummaryStyle.BULLETS: "Bullet-point summary highlighting key facts",
-    SummaryStyle.BRIEF: "Concise executive brief (2-3 paragraphs)",
+    SummaryStyle.BULLETS: "Bullet-point list of key takeaways",
+    SummaryStyle.BRIEF: "Short executive brief (2-3 paragraphs)",
     SummaryStyle.DETAILED: "Comprehensive detailed analysis",
-    SummaryStyle.ELI5: "Explain Like I'm 5 — simple, accessible language",
-    SummaryStyle.TLDR: "One-sentence TL;DR",
+    SummaryStyle.ELI5: "Explain like I'm 5 years old",
+    SummaryStyle.TLDR: "One-sentence TL;DR summary",
+}
+
+# Prompt template keys for each style
+STYLE_PROMPT_KEYS = {
+    SummaryStyle.BULLETS: "bullets",
+    SummaryStyle.BRIEF: "brief",
+    SummaryStyle.DETAILED: "detailed",
+    SummaryStyle.ELI5: "eli5",
+    SummaryStyle.TLDR: "tldr",
 }

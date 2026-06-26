@@ -1,17 +1,19 @@
-"""Command-line interface for the summarizer."""
+"""Command-line interface for the article summarizer."""
 
 import sys
 from pathlib import Path
 
 import click
 
-from .styles import OutputFormat, SummaryStyle
-from .formatter import Formatter
 from .config import Config
+from .exceptions import SummarizerError
+from .formatter import Formatter
+from .styles import OutputFormat, SummaryStyle
+from .summarize import summarize_url
 
 
 @click.command()
-@click.argument("source", required=False)
+@click.argument("url")
 @click.option(
     "--style",
     type=click.Choice([s.value for s in SummaryStyle], case_sensitive=False),
@@ -19,11 +21,11 @@ from .config import Config
     show_default=True,
     help=(
         "Summary style: "
-        "'brief' (executive brief), "
-        "'bullets' (bullet points), "
-        "'detailed' (full analysis), "
+        "'bullets' (key takeaways as bullet points), "
+        "'brief' (short executive brief), "
+        "'detailed' (comprehensive analysis), "
         "'eli5' (explain like I'm 5), "
-        "'tldr' (one-sentence TL;DR)."
+        "'tldr' (one-sentence summary)."
     ),
 )
 @click.option(
@@ -32,14 +34,19 @@ from .config import Config
     type=click.Choice([f.value for f in OutputFormat], case_sensitive=False),
     default=OutputFormat.TEXT.value,
     show_default=True,
-    help="Output format: 'text' (plain text), 'markdown', or 'json'.",
+    help=(
+        "Output format: "
+        "'text' (plain text), "
+        "'markdown' (Markdown with title and metadata), "
+        "'json' (full JSON including metadata)."
+    ),
 )
 @click.option(
     "--output",
-    "-o",
+    "output_file",
     type=click.Path(dir_okay=False, writable=True),
     default=None,
-    help="Write output to FILE instead of stdout.",
+    help="Write output to this file instead of stdout.",
 )
 @click.option(
     "--model",
@@ -47,137 +54,82 @@ from .config import Config
     help="Override the LLM model specified in config.",
 )
 @click.option(
-    "--url",
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False),
     default=None,
-    help="Source URL to attach as metadata (used when SOURCE is a local file or stdin).",
+    help="Path to a custom configuration file.",
 )
 @click.option(
-    "--mock",
+    "--verbose",
     is_flag=True,
     default=False,
-    hidden=True,
-    help="Use mock data instead of calling the LLM (for testing).",
+    help="Enable verbose/debug logging.",
 )
 @click.version_option()
 def main(
-    source: str | None,
+    url: str,
     style: str,
     output_format: str,
-    output: str | None,
+    output_file: str | None,
     model: str | None,
-    url: str | None,
-    mock: bool,
+    config_path: str | None,
+    verbose: bool,
 ) -> None:
-    """Summarize an article from a URL, local file, or stdin.
+    """Summarize the article at URL and print the result.
 
-    SOURCE can be a URL (https://…), a local file path, or omitted to read from stdin.
+    Examples:
 
-    Examples:\n
-        summarizer https://example.com/article\n
-        summarizer article.txt --style bullets --format markdown\n
-        summarizer https://example.com/article --style detailed --format json -o out.json\n
-        cat article.txt | summarizer --style eli5\n
-        summarizer https://example.com/article --style tldr
+    \b
+    # Brief summary (default) as plain text
+    summarizer https://example.com/article
+
+    \b
+    # Bullet-point summary in Markdown
+    summarizer https://example.com/article --style bullets --format markdown
+
+    \b
+    # Detailed summary saved to a file as JSON
+    summarizer https://example.com/article --style detailed --format json --output summary.json
+
+    \b
+    # ELI5 explanation printed to stdout
+    summarizer https://example.com/article --style eli5
+
+    \b
+    # One-sentence TL;DR in Markdown
+    summarizer https://example.com/article --style tldr --format markdown
     """
     try:
-        style_enum = SummaryStyle(style.lower())
-        format_enum = OutputFormat(output_format.lower())
-    except ValueError as exc:
+        # Load configuration
+        cfg = Config.load(config_path)
+        if model:
+            cfg.model = model
+        if verbose:
+            cfg.verbose = True
+
+        # Resolve enums from the CLI string values
+        summary_style = SummaryStyle(style)
+        fmt = OutputFormat(output_format)
+
+        # Generate the summary
+        summary = summarize_url(url, style=summary_style, config=cfg)
+
+        # Format the output
+        formatter = Formatter()
+        rendered = formatter.format(summary, fmt)
+
+        # Write to file or stdout
+        if output_file:
+            output_path = Path(output_file)
+            output_path.write_text(rendered, encoding="utf-8")
+            click.echo(f"Summary written to {output_path}", err=True)
+        else:
+            click.echo(rendered)
+
+    except SummarizerError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
-
-    # Resolve config
-    try:
-        config = Config.load()
-    except Exception as exc:  # noqa: BLE001
-        click.echo(f"Configuration error: {exc}", err=True)
-        sys.exit(1)
-
-    if model:
-        config.model = model
-
-    # Ingest article text
-    article_text, source_url = _ingest(source, url)
-    if not article_text:
-        click.echo("Error: no input text provided.", err=True)
-        sys.exit(1)
-
-    # Summarize
-    if mock:
-        from .data.mockWeather import get_mock_summary  # type: ignore[import]
-        summary = get_mock_summary()
-    else:
-        from .summarize import summarize
-
-        try:
-            summary = summarize(
-                text=article_text,
-                style=style_enum,
-                config=config,
-                source_url=source_url,
-            )
-        except Exception as exc:  # noqa: BLE001
-            click.echo(f"Summarization failed: {exc}", err=True)
-            sys.exit(1)
-
-    # Format output
-    formatter = Formatter()
-    rendered = formatter.format(summary, format_enum)
-
-    # Write output
-    if output:
-        out_path = Path(output)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(rendered, encoding="utf-8")
-        click.echo(f"Output written to {out_path}", err=True)
-    else:
-        click.echo(rendered)
-
-
-def _ingest(source: str | None, url_override: str | None) -> tuple[str, str | None]:
-    """Read article text from a URL, file path, or stdin.
-
-    Returns:
-        A tuple of (article_text, source_url).
-    """
-    source_url: str | None = url_override
-
-    if source is None:
-        # Read from stdin
-        if sys.stdin.isatty():
-            raise click.UsageError(
-                "No SOURCE provided and stdin is a terminal. "
-                "Provide a URL, file path, or pipe text via stdin."
-            )
-        article_text = sys.stdin.read()
-        return article_text, source_url
-
-    if source.startswith("http://") or source.startswith("https://"):
-        source_url = source_url or source
-        article_text = _fetch_url(source)
-        return article_text, source_url
-
-    # Local file
-    file_path = Path(source)
-    if not file_path.exists():
-        raise click.BadParameter(f"File not found: {source}", param_hint="SOURCE")
-    article_text = file_path.read_text(encoding="utf-8")
-    return article_text, source_url
-
-
-def _fetch_url(url: str) -> str:
-    """Fetch and extract text from a URL using the ingestion service."""
-    try:
-        from .ingestion import fetch_article  # type: ignore[import]
-        return fetch_article(url)
-    except ImportError:
-        # Fallback: plain urllib fetch
-        import urllib.request
-
-        with urllib.request.urlopen(url, timeout=15) as response:  # noqa: S310
-            raw = response.read().decode("utf-8", errors="replace")
-        return raw
-
-
-if __name__ == "__main__":
-    main()
+    except KeyboardInterrupt:
+        click.echo("\nAborted.", err=True)
+        sys.exit(130)
