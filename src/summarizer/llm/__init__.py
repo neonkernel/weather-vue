@@ -1,3 +1,14 @@
-from .client import SummarizerClient
+"""LLM abstraction layer."""
 
-__all__ = ["SummarizerClient"]
+from .base import BaseLLMProvider
+from .factory import ProviderFactory, create_provider
+from .providers import AnthropicProvider, OllamaProvider, OpenAIProvider
+
+__all__ = [
+    "BaseLLMProvider",
+    "OpenAIProvider",
+    "AnthropicProvider",
+    "OllamaProvider",
+    "ProviderFactory",
+    "create_provider",
+]

@@ -1,135 +1,221 @@
-"""Command-line interface for the article summarizer."""
+"""Command-line interface for the summarizer."""
 
+from __future__ import annotations
+
+import argparse
 import sys
-from pathlib import Path
-
-import click
 
 from .config import Config
-from .exceptions import SummarizerError
-from .formatter import Formatter
-from .styles import OutputFormat, SummaryStyle
-from .summarize import summarize_url
+from .exceptions import LLMError, SummarizerError
+from .llm.factory import ProviderFactory, create_provider
 
 
-@click.command()
-@click.argument("url")
-@click.option(
-    "--style",
-    type=click.Choice([s.value for s in SummaryStyle], case_sensitive=False),
-    default=SummaryStyle.BRIEF.value,
-    show_default=True,
-    help=(
-        "Summary style: "
-        "'bullets' (key takeaways as bullet points), "
-        "'brief' (short executive brief), "
-        "'detailed' (comprehensive analysis), "
-        "'eli5' (explain like I'm 5), "
-        "'tldr' (one-sentence summary)."
-    ),
-)
-@click.option(
-    "--format",
-    "output_format",
-    type=click.Choice([f.value for f in OutputFormat], case_sensitive=False),
-    default=OutputFormat.TEXT.value,
-    show_default=True,
-    help=(
-        "Output format: "
-        "'text' (plain text), "
-        "'markdown' (Markdown with title and metadata), "
-        "'json' (full JSON including metadata)."
-    ),
-)
-@click.option(
-    "--output",
-    "output_file",
-    type=click.Path(dir_okay=False, writable=True),
-    default=None,
-    help="Write output to this file instead of stdout.",
-)
-@click.option(
-    "--model",
-    default=None,
-    help="Override the LLM model specified in config.",
-)
-@click.option(
-    "--config",
-    "config_path",
-    type=click.Path(exists=True, dir_okay=False),
-    default=None,
-    help="Path to a custom configuration file.",
-)
-@click.option(
-    "--verbose",
-    is_flag=True,
-    default=False,
-    help="Enable verbose/debug logging.",
-)
-@click.version_option()
-def main(
-    url: str,
-    style: str,
-    output_format: str,
-    output_file: str | None,
-    model: str | None,
-    config_path: str | None,
-    verbose: bool,
-) -> None:
-    """Summarize the article at URL and print the result.
+def build_parser() -> argparse.ArgumentParser:
+    """Construct and return the argument parser."""
+    parser = argparse.ArgumentParser(
+        prog="summarize",
+        description="Summarize articles and documents using an LLM.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  summarize article.html
+  summarize https://example.com/article --provider anthropic
+  summarize article.txt --provider ollama --model llama3
+  summarize article.html --provider openai --model gpt-4o --style bullet
+        """,
+    )
 
-    Examples:
+    # Positional: input
+    parser.add_argument(
+        "input",
+        nargs="?",
+        help="Path to a file or URL to summarize. Reads from stdin if omitted.",
+    )
 
-    \b
-    # Brief summary (default) as plain text
-    summarizer https://example.com/article
+    # Provider selection
+    parser.add_argument(
+        "--provider",
+        choices=["openai", "anthropic", "ollama"],
+        default=None,
+        metavar="PROVIDER",
+        help=(
+            "LLM provider to use: openai, anthropic, or ollama. "
+            "Defaults to the LLM_PROVIDER env var or 'openai'."
+        ),
+    )
 
-    \b
-    # Bullet-point summary in Markdown
-    summarizer https://example.com/article --style bullets --format markdown
+    # Model override
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "Model name override. "
+            "Defaults: openai→gpt-4o, anthropic→claude-3-5-sonnet-20241022, ollama→llama3."
+        ),
+    )
 
-    \b
-    # Detailed summary saved to a file as JSON
-    summarizer https://example.com/article --style detailed --format json --output summary.json
+    # Style
+    parser.add_argument(
+        "--style",
+        default=None,
+        choices=["concise", "detailed", "bullet"],
+        help="Summary style (default: concise).",
+    )
 
-    \b
-    # ELI5 explanation printed to stdout
-    summarizer https://example.com/article --style eli5
+    # Language
+    parser.add_argument(
+        "--language",
+        default=None,
+        help="Output language for the summary (default: en).",
+    )
 
-    \b
-    # One-sentence TL;DR in Markdown
-    summarizer https://example.com/article --style tldr --format markdown
-    """
+    # Token limits
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        dest="max_tokens",
+        help="Maximum tokens in the LLM response (default: 1024).",
+    )
+
+    parser.add_argument(
+        "--max-chunk-tokens",
+        type=int,
+        default=None,
+        dest="max_chunk_tokens",
+        help="Maximum tokens per document chunk (default: 3000).",
+    )
+
+    # Temperature
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature for the LLM (default: 0.3).",
+    )
+
+    # Verbose
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose output.",
+    )
+
+    # List providers
+    parser.add_argument(
+        "--list-providers",
+        action="store_true",
+        default=False,
+        help="Print available LLM providers and exit.",
+    )
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for the summarize CLI."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # --list-providers: just print and exit
+    if args.list_providers:
+        factory = ProviderFactory()
+        print("Available LLM providers:")
+        for name in factory.available_providers:
+            print(f"  {name}")
+        return 0
+
+    # Build config: start from env vars, then overlay CLI args
+    config = Config.from_env().merge_cli_args(
+        provider=args.provider,
+        model=args.model,
+        style=args.style,
+        language=args.language,
+        max_tokens=args.max_tokens,
+        max_chunk_tokens=args.max_chunk_tokens,
+        temperature=args.temperature,
+        verbose=True if args.verbose else None,
+    )
+
+    if config.verbose:
+        print(f"[verbose] Provider : {config.provider}", file=sys.stderr)
+        print(f"[verbose] Model    : {config.model or '(provider default)'}", file=sys.stderr)
+        print(f"[verbose] Style    : {config.style}", file=sys.stderr)
+
+    # Instantiate the provider early to catch config errors
     try:
-        # Load configuration
-        cfg = Config.load(config_path)
-        if model:
-            cfg.model = model
-        if verbose:
-            cfg.verbose = True
+        provider = create_provider(config)
+    except LLMError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
-        # Resolve enums from the CLI string values
-        summary_style = SummaryStyle(style)
-        fmt = OutputFormat(output_format)
+    if config.verbose:
+        print(
+            f"[verbose] Using model: {config.model or provider.default_model}",
+            file=sys.stderr,
+        )
 
-        # Generate the summary
-        summary = summarize_url(url, style=summary_style, config=cfg)
+    # Read input
+    try:
+        text = _read_input(args.input)
+    except Exception as exc:
+        print(f"Error reading input: {exc}", file=sys.stderr)
+        return 1
 
-        # Format the output
-        formatter = Formatter()
-        rendered = formatter.format(summary, fmt)
+    if not text.strip():
+        print("Error: Input is empty.", file=sys.stderr)
+        return 1
 
-        # Write to file or stdout
-        if output_file:
-            output_path = Path(output_file)
-            output_path.write_text(rendered, encoding="utf-8")
-            click.echo(f"Summary written to {output_path}", err=True)
-        else:
-            click.echo(rendered)
+    # Run summarization
+    try:
+        from .summarize import summarize
+
+        result = summarize(text, provider=provider, config=config)
+        print(result)
+        return 0
 
     except SummarizerError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
-    except KeyboardInterrupt:
-        click.echo("\nAborted.", err=True)
-        sys.exit(130)
+        print(f"Summarization failed: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"Unexpected error: {exc}", file=sys.stderr)
+        if config.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
+def _read_input(source: str | None) -> str:
+    """
+    Read text from a file path, URL, or stdin.
+
+    Args:
+        source: File path, URL starting with http(s)://, or None for stdin.
+
+    Returns:
+        The raw text content.
+    """
+    if source is None:
+        # Read from stdin
+        return sys.stdin.read()
+
+    if source.startswith("http://") or source.startswith("https://"):
+        try:
+            import requests
+            response = requests.get(source, timeout=30)
+            response.raise_for_status()
+            return response.text
+        except Exception as exc:
+            raise RuntimeError(f"Failed to fetch URL '{source}': {exc}") from exc
+
+    # File path
+    try:
+        with open(source, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError as exc:
+        raise RuntimeError(f"Cannot read file '{source}': {exc}") from exc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

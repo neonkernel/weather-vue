@@ -1,49 +1,144 @@
 """Core summarization logic."""
 
-from .config import Config
-from .models import Summary
-from .styles import SummaryStyle, STYLE_PROMPT_KEYS
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from .exceptions import LLMError, SummarizerError
+
+if TYPE_CHECKING:
+    from .config import Config
+    from .llm.base import BaseLLMProvider
 
 
-def summarize_url(url: str, style: SummaryStyle = SummaryStyle.BRIEF, config: Config = None) -> Summary:
+_STYLE_INSTRUCTIONS: dict[str, str] = {
+    "concise": "Provide a concise summary in 2–4 sentences.",
+    "detailed": "Provide a detailed summary covering all key points.",
+    "bullet": "Summarize using a bulleted list of key points.",
+}
+
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are a professional summarizer. Your task is to summarize the provided text "
+    "clearly and accurately. Do not add information not present in the source text."
+)
+
+
+def _build_messages(
+    text: str,
+    style: str = "concise",
+    language: str = "en",
+) -> list[dict[str, str]]:
+    """Build the message list to send to the LLM."""
+    style_instruction = _STYLE_INSTRUCTIONS.get(style, _STYLE_INSTRUCTIONS["concise"])
+    lang_note = f" Respond in language: {language}." if language != "en" else ""
+
+    user_content = (
+        f"{style_instruction}{lang_note}\n\n"
+        f"Text to summarize:\n\n{text}"
+    )
+
+    return [
+        {"role": "system", "content": _DEFAULT_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def _chunk_text(text: str, provider: "BaseLLMProvider", max_tokens: int) -> list[str]:
     """
-    Fetch the article at `url` and return a Summary.
+    Split text into chunks that fit within max_tokens.
+
+    Uses the provider's token counter for accurate splitting.
+    """
+    # Simple paragraph-based chunking
+    paragraphs = text.split("\n\n")
+    chunks: list[str] = []
+    current_parts: list[str] = []
+    current_count = 0
+
+    for para in paragraphs:
+        para_tokens = provider.count_tokens(para)
+        if current_count + para_tokens > max_tokens and current_parts:
+            chunks.append("\n\n".join(current_parts))
+            current_parts = [para]
+            current_count = para_tokens
+        else:
+            current_parts.append(para)
+            current_count += para_tokens
+
+    if current_parts:
+        chunks.append("\n\n".join(current_parts))
+
+    return chunks or [text]
+
+
+def summarize(
+    text: str,
+    provider: "BaseLLMProvider",
+    config: "Config",
+) -> str:
+    """
+    Summarize the given text using the provided LLM provider.
+
+    For documents that exceed max_chunk_tokens, the text is split into chunks,
+    each chunk is summarized independently, and the partial summaries are
+    combined into a final summary.
 
     Args:
-        url: The URL of the article to summarize.
-        style: The SummaryStyle to use for the summary.
-        config: Optional Config instance; a default is created if omitted.
+        text: The text to summarize.
+        provider: An instantiated BaseLLMProvider.
+        config: Application configuration.
 
     Returns:
-        A populated Summary dataclass instance.
+        The summary string.
+
+    Raises:
+        SummarizerError: If summarization fails.
     """
-    if config is None:
-        config = Config.load()
+    total_tokens = provider.count_tokens(text)
 
-    # Import here to avoid circular imports and keep startup fast
-    from .ingestion import fetch_article
-    from .llm import get_llm_client
-    from .llm.prompts import get_prompt, SYSTEM_PROMPT
+    try:
+        if total_tokens <= config.max_chunk_tokens:
+            # Single-shot summarization
+            messages = _build_messages(text, config.style, config.language)
+            return provider.complete(
+                messages,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+            )
 
-    # 1. Fetch and extract article text
-    article = fetch_article(url)
+        # Multi-chunk summarization
+        chunks = _chunk_text(text, provider, config.max_chunk_tokens)
+        partial_summaries: list[str] = []
 
-    # 2. Build the prompt for the requested style
-    style_key = STYLE_PROMPT_KEYS[style]
-    user_prompt = get_prompt(style_key, article.text)
+        for i, chunk in enumerate(chunks, start=1):
+            messages = _build_messages(chunk, config.style, config.language)
+            partial = provider.complete(
+                messages,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+            )
+            partial_summaries.append(f"[Part {i}]\n{partial}")
 
-    # 3. Call the LLM
-    client = get_llm_client(config)
-    content = client.complete(
-        system_prompt=SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-    )
+        # Combine partial summaries
+        combined = "\n\n".join(partial_summaries)
+        combine_messages = [
+            {"role": "system", "content": _DEFAULT_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"The following are partial summaries of a longer document. "
+                    f"Combine them into a single coherent summary. "
+                    f"{_STYLE_INSTRUCTIONS.get(config.style, '')}\n\n{combined}"
+                ),
+            },
+        ]
+        return provider.complete(
+            combine_messages,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+        )
 
-    # 4. Build and return the Summary
-    return Summary(
-        content=content,
-        title=article.title,
-        source_url=url,
-        model=config.model,
-        style=style.value,
-    )
+    except LLMError as exc:
+        raise SummarizerError(f"LLM error during summarization: {exc}") from exc
+    except Exception as exc:
+        raise SummarizerError(f"Unexpected summarization error: {exc}") from exc
