@@ -1,4 +1,4 @@
-"""Custom exceptions for the summarizer package."""
+"""Shared exception types for the summarizer package."""
 
 
 class SummarizerError(Exception):
@@ -9,16 +9,16 @@ class LLMError(SummarizerError):
     """
     Raised when an LLM provider encounters an error.
 
-    This covers authentication failures, rate limits, connection issues,
-    and any other provider-level problems.
+    This is the single exception type that all providers map their
+    provider-specific errors to, so callers only need to catch one type.
     """
 
 
 class IngestionError(SummarizerError):
-    """Raised when document ingestion (fetch / parse) fails."""
+    """Raised when content cannot be fetched or parsed."""
 
 
-class ConfigurationError(SummarizerError):
+class ConfigError(SummarizerError):
     """Raised for invalid or missing configuration."""
 
 

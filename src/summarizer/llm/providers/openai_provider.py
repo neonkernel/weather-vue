@@ -1,98 +1,122 @@
-"""OpenAI LLM provider implementation."""
+"""OpenAI provider implementation."""
+from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any
+from typing import Any, TYPE_CHECKING
 
-from ...exceptions import LLMError
-from ..base import BaseLLMProvider
+from src.summarizer.exceptions import LLMError
+from src.summarizer.llm.base import BaseLLMProvider
 
 if TYPE_CHECKING:
-    from ...config import Config
+    from src.summarizer.config import Config
 
-# Default models
-DEFAULT_MODEL = "gpt-4o-mini"
-FALLBACK_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"]
+_DEFAULT_MODEL = "gpt-4o-mini"
+_FALLBACK_CHARS_PER_TOKEN = 4  # Used when tiktoken is unavailable
+
+
+def _get_encoding(model: str):
+    """Return a tiktoken encoding for the given model, or None on failure."""
+    try:
+        import tiktoken
+        try:
+            return tiktoken.encoding_for_model(model)
+        except KeyError:
+            return tiktoken.get_encoding("cl100k_base")
+    except ImportError:
+        return None
 
 
 class OpenAIProvider(BaseLLMProvider):
     """LLM provider backed by the OpenAI API."""
 
     def __init__(self, config: "Config") -> None:
-        self.config = config
-        self.api_key = (
-            getattr(config, "openai_api_key", None)
-            or os.environ.get("OPENAI_API_KEY", "")
-        )
-        if not self.api_key:
+        self._config = config
+        self._model = getattr(config, "model", None) or _DEFAULT_MODEL
+        api_key = getattr(config, "openai_api_key", None) or os.environ.get("OPENAI_API_KEY")
+        if not api_key:
             raise LLMError(
                 "OpenAI API key not found. Set OPENAI_API_KEY environment variable "
                 "or provide openai_api_key in config."
             )
-
         try:
-            import openai
+            import openai as _openai
+            self._client = _openai.OpenAI(api_key=api_key)
         except ImportError as exc:
             raise LLMError(
-                "openai package is not installed. Run: pip install openai"
+                "The 'openai' package is required for the OpenAI provider. "
+                "Install it with: pip install openai"
             ) from exc
 
-        self._openai = openai
-        self._client = openai.OpenAI(api_key=self.api_key)
+        self._encoding = _get_encoding(self._model)
 
-    def get_default_model(self) -> str:
-        return getattr(self.config, "model", None) or DEFAULT_MODEL
+    # ------------------------------------------------------------------
+    # BaseLLMProvider interface
+    # ------------------------------------------------------------------
+
+    @property
+    def default_model(self) -> str:
+        return _DEFAULT_MODEL
+
+    @property
+    def provider_name(self) -> str:
+        return "openai"
 
     def count_tokens(self, text: str) -> int:
-        """Use tiktoken for accurate OpenAI token counting."""
-        try:
-            import tiktoken
-            model = self.get_default_model()
-            try:
-                enc = tiktoken.encoding_for_model(model)
-            except KeyError:
-                enc = tiktoken.get_encoding("cl100k_base")
-            return len(enc.encode(text))
-        except ImportError:
-            # Fall back to character heuristic if tiktoken not available
-            return max(1, len(text) // 4)
+        if self._encoding is not None:
+            return len(self._encoding.encode(text))
+        return max(1, len(text) // _FALLBACK_CHARS_PER_TOKEN)
 
-    def complete(self, messages: list, **kwargs) -> str:
+    def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """
         Call the OpenAI Chat Completions API.
 
         Args:
             messages: List of {'role': ..., 'content': ...} dicts.
-            **kwargs: Overrides for model, max_tokens, temperature.
+            **kwargs: Overrides for model, temperature, max_tokens.
 
         Returns:
-            The assistant's reply text.
+            Assistant message content string.
 
         Raises:
-            LLMError: On API errors.
+            LLMError: Wraps any openai SDK exception.
         """
-        model = kwargs.get("model") or self.get_default_model()
-        max_tokens = kwargs.get("max_tokens") or getattr(self.config, "max_tokens", 4096)
-        temperature = kwargs.get("temperature")
-        if temperature is None:
-            temperature = getattr(self.config, "temperature", 0.3)
+        try:
+            import openai
+        except ImportError as exc:
+            raise LLMError("openai package not installed") from exc
+
+        model = kwargs.pop("model", None) or self._model
+        temperature = kwargs.pop(
+            "temperature",
+            getattr(self._config, "temperature", 0.3),
+        )
+        max_tokens = kwargs.pop(
+            "max_tokens",
+            getattr(self._config, "max_tokens", 4096),
+        )
 
         try:
             response = self._client.chat.completions.create(
                 model=model,
-                messages=messages,
-                max_tokens=max_tokens,
+                messages=messages,  # type: ignore[arg-type]
                 temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
             )
-            return response.choices[0].message.content or ""
-        except self._openai.AuthenticationError as exc:
+            content = response.choices[0].message.content
+            if content is None:
+                raise LLMError("OpenAI returned an empty response.")
+            return content
+
+        except openai.AuthenticationError as exc:
             raise LLMError(f"OpenAI authentication failed: {exc}") from exc
-        except self._openai.RateLimitError as exc:
+        except openai.RateLimitError as exc:
             raise LLMError(f"OpenAI rate limit exceeded: {exc}") from exc
-        except self._openai.BadRequestError as exc:
+        except openai.BadRequestError as exc:
             raise LLMError(f"OpenAI bad request: {exc}") from exc
-        except self._openai.APIConnectionError as exc:
+        except openai.APIConnectionError as exc:
             raise LLMError(f"OpenAI connection error: {exc}") from exc
-        except self._openai.APIError as exc:
-            raise LLMError(f"OpenAI API error: {exc}") from exc
+        except openai.APIStatusError as exc:
+            raise LLMError(f"OpenAI API error ({exc.status_code}): {exc.message}") from exc
         except Exception as exc:
-            raise LLMError(f"Unexpected error calling OpenAI: {exc}") from exc
+            raise LLMError(f"Unexpected OpenAI error: {exc}") from exc

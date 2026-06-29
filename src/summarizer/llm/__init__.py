@@ -1,6 +1,5 @@
 """LLM module for multi-provider support."""
-
-from .base import BaseLLMProvider
-from .factory import ProviderFactory
+from src.summarizer.llm.base import BaseLLMProvider
+from src.summarizer.llm.factory import ProviderFactory
 
 __all__ = ["BaseLLMProvider", "ProviderFactory"]

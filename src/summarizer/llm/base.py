@@ -1,5 +1,4 @@
 """Abstract base class for LLM providers."""
-
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -8,42 +7,45 @@ class BaseLLMProvider(ABC):
     """Abstract base class that all LLM providers must implement."""
 
     @abstractmethod
-    def complete(self, messages: list, **kwargs) -> str:
+    def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """
         Send messages to the LLM and return the completion text.
 
         Args:
             messages: List of message dicts with 'role' and 'content' keys.
-                      Roles are typically 'system', 'user', or 'assistant'.
-            **kwargs: Additional provider-specific parameters such as:
-                      - model: str
-                      - max_tokens: int
-                      - temperature: float
+                      Roles can be 'system', 'user', or 'assistant'.
+            **kwargs: Additional provider-specific parameters (e.g., temperature,
+                      max_tokens, model override).
 
         Returns:
-            The completion text as a string.
+            The generated text response as a string.
 
         Raises:
-            LLMError: On any provider-level error (auth, rate limit, etc.)
+            LLMError: On any provider-level error (auth, rate limit, network, etc.)
         """
         ...
 
     @abstractmethod
-    def get_default_model(self) -> str:
-        """Return the default model identifier for this provider."""
-        ...
-
     def count_tokens(self, text: str) -> int:
         """
-        Estimate the token count for the given text.
-
-        Providers can override this for more accurate counting.
-        Default implementation uses a character-based heuristic (~4 chars/token).
+        Estimate the number of tokens in the given text.
 
         Args:
-            text: The text to estimate tokens for.
+            text: The text to count tokens for.
 
         Returns:
             Estimated token count.
         """
-        return max(1, len(text) // 4)
+        ...
+
+    @property
+    @abstractmethod
+    def default_model(self) -> str:
+        """Return the default model name for this provider."""
+        ...
+
+    @property
+    @abstractmethod
+    def provider_name(self) -> str:
+        """Return the canonical name for this provider (e.g., 'openai')."""
+        ...
