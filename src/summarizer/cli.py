@@ -1,221 +1,195 @@
-"""Command-line interface for the summarizer."""
+"""Command-line interface for the article summariser."""
 
 from __future__ import annotations
 
 import argparse
 import sys
+from typing import Optional
 
 from .config import Config
 from .exceptions import LLMError, SummarizerError
-from .llm.factory import ProviderFactory, create_provider
+from .llm.factory import SUPPORTED_PROVIDERS
+from .logger import get_logger
+from .summarize import summarize
+
+logger = get_logger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Construct and return the argument parser."""
+    """Construct and return the CLI argument parser."""
     parser = argparse.ArgumentParser(
-        prog="summarize",
-        description="Summarize articles and documents using an LLM.",
+        prog="summarizer",
+        description="Summarise articles using an LLM backend of your choice.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  summarize article.html
-  summarize https://example.com/article --provider anthropic
-  summarize article.txt --provider ollama --model llama3
-  summarize article.html --provider openai --model gpt-4o --style bullet
+  summarizer article.txt
+  summarizer https://example.com/article --provider anthropic --style bullet
+  summarizer article.html --provider ollama --model llama3 --output-format markdown
         """,
     )
 
-    # Positional: input
+    # --- Input ---
     parser.add_argument(
         "input",
-        nargs="?",
-        help="Path to a file or URL to summarize. Reads from stdin if omitted.",
+        help="Path to a file or a URL to summarise.",
     )
 
-    # Provider selection
+    # --- Provider ---
     parser.add_argument(
         "--provider",
-        choices=["openai", "anthropic", "ollama"],
+        choices=list(SUPPORTED_PROVIDERS),
         default=None,
-        metavar="PROVIDER",
         help=(
-            "LLM provider to use: openai, anthropic, or ollama. "
-            "Defaults to the LLM_PROVIDER env var or 'openai'."
+            "LLM backend to use. "
+            f"Choices: {', '.join(SUPPORTED_PROVIDERS)}. "
+            "Defaults to the LLM_PROVIDER env var, or 'openai'."
         ),
     )
 
-    # Model override
+    # --- Model ---
     parser.add_argument(
         "--model",
         default=None,
         help=(
-            "Model name override. "
-            "Defaults: openai→gpt-4o, anthropic→claude-3-5-sonnet-20241022, ollama→llama3."
+            "Model identifier to use (provider-specific). "
+            "E.g. 'gpt-4o', 'claude-3-5-sonnet', 'llama3'. "
+            "Defaults to each provider's built-in default."
         ),
     )
 
-    # Style
+    # --- API keys / connection ---
     parser.add_argument(
-        "--style",
+        "--openai-api-key",
         default=None,
-        choices=["concise", "detailed", "bullet"],
-        help="Summary style (default: concise).",
+        metavar="KEY",
+        help="OpenAI API key (overrides OPENAI_API_KEY env var).",
+    )
+    parser.add_argument(
+        "--anthropic-api-key",
+        default=None,
+        metavar="KEY",
+        help="Anthropic API key (overrides ANTHROPIC_API_KEY env var).",
+    )
+    parser.add_argument(
+        "--ollama-host",
+        default=None,
+        metavar="URL",
+        help="Ollama server URL (overrides OLLAMA_HOST env var, default: http://localhost:11434).",
     )
 
-    # Language
-    parser.add_argument(
-        "--language",
-        default=None,
-        help="Output language for the summary (default: en).",
-    )
-
-    # Token limits
+    # --- Generation parameters ---
     parser.add_argument(
         "--max-tokens",
         type=int,
         default=None,
-        dest="max_tokens",
-        help="Maximum tokens in the LLM response (default: 1024).",
+        help="Maximum tokens in the completion (default: 4096).",
     )
-
-    parser.add_argument(
-        "--max-chunk-tokens",
-        type=int,
-        default=None,
-        dest="max_chunk_tokens",
-        help="Maximum tokens per document chunk (default: 3000).",
-    )
-
-    # Temperature
     parser.add_argument(
         "--temperature",
         type=float,
         default=None,
-        help="Sampling temperature for the LLM (default: 0.3).",
+        help="Sampling temperature (default: 0.3).",
     )
 
-    # Verbose
+    # --- Style / format ---
     parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        default=False,
-        help="Enable verbose output.",
+        "--style",
+        default=None,
+        help="Summary style (e.g. 'concise', 'detailed', 'bullet'). Default: 'concise'.",
+    )
+    parser.add_argument(
+        "--output-format",
+        dest="output_format",
+        default=None,
+        choices=["text", "markdown", "json"],
+        help="Output format for the summary (default: text).",
     )
 
-    # List providers
+    # --- Misc ---
     parser.add_argument(
-        "--list-providers",
+        "--chunk-size",
+        type=int,
+        default=None,
+        dest="chunk_size",
+        help="Token chunk size for long documents (default: 3000).",
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
         action="store_true",
         default=False,
-        help="Print available LLM providers and exit.",
+        help="Enable verbose/debug logging.",
     )
 
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entry point for the summarize CLI."""
+def run(argv: Optional[list[str]] = None) -> int:
+    """
+    Entry point for the CLI.
+
+    Returns:
+        Exit code (0 = success, non-zero = error).
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # --list-providers: just print and exit
-    if args.list_providers:
-        factory = ProviderFactory()
-        print("Available LLM providers:")
-        for name in factory.available_providers:
-            print(f"  {name}")
-        return 0
+    if args.verbose:
+        import logging
+        logging.getLogger("summarizer").setLevel(logging.DEBUG)
 
-    # Build config: start from env vars, then overlay CLI args
-    config = Config.from_env().merge_cli_args(
-        provider=args.provider,
-        model=args.model,
-        style=args.style,
-        language=args.language,
-        max_tokens=args.max_tokens,
-        max_chunk_tokens=args.max_chunk_tokens,
-        temperature=args.temperature,
-        verbose=True if args.verbose else None,
-    )
+    # Build config: start from env, then apply CLI overrides
+    config = Config.from_env()
 
-    if config.verbose:
-        print(f"[verbose] Provider : {config.provider}", file=sys.stderr)
-        print(f"[verbose] Model    : {config.model or '(provider default)'}", file=sys.stderr)
-        print(f"[verbose] Style    : {config.style}", file=sys.stderr)
+    overrides: dict[str, object] = {}
+    if args.provider is not None:
+        overrides["provider"] = args.provider
+    if args.model is not None:
+        overrides["model"] = args.model
+    if args.openai_api_key is not None:
+        overrides["openai_api_key"] = args.openai_api_key
+    if args.anthropic_api_key is not None:
+        overrides["anthropic_api_key"] = args.anthropic_api_key
+    if args.ollama_host is not None:
+        overrides["ollama_host"] = args.ollama_host
+    if args.max_tokens is not None:
+        overrides["max_tokens"] = args.max_tokens
+    if args.temperature is not None:
+        overrides["temperature"] = args.temperature
+    if args.style is not None:
+        overrides["style"] = args.style
+    if args.output_format is not None:
+        overrides["output_format"] = args.output_format
+    if args.chunk_size is not None:
+        overrides["chunk_size"] = args.chunk_size
 
-    # Instantiate the provider early to catch config errors
+    if overrides:
+        config = config.with_overrides(**overrides)
+
+    logger.debug("Effective config: provider=%s, model=%s", config.provider, config.model)
+
     try:
-        provider = create_provider(config)
-    except LLMError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-
-    if config.verbose:
-        print(
-            f"[verbose] Using model: {config.model or provider.default_model}",
-            file=sys.stderr,
-        )
-
-    # Read input
-    try:
-        text = _read_input(args.input)
-    except Exception as exc:
-        print(f"Error reading input: {exc}", file=sys.stderr)
-        return 1
-
-    if not text.strip():
-        print("Error: Input is empty.", file=sys.stderr)
-        return 1
-
-    # Run summarization
-    try:
-        from .summarize import summarize
-
-        result = summarize(text, provider=provider, config=config)
+        result = summarize(args.input, config=config)
         print(result)
         return 0
-
+    except LLMError as exc:
+        print(f"LLM error: {exc}", file=sys.stderr)
+        logger.debug("LLM error details", exc_info=True)
+        return 2
     except SummarizerError as exc:
-        print(f"Summarization failed: {exc}", file=sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr)
+        logger.debug("Summarizer error details", exc_info=True)
         return 1
-    except Exception as exc:
-        print(f"Unexpected error: {exc}", file=sys.stderr)
-        if config.verbose:
-            import traceback
-            traceback.print_exc()
-        return 1
+    except KeyboardInterrupt:
+        print("\nAborted.", file=sys.stderr)
+        return 130
 
 
-def _read_input(source: str | None) -> str:
-    """
-    Read text from a file path, URL, or stdin.
-
-    Args:
-        source: File path, URL starting with http(s)://, or None for stdin.
-
-    Returns:
-        The raw text content.
-    """
-    if source is None:
-        # Read from stdin
-        return sys.stdin.read()
-
-    if source.startswith("http://") or source.startswith("https://"):
-        try:
-            import requests
-            response = requests.get(source, timeout=30)
-            response.raise_for_status()
-            return response.text
-        except Exception as exc:
-            raise RuntimeError(f"Failed to fetch URL '{source}': {exc}") from exc
-
-    # File path
-    try:
-        with open(source, encoding="utf-8") as fh:
-            return fh.read()
-    except OSError as exc:
-        raise RuntimeError(f"Cannot read file '{source}': {exc}") from exc
+def main() -> None:
+    """Console script entry point."""
+    sys.exit(run())
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

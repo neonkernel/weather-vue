@@ -1,112 +1,110 @@
 """Ollama local LLM provider implementation."""
 
-import os
 from typing import Any
 
-try:
-    import requests
-    HAS_REQUESTS = True
-except ImportError:
-    HAS_REQUESTS = False
-
-from ..base import BaseLLMProvider
 from ...exceptions import LLMError
+from ...logger import get_logger
+from ..base import BaseLLMProvider
+
+logger = get_logger(__name__)
+
+DEFAULT_HOST = "http://localhost:11434"
+DEFAULT_MODEL = "llama3"
+
+
+def _count_tokens_heuristic(text: str) -> int:
+    """Approximate token count using character-based heuristic (~4 chars/token)."""
+    return max(1, len(text) // 4)
 
 
 class OllamaProvider(BaseLLMProvider):
-    """
-    Ollama provider that communicates with a local Ollama instance via HTTP.
-
-    Expects Ollama to be running at http://localhost:11434 (or OLLAMA_HOST).
-    """
-
-    DEFAULT_MODEL = "llama3"
-    DEFAULT_HOST = "http://localhost:11434"
-    # Approximate characters per token for open-source models
-    CHARS_PER_TOKEN = 4
+    """LLM provider that calls a local Ollama instance via its REST API."""
 
     def __init__(
         self,
         host: str | None = None,
         model: str | None = None,
-        timeout: int = 120,
         **kwargs: Any,
     ) -> None:
         """
-        Initialize the Ollama provider.
+        Initialise the Ollama provider.
 
         Args:
-            host: Base URL for the Ollama REST API. Falls back to OLLAMA_HOST env var
-                  and then to DEFAULT_HOST.
-            model: Model name to use. Falls back to DEFAULT_MODEL.
-            timeout: HTTP request timeout in seconds (default 120 for local inference).
-            **kwargs: Additional options (currently unused).
+            host: Base URL of the Ollama server (defaults to DEFAULT_HOST).
+            model: Model name to use (defaults to DEFAULT_MODEL).
+            **kwargs: Extra keyword arguments (ignored).
         """
-        if not HAS_REQUESTS:
+        try:
+            import requests as _requests
+        except ImportError as exc:
             raise LLMError(
                 "requests package is not installed. Run: pip install requests"
-            )
+            ) from exc
 
-        self._host = (
-            host
-            or os.environ.get("OLLAMA_HOST")
-            or self.DEFAULT_HOST
-        ).rstrip("/")
-        self._model = model or self.DEFAULT_MODEL
-        self._timeout = timeout
+        self._requests = _requests
+        self._host = (host or DEFAULT_HOST).rstrip("/")
+        self._model = model or DEFAULT_MODEL
+        logger.debug(
+            "OllamaProvider initialised with host=%s, model=%s",
+            self._host,
+            self._model,
+        )
 
-    @property
-    def default_model(self) -> str:
-        return self.DEFAULT_MODEL
+    def get_default_model(self) -> str:
+        return DEFAULT_MODEL
 
-    @property
-    def provider_name(self) -> str:
-        return "ollama"
+    def count_tokens(self, text: str) -> int:
+        """Use character-based heuristic (no token counter available locally)."""
+        return _count_tokens_heuristic(text)
 
     def list_models(self) -> list[str]:
         """
-        Retrieve the list of models available in the local Ollama instance.
+        Query the Ollama server for available models.
 
         Returns:
-            List of model name strings.
+            A list of model name strings.
 
         Raises:
-            LLMError: If the request fails.
+            LLMError: If the server is unreachable or returns an error.
         """
+        url = f"{self._host}/api/tags"
         try:
-            import requests  # noqa: PLC0415
-            response = requests.get(
-                f"{self._host}/api/tags",
-                timeout=10,
-            )
+            response = self._requests.get(url, timeout=10)
             response.raise_for_status()
             data = response.json()
             return [m["name"] for m in data.get("models", [])]
+        except self._requests.exceptions.ConnectionError as exc:
+            raise LLMError(
+                f"Cannot connect to Ollama at {self._host}. "
+                "Is the server running?"
+            ) from exc
+        except self._requests.exceptions.HTTPError as exc:
+            raise LLMError(f"Ollama list-models HTTP error: {exc}") from exc
         except Exception as exc:
-            raise LLMError(f"Failed to list Ollama models: {exc}") from exc
+            raise LLMError(f"Ollama list-models unexpected error: {exc}") from exc
 
     def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """
-        Send messages to Ollama using the /api/chat endpoint and return the response.
+        Call the Ollama /api/chat endpoint with OpenAI-compatible message format.
 
         Args:
-            messages: List of message dicts with 'role' and 'content'.
-            **kwargs: Additional options. Recognises 'model', 'temperature'.
+            messages: Conversation messages with 'role' and 'content'.
+            **kwargs: Overrides for model, temperature, etc.
 
         Returns:
-            The assistant's response text.
+            The assistant's reply text.
 
         Raises:
-            LLMError: If the request fails.
+            LLMError: On connection errors, HTTP errors, or malformed responses.
         """
-        import requests  # noqa: PLC0415
-
         model = kwargs.pop("model", self._model)
         temperature = kwargs.pop("temperature", 0.3)
-        # Ollama /api/chat supports options dict
+        # Ollama uses 'options' sub-dict for sampling parameters
         options: dict[str, Any] = {"temperature": temperature}
-        options.update(kwargs.pop("options", {}))
+        if "max_tokens" in kwargs:
+            options["num_predict"] = kwargs.pop("max_tokens")
 
+        url = f"{self._host}/api/chat"
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -114,44 +112,49 @@ class OllamaProvider(BaseLLMProvider):
             "options": options,
         }
 
+        logger.debug(
+            "Ollama completion request: model=%s, messages=%d", model, len(messages)
+        )
+
         try:
-            response = requests.post(
-                f"{self._host}/api/chat",
-                json=payload,
-                timeout=self._timeout,
-            )
+            response = self._requests.post(url, json=payload, timeout=120)
             response.raise_for_status()
-            data = response.json()
-
-            # Ollama /api/chat returns {"message": {"role": "assistant", "content": "..."}}
-            content = data.get("message", {}).get("content")
-            if not content:
-                raise LLMError("Ollama returned an empty response.")
-            return content
-
-        except LLMError:
-            raise
-        except requests.exceptions.ConnectionError as exc:
+        except self._requests.exceptions.ConnectionError as exc:
             raise LLMError(
                 f"Cannot connect to Ollama at {self._host}. "
-                "Make sure Ollama is running (ollama serve)."
+                "Is the server running?"
             ) from exc
-        except requests.exceptions.Timeout as exc:
+        except self._requests.exceptions.Timeout as exc:
             raise LLMError(
-                f"Ollama request timed out after {self._timeout}s."
+                f"Ollama request timed out after 120 s for model '{model}'."
             ) from exc
-        except requests.exceptions.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else "unknown"
-            try:
-                detail = exc.response.json() if exc.response is not None else {}
-            except Exception:
-                detail = {}
+        except self._requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "?"
+            body = exc.response.text if exc.response is not None else ""
             raise LLMError(
-                f"Ollama HTTP error {status}: {detail.get('error', str(exc))}"
+                f"Ollama HTTP {status} error: {body or exc}"
             ) from exc
-        except Exception as exc:
-            raise LLMError(f"Unexpected error from Ollama provider: {exc}") from exc
 
-    def count_tokens(self, text: str) -> int:
-        """Estimate token count using a character-based heuristic."""
-        return max(1, len(text) // self.CHARS_PER_TOKEN)
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise LLMError(
+                f"Ollama returned non-JSON response: {response.text[:200]}"
+            ) from exc
+
+        # Ollama /api/chat (non-streaming) returns:
+        # {"model": ..., "message": {"role": "assistant", "content": "..."}, ...}
+        try:
+            content = data["message"]["content"]
+        except (KeyError, TypeError) as exc:
+            raise LLMError(
+                f"Unexpected Ollama response structure: {data}"
+            ) from exc
+
+        if not content:
+            raise LLMError("Ollama returned an empty response.")
+
+        logger.debug(
+            "Ollama completion succeeded, eval_count=%s", data.get("eval_count")
+        )
+        return content

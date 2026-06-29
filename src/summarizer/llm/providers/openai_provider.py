@@ -1,82 +1,96 @@
 """OpenAI LLM provider implementation."""
 
-import os
 from typing import Any
 
+from ...exceptions import LLMError
+from ...logger import get_logger
+from ..base import BaseLLMProvider
+
+logger = get_logger(__name__)
+
+# Default models
+DEFAULT_MODEL = "gpt-4o-mini"
+FALLBACK_MODEL = "gpt-3.5-turbo"
+
+# Token counting: try tiktoken, fall back to heuristic
 try:
     import tiktoken
-    HAS_TIKTOKEN = True
-except ImportError:
-    HAS_TIKTOKEN = False
 
-try:
-    from openai import OpenAI, APIError, AuthenticationError, RateLimitError, APIConnectionError
-    HAS_OPENAI = True
+    _TIKTOKEN_AVAILABLE = True
 except ImportError:
-    HAS_OPENAI = False
+    _TIKTOKEN_AVAILABLE = False
+    logger.warning("tiktoken not available; token counting will use character heuristic")
 
-from ..base import BaseLLMProvider
-from ...exceptions import LLMError
+
+def _count_tokens_tiktoken(text: str, model: str) -> int:
+    """Count tokens using tiktoken for accurate OpenAI token counts."""
+    try:
+        enc = tiktoken.encoding_for_model(model)
+    except KeyError:
+        enc = tiktoken.get_encoding("cl100k_base")
+    return len(enc.encode(text))
+
+
+def _count_tokens_heuristic(text: str) -> int:
+    """Approximate token count using character-based heuristic (~4 chars/token)."""
+    return max(1, len(text) // 4)
 
 
 class OpenAIProvider(BaseLLMProvider):
-    """OpenAI LLM provider using the official openai SDK."""
+    """LLM provider that calls the OpenAI Chat Completions API."""
 
-    DEFAULT_MODEL = "gpt-4o"
-    FALLBACK_CHARS_PER_TOKEN = 4
-
-    def __init__(
-        self,
-        api_key: str | None = None,
-        model: str | None = None,
-        **kwargs: Any,
-    ) -> None:
+    def __init__(self, api_key: str, model: str | None = None, **kwargs: Any) -> None:
         """
-        Initialize the OpenAI provider.
+        Initialise the OpenAI provider.
 
         Args:
-            api_key: OpenAI API key. Falls back to OPENAI_API_KEY env var.
-            model: Model name to use. Falls back to DEFAULT_MODEL.
-            **kwargs: Additional options (currently unused).
+            api_key: OpenAI API key.
+            model: Model to use (defaults to DEFAULT_MODEL).
+            **kwargs: Extra keyword arguments (ignored).
         """
-        if not HAS_OPENAI:
+        try:
+            from openai import OpenAI, AuthenticationError, RateLimitError, APIError
+        except ImportError as exc:
             raise LLMError(
                 "openai package is not installed. Run: pip install openai"
-            )
+            ) from exc
 
-        resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
-        if not resolved_key:
-            raise LLMError(
-                "OpenAI API key not found. Set OPENAI_API_KEY environment variable or pass api_key."
-            )
+        self._openai_module = __import__("openai")
+        self._client = OpenAI(api_key=api_key)
+        self._model = model or DEFAULT_MODEL
+        logger.debug("OpenAIProvider initialised with model=%s", self._model)
 
-        self._model = model or self.DEFAULT_MODEL
-        self._client = OpenAI(api_key=resolved_key)
+    def get_default_model(self) -> str:
+        return DEFAULT_MODEL
 
-        # Initialise tiktoken encoder once
-        self._encoder = None
-        if HAS_TIKTOKEN:
-            try:
-                self._encoder = tiktoken.encoding_for_model(self._model)
-            except KeyError:
-                try:
-                    self._encoder = tiktoken.get_encoding("cl100k_base")
-                except Exception:
-                    pass
-
-    @property
-    def default_model(self) -> str:
-        return self.DEFAULT_MODEL
-
-    @property
-    def provider_name(self) -> str:
-        return "openai"
+    def count_tokens(self, text: str) -> int:
+        if _TIKTOKEN_AVAILABLE:
+            return _count_tokens_tiktoken(text, self._model)
+        return _count_tokens_heuristic(text)
 
     def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
-        """Send messages to OpenAI and return the assistant response text."""
+        """
+        Call the OpenAI Chat Completions endpoint.
+
+        Args:
+            messages: Conversation messages with 'role' and 'content'.
+            **kwargs: Overrides for model, temperature, max_tokens, etc.
+
+        Returns:
+            The assistant's reply text.
+
+        Raises:
+            LLMError: Wraps any OpenAI SDK errors.
+        """
+        import openai
+
         model = kwargs.pop("model", self._model)
         temperature = kwargs.pop("temperature", 0.3)
-        max_tokens = kwargs.pop("max_tokens", 1024)
+        max_tokens = kwargs.pop("max_tokens", 4096)
+
+        logger.debug(
+            "OpenAI completion request: model=%s, messages=%d", model, len(messages)
+        )
 
         try:
             response = self._client.chat.completions.create(
@@ -89,22 +103,16 @@ class OpenAIProvider(BaseLLMProvider):
             content = response.choices[0].message.content
             if content is None:
                 raise LLMError("OpenAI returned an empty response.")
+            logger.debug("OpenAI completion succeeded, tokens used=%s", response.usage)
             return content
 
-        except AuthenticationError as exc:
+        except openai.AuthenticationError as exc:
             raise LLMError(f"OpenAI authentication failed: {exc}") from exc
-        except RateLimitError as exc:
+        except openai.RateLimitError as exc:
             raise LLMError(f"OpenAI rate limit exceeded: {exc}") from exc
-        except APIConnectionError as exc:
+        except openai.BadRequestError as exc:
+            raise LLMError(f"OpenAI bad request: {exc}") from exc
+        except openai.APIConnectionError as exc:
             raise LLMError(f"OpenAI connection error: {exc}") from exc
-        except APIError as exc:
+        except openai.APIError as exc:
             raise LLMError(f"OpenAI API error: {exc}") from exc
-        except Exception as exc:
-            raise LLMError(f"Unexpected error from OpenAI provider: {exc}") from exc
-
-    def count_tokens(self, text: str) -> int:
-        """Count tokens using tiktoken when available, otherwise use a heuristic."""
-        if self._encoder is not None:
-            return len(self._encoder.encode(text))
-        # Fallback heuristic: ~4 characters per token
-        return max(1, len(text) // self.FALLBACK_CHARS_PER_TOKEN)

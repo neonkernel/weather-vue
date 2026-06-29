@@ -1,51 +1,45 @@
-"""Base class for all LLM providers."""
+"""Base abstract class for LLM providers."""
 
 from abc import ABC, abstractmethod
 from typing import Any
 
 
 class BaseLLMProvider(ABC):
-    """Abstract base class defining the interface all LLM providers must implement."""
+    """Abstract base class that all LLM providers must implement."""
 
     @abstractmethod
     def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """
-        Send messages to the LLM and return the completion text.
+        Send a list of messages to the LLM and return the completion text.
 
         Args:
-            messages: List of message dicts with 'role' and 'content' keys.
-                      Roles are typically 'system', 'user', 'assistant'.
-            **kwargs: Additional provider-specific parameters (temperature, max_tokens, etc.)
+            messages: A list of message dicts with 'role' and 'content' keys.
+                      Roles are typically 'system', 'user', or 'assistant'.
+            **kwargs: Additional provider-specific parameters (e.g., temperature,
+                      max_tokens, model override).
 
         Returns:
-            The text content of the LLM's response.
+            The text content of the model's response.
 
         Raises:
-            LLMError: If the request fails for any reason.
+            LLMError: On any provider-level error (auth, rate limit, network, etc.)
         """
+        ...
+
+    @abstractmethod
+    def get_default_model(self) -> str:
+        """Return the default model identifier for this provider."""
         ...
 
     @abstractmethod
     def count_tokens(self, text: str) -> int:
         """
-        Estimate the number of tokens in a text string.
+        Estimate the number of tokens in the given text.
 
         Args:
             text: The text to count tokens for.
 
         Returns:
-            Estimated token count.
+            An integer token count (may be an approximation).
         """
-        ...
-
-    @property
-    @abstractmethod
-    def default_model(self) -> str:
-        """Return the default model name for this provider."""
-        ...
-
-    @property
-    @abstractmethod
-    def provider_name(self) -> str:
-        """Return the canonical provider name string."""
         ...

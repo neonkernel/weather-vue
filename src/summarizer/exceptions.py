@@ -1,8 +1,8 @@
-"""Custom exceptions for the summarizer package."""
+"""Custom exception hierarchy for the summariser."""
 
 
 class SummarizerError(Exception):
-    """Base exception for all summarizer errors."""
+    """Base exception for all summariser errors."""
 
 
 class LLMError(SummarizerError):
@@ -10,8 +10,8 @@ class LLMError(SummarizerError):
 
 
 class IngestionError(SummarizerError):
-    """Raised when document ingestion fails."""
+    """Raised when article ingestion fails."""
 
 
-class ConfigError(SummarizerError):
-    """Raised when configuration is invalid."""
+class ConfigurationError(SummarizerError):
+    """Raised for invalid or missing configuration."""

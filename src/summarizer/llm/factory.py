@@ -1,106 +1,90 @@
-"""Provider factory for instantiating the correct LLM provider from config."""
+"""Factory for creating LLM provider instances from configuration."""
 
 from typing import TYPE_CHECKING
 
+from ..exceptions import LLMError
+from ..logger import get_logger
 from .base import BaseLLMProvider
 from .providers import AnthropicProvider, OllamaProvider, OpenAIProvider
-from ..exceptions import LLMError
 
 if TYPE_CHECKING:
     from ..config import Config
 
-# Registry mapping provider name strings to their classes
-PROVIDER_REGISTRY: dict[str, type[BaseLLMProvider]] = {
-    "openai": OpenAIProvider,
-    "anthropic": AnthropicProvider,
-    "ollama": OllamaProvider,
-}
+logger = get_logger(__name__)
 
+# Canonical provider names
+PROVIDER_OPENAI = "openai"
+PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_OLLAMA = "ollama"
 
-def create_provider(config: "Config") -> BaseLLMProvider:
-    """
-    Instantiate and return the correct LLM provider based on the given config.
-
-    The provider is determined by ``config.provider``.  Each provider is
-    constructed with the relevant credentials and model name from config.
-
-    Args:
-        config: Application config object with provider settings.
-
-    Returns:
-        An instantiated :class:`BaseLLMProvider`.
-
-    Raises:
-        LLMError: If the provider name is unknown or instantiation fails.
-    """
-    provider_name = (config.provider or "openai").lower().strip()
-
-    provider_class = PROVIDER_REGISTRY.get(provider_name)
-    if provider_class is None:
-        available = ", ".join(sorted(PROVIDER_REGISTRY.keys()))
-        raise LLMError(
-            f"Unknown LLM provider '{provider_name}'. "
-            f"Available providers: {available}"
-        )
-
-    try:
-        if provider_name == "openai":
-            return OpenAIProvider(
-                api_key=getattr(config, "openai_api_key", None),
-                model=getattr(config, "model", None),
-            )
-
-        if provider_name == "anthropic":
-            return AnthropicProvider(
-                api_key=getattr(config, "anthropic_api_key", None),
-                model=getattr(config, "model", None),
-            )
-
-        if provider_name == "ollama":
-            return OllamaProvider(
-                host=getattr(config, "ollama_host", None),
-                model=getattr(config, "model", None),
-            )
-
-        # Generic fallback (should not be reached due to registry check above)
-        raise LLMError(f"No constructor defined for provider '{provider_name}'.")
-
-    except LLMError:
-        raise
-    except Exception as exc:
-        raise LLMError(
-            f"Failed to initialise '{provider_name}' provider: {exc}"
-        ) from exc
+SUPPORTED_PROVIDERS = (PROVIDER_OPENAI, PROVIDER_ANTHROPIC, PROVIDER_OLLAMA)
 
 
 class ProviderFactory:
-    """
-    Factory class for creating LLM providers.
+    """Creates and configures LLM provider instances."""
 
-    Prefer the module-level :func:`create_provider` function for simple use-cases.
-    Use this class when you need to register custom providers at runtime.
-    """
+    @staticmethod
+    def create(config: "Config") -> BaseLLMProvider:
+        """
+        Instantiate the correct provider based on *config.provider*.
 
-    def __init__(self) -> None:
-        self._registry: dict[str, type[BaseLLMProvider]] = dict(PROVIDER_REGISTRY)
+        Args:
+            config: Application configuration object.
 
-    def register(self, name: str, cls: type[BaseLLMProvider]) -> None:
-        """Register a custom provider class under the given name."""
-        self._registry[name] = cls
+        Returns:
+            A fully-initialised :class:`BaseLLMProvider` instance.
 
-    def create(self, config: "Config") -> BaseLLMProvider:
-        """Create a provider instance from config using this factory's registry."""
-        provider_name = (config.provider or "openai").lower().strip()
-        provider_class = self._registry.get(provider_name)
-        if provider_class is None:
-            available = ", ".join(sorted(self._registry.keys()))
+        Raises:
+            LLMError: If the provider name is unknown or required credentials
+                      are missing.
+        """
+        provider_name = (config.provider or PROVIDER_OPENAI).lower().strip()
+        logger.info("Creating LLM provider: %s", provider_name)
+
+        if provider_name == PROVIDER_OPENAI:
+            return ProviderFactory._create_openai(config)
+        elif provider_name == PROVIDER_ANTHROPIC:
+            return ProviderFactory._create_anthropic(config)
+        elif provider_name == PROVIDER_OLLAMA:
+            return ProviderFactory._create_ollama(config)
+        else:
             raise LLMError(
                 f"Unknown LLM provider '{provider_name}'. "
-                f"Available providers: {available}"
+                f"Supported providers: {', '.join(SUPPORTED_PROVIDERS)}"
             )
-        return create_provider(config)
 
-    @property
-    def available_providers(self) -> list[str]:
-        """Return a sorted list of registered provider names."""
-        return sorted(self._registry.keys())
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _create_openai(config: "Config") -> OpenAIProvider:
+        api_key = config.openai_api_key
+        if not api_key:
+            raise LLMError(
+                "OpenAI API key is required. Set OPENAI_API_KEY or pass --openai-api-key."
+            )
+        return OpenAIProvider(
+            api_key=api_key,
+            model=config.model or None,
+        )
+
+    @staticmethod
+    def _create_anthropic(config: "Config") -> AnthropicProvider:
+        api_key = config.anthropic_api_key
+        if not api_key:
+            raise LLMError(
+                "Anthropic API key is required. Set ANTHROPIC_API_KEY or pass --anthropic-api-key."
+            )
+        return AnthropicProvider(
+            api_key=api_key,
+            model=config.model or None,
+        )
+
+    @staticmethod
+    def _create_ollama(config: "Config") -> OllamaProvider:
+        host = config.ollama_host or None
+        return OllamaProvider(
+            host=host,
+            model=config.model or None,
+        )
