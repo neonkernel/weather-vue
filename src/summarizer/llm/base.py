@@ -1,4 +1,4 @@
-"""Base abstract class for LLM providers."""
+"""Abstract base class for LLM providers."""
 
 from abc import ABC, abstractmethod
 from typing import Any
@@ -8,21 +8,23 @@ class BaseLLMProvider(ABC):
     """Abstract base class that all LLM providers must implement."""
 
     @abstractmethod
-    def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
+    def complete(self, messages: list, **kwargs) -> str:
         """
-        Send a list of messages to the LLM and return the completion text.
+        Send messages to the LLM and return the completion text.
 
         Args:
-            messages: A list of message dicts with 'role' and 'content' keys.
+            messages: List of message dicts with 'role' and 'content' keys.
                       Roles are typically 'system', 'user', or 'assistant'.
-            **kwargs: Additional provider-specific parameters (e.g., temperature,
-                      max_tokens, model override).
+            **kwargs: Additional provider-specific parameters such as:
+                      - model: str
+                      - max_tokens: int
+                      - temperature: float
 
         Returns:
-            The text content of the model's response.
+            The completion text as a string.
 
         Raises:
-            LLMError: On any provider-level error (auth, rate limit, network, etc.)
+            LLMError: On any provider-level error (auth, rate limit, etc.)
         """
         ...
 
@@ -31,15 +33,17 @@ class BaseLLMProvider(ABC):
         """Return the default model identifier for this provider."""
         ...
 
-    @abstractmethod
     def count_tokens(self, text: str) -> int:
         """
-        Estimate the number of tokens in the given text.
+        Estimate the token count for the given text.
+
+        Providers can override this for more accurate counting.
+        Default implementation uses a character-based heuristic (~4 chars/token).
 
         Args:
-            text: The text to count tokens for.
+            text: The text to estimate tokens for.
 
         Returns:
-            An integer token count (may be an approximation).
+            Estimated token count.
         """
-        ...
+        return max(1, len(text) // 4)

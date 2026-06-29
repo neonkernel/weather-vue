@@ -1,14 +1,6 @@
-"""LLM abstraction layer: base class, providers, and factory."""
+"""LLM module for multi-provider support."""
 
 from .base import BaseLLMProvider
-from .factory import ProviderFactory, SUPPORTED_PROVIDERS
-from .providers import AnthropicProvider, OllamaProvider, OpenAIProvider
+from .factory import ProviderFactory
 
-__all__ = [
-    "BaseLLMProvider",
-    "ProviderFactory",
-    "SUPPORTED_PROVIDERS",
-    "OpenAIProvider",
-    "AnthropicProvider",
-    "OllamaProvider",
-]
+__all__ = ["BaseLLMProvider", "ProviderFactory"]

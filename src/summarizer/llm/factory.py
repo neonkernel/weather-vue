@@ -1,90 +1,80 @@
-"""Factory for creating LLM provider instances from configuration."""
+"""Factory for creating LLM provider instances."""
 
+import os
 from typing import TYPE_CHECKING
 
 from ..exceptions import LLMError
-from ..logger import get_logger
 from .base import BaseLLMProvider
-from .providers import AnthropicProvider, OllamaProvider, OpenAIProvider
 
 if TYPE_CHECKING:
     from ..config import Config
 
-logger = get_logger(__name__)
 
-# Canonical provider names
-PROVIDER_OPENAI = "openai"
-PROVIDER_ANTHROPIC = "anthropic"
-PROVIDER_OLLAMA = "ollama"
-
-SUPPORTED_PROVIDERS = (PROVIDER_OPENAI, PROVIDER_ANTHROPIC, PROVIDER_OLLAMA)
+PROVIDER_MAP = {
+    "openai": "src.summarizer.llm.providers.openai_provider.OpenAIProvider",
+    "anthropic": "src.summarizer.llm.providers.anthropic_provider.AnthropicProvider",
+    "ollama": "src.summarizer.llm.providers.ollama_provider.OllamaProvider",
+}
 
 
 class ProviderFactory:
-    """Creates and configures LLM provider instances."""
+    """Creates and returns the appropriate LLM provider based on configuration."""
 
     @staticmethod
     def create(config: "Config") -> BaseLLMProvider:
         """
-        Instantiate the correct provider based on *config.provider*.
+        Instantiate and return the correct provider based on config.
+
+        Priority:
+            1. config.provider (set by CLI --provider flag or config file)
+            2. LLM_PROVIDER environment variable
+            3. Default to 'openai'
 
         Args:
             config: Application configuration object.
 
         Returns:
-            A fully-initialised :class:`BaseLLMProvider` instance.
+            An instantiated BaseLLMProvider implementation.
 
         Raises:
-            LLMError: If the provider name is unknown or required credentials
-                      are missing.
+            LLMError: If the provider name is unknown or instantiation fails.
         """
-        provider_name = (config.provider or PROVIDER_OPENAI).lower().strip()
-        logger.info("Creating LLM provider: %s", provider_name)
+        provider_name = (
+            getattr(config, "provider", None)
+            or os.environ.get("LLM_PROVIDER", "openai")
+        ).lower().strip()
 
-        if provider_name == PROVIDER_OPENAI:
-            return ProviderFactory._create_openai(config)
-        elif provider_name == PROVIDER_ANTHROPIC:
-            return ProviderFactory._create_anthropic(config)
-        elif provider_name == PROVIDER_OLLAMA:
-            return ProviderFactory._create_ollama(config)
-        else:
+        if provider_name not in PROVIDER_MAP:
+            available = ", ".join(sorted(PROVIDER_MAP.keys()))
             raise LLMError(
-                f"Unknown LLM provider '{provider_name}'. "
-                f"Supported providers: {', '.join(SUPPORTED_PROVIDERS)}"
+                f"Unknown provider '{provider_name}'. Available providers: {available}"
             )
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
+        # Lazy import to avoid pulling in optional dependencies at module load
+        module_path, class_name = PROVIDER_MAP[provider_name].rsplit(".", 1)
 
-    @staticmethod
-    def _create_openai(config: "Config") -> OpenAIProvider:
-        api_key = config.openai_api_key
-        if not api_key:
+        # Convert dotted path to importlib-style import
+        import importlib
+        # Strip leading "src." for relative package imports
+        import_path = module_path.replace("src.", "", 1)
+        try:
+            module = importlib.import_module(f"summarizer.llm.providers.{provider_name}_provider")
+        except ImportError as exc:
             raise LLMError(
-                "OpenAI API key is required. Set OPENAI_API_KEY or pass --openai-api-key."
-            )
-        return OpenAIProvider(
-            api_key=api_key,
-            model=config.model or None,
-        )
+                f"Could not import provider '{provider_name}': {exc}. "
+                "Make sure the required dependencies are installed."
+            ) from exc
 
-    @staticmethod
-    def _create_anthropic(config: "Config") -> AnthropicProvider:
-        api_key = config.anthropic_api_key
-        if not api_key:
+        provider_class = getattr(module, class_name)
+
+        try:
+            return provider_class(config)
+        except Exception as exc:
             raise LLMError(
-                "Anthropic API key is required. Set ANTHROPIC_API_KEY or pass --anthropic-api-key."
-            )
-        return AnthropicProvider(
-            api_key=api_key,
-            model=config.model or None,
-        )
+                f"Failed to instantiate provider '{provider_name}': {exc}"
+            ) from exc
 
     @staticmethod
-    def _create_ollama(config: "Config") -> OllamaProvider:
-        host = config.ollama_host or None
-        return OllamaProvider(
-            host=host,
-            model=config.model or None,
-        )
+    def available_providers() -> list:
+        """Return a list of known provider names."""
+        return sorted(PROVIDER_MAP.keys())

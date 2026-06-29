@@ -1,6 +1,4 @@
-"""Application configuration: reads from environment variables and CLI overrides."""
-
-from __future__ import annotations
+"""Application configuration management."""
 
 import os
 from dataclasses import dataclass, field
@@ -9,75 +7,78 @@ from typing import Optional
 
 @dataclass
 class Config:
-    """Centralised configuration for the summariser."""
+    """Holds all runtime configuration for the summarizer."""
 
-    # --- Provider selection ---
-    provider: str = field(
-        default_factory=lambda: os.getenv("LLM_PROVIDER", "openai")
-    )
+    # --- LLM Provider ---
+    provider: str = "openai"
 
-    # --- Model ---
-    model: Optional[str] = field(
-        default_factory=lambda: os.getenv("DEFAULT_MODEL", "")
-    )
+    # --- Model settings ---
+    model: Optional[str] = None  # None → use provider's default
+    max_tokens: int = 4096
+    temperature: float = 0.3
 
     # --- OpenAI ---
-    openai_api_key: Optional[str] = field(
-        default_factory=lambda: os.getenv("OPENAI_API_KEY", "")
-    )
+    openai_api_key: Optional[str] = None
 
     # --- Anthropic ---
-    anthropic_api_key: Optional[str] = field(
-        default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "")
-    )
+    anthropic_api_key: Optional[str] = None
 
     # --- Ollama ---
-    ollama_host: str = field(
-        default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    )
+    ollama_host: str = "http://localhost:11434"
 
-    # --- Generation parameters ---
-    max_tokens: int = field(
-        default_factory=lambda: int(os.getenv("MAX_TOKENS", "4096"))
-    )
-    temperature: float = field(
-        default_factory=lambda: float(os.getenv("TEMPERATURE", "0.3"))
-    )
-
-    # --- Chunking ---
-    chunk_size: int = field(
-        default_factory=lambda: int(os.getenv("CHUNK_SIZE", "3000"))
-    )
-    chunk_overlap: int = field(
-        default_factory=lambda: int(os.getenv("CHUNK_OVERLAP", "200"))
-    )
+    # --- Summarizer behaviour ---
+    style: str = "concise"
+    language: str = "en"
+    chunk_size: int = 3000   # tokens (approximate)
+    chunk_overlap: int = 200  # tokens
 
     # --- Output ---
-    style: str = field(
-        default_factory=lambda: os.getenv("SUMMARY_STYLE", "concise")
-    )
-    output_format: str = field(
-        default_factory=lambda: os.getenv("OUTPUT_FORMAT", "text")
-    )
-
-    def __post_init__(self) -> None:
-        # Normalise empty strings to None for optional secrets
-        if not self.openai_api_key:
-            self.openai_api_key = None
-        if not self.anthropic_api_key:
-            self.anthropic_api_key = None
-        if not self.model:
-            self.model = None
+    output_format: str = "text"  # text | markdown | json
 
     @classmethod
     def from_env(cls) -> "Config":
-        """Create a Config instance populated purely from environment variables."""
-        return cls()
+        """
+        Build a Config by reading environment variables.
 
-    def with_overrides(self, **overrides: object) -> "Config":
-        """Return a *new* Config with the supplied keyword arguments overriding defaults."""
-        import dataclasses
+        Environment variables take precedence over dataclass defaults.
+        """
+        return cls(
+            provider=os.environ.get("LLM_PROVIDER", "openai"),
+            model=os.environ.get("DEFAULT_MODEL") or None,
+            max_tokens=int(os.environ.get("MAX_TOKENS", "4096")),
+            temperature=float(os.environ.get("TEMPERATURE", "0.3")),
+            openai_api_key=os.environ.get("OPENAI_API_KEY"),
+            anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+            style=os.environ.get("SUMMARY_STYLE", "concise"),
+            language=os.environ.get("SUMMARY_LANGUAGE", "en"),
+            chunk_size=int(os.environ.get("CHUNK_SIZE", "3000")),
+            chunk_overlap=int(os.environ.get("CHUNK_OVERLAP", "200")),
+            output_format=os.environ.get("OUTPUT_FORMAT", "text"),
+        )
 
-        current = dataclasses.asdict(self)
-        current.update({k: v for k, v in overrides.items() if v is not None})
-        return Config(**current)
+    def update_from_cli(self, args) -> None:
+        """
+        Overlay CLI argument values onto this config.
+
+        Only non-None / non-default CLI values are applied so that
+        environment variables remain the fallback rather than being
+        overwritten by argparse defaults.
+
+        Args:
+            args: Parsed argparse.Namespace object.
+        """
+        if getattr(args, "provider", None):
+            self.provider = args.provider
+        if getattr(args, "model", None):
+            self.model = args.model
+        if getattr(args, "max_tokens", None) is not None:
+            self.max_tokens = args.max_tokens
+        if getattr(args, "temperature", None) is not None:
+            self.temperature = args.temperature
+        if getattr(args, "style", None):
+            self.style = args.style
+        if getattr(args, "language", None):
+            self.language = args.language
+        if getattr(args, "output_format", None):
+            self.output_format = args.output_format
