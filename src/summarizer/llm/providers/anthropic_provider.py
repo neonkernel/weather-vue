@@ -1,161 +1,149 @@
-"""Anthropic Claude provider implementation."""
+"""Anthropic Claude LLM provider implementation."""
 from __future__ import annotations
 
 import os
-from typing import Any, TYPE_CHECKING
+from typing import Any, Optional
 
+from src.summarizer.config import Config
 from src.summarizer.exceptions import LLMError
 from src.summarizer.llm.base import BaseLLMProvider
-
-if TYPE_CHECKING:
-    from src.summarizer.config import Config
-
-_DEFAULT_MODEL = "claude-3-5-haiku-20241022"
-_CHARS_PER_TOKEN = 4  # Conservative character-based heuristic
-
-# Mapping of user-friendly short names → full Anthropic model IDs
-_MODEL_ALIASES: dict[str, str] = {
-    "claude-3-5-haiku": "claude-3-5-haiku-20241022",
-    "claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
-    "claude-3-opus": "claude-3-opus-20240229",
-    "claude-3-sonnet": "claude-3-sonnet-20240229",
-    "claude-3-haiku": "claude-3-haiku-20240307",
-    "claude-opus-4": "claude-opus-4-0",
-    "claude-sonnet-4": "claude-sonnet-4-0",
-}
-
-
-def _resolve_model(model: str) -> str:
-    """Expand short model aliases to full model IDs."""
-    return _MODEL_ALIASES.get(model, model)
 
 
 class AnthropicProvider(BaseLLMProvider):
     """LLM provider backed by the Anthropic Claude API."""
 
-    def __init__(self, config: "Config") -> None:
+    DEFAULT_MODEL = "claude-3-5-haiku-20241022"
+    # Average tokens per character for Claude (similar to GPT)
+    _CHARS_PER_TOKEN = 4
+
+    def __init__(self, config: Optional[Config] = None) -> None:
         self._config = config
-        raw_model = getattr(config, "model", None) or _DEFAULT_MODEL
-        self._model = _resolve_model(raw_model)
-
-        api_key = (
-            getattr(config, "anthropic_api_key", None)
-            or os.environ.get("ANTHROPIC_API_KEY")
-        )
-        if not api_key:
-            raise LLMError(
-                "Anthropic API key not found. Set ANTHROPIC_API_KEY environment variable "
-                "or provide anthropic_api_key in config."
-            )
-
-        try:
-            import anthropic as _anthropic
-            self._client = _anthropic.Anthropic(api_key=api_key)
-            self._anthropic = _anthropic
-        except ImportError as exc:
-            raise LLMError(
-                "The 'anthropic' package is required for the Anthropic provider. "
-                "Install it with: pip install anthropic"
-            ) from exc
+        self._api_key = self._resolve_api_key()
+        self._model = self._resolve_model()
+        self._client = self._build_client()
 
     # ------------------------------------------------------------------
     # BaseLLMProvider interface
     # ------------------------------------------------------------------
 
     @property
-    def default_model(self) -> str:
-        return _DEFAULT_MODEL
-
-    @property
     def provider_name(self) -> str:
         return "anthropic"
 
-    def count_tokens(self, text: str) -> int:
-        """Character-based token heuristic (Anthropic doesn't expose a free counter)."""
-        return max(1, len(text) // _CHARS_PER_TOKEN)
+    @property
+    def default_model(self) -> str:
+        return self.DEFAULT_MODEL
 
     def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """
-        Call the Anthropic Messages API.
+        Call the Anthropic Messages API and return the response text.
 
-        The OpenAI-style 'system' role is extracted and passed as Anthropic's
-        top-level system parameter; remaining messages are forwarded as-is.
-
-        Args:
-            messages: List of {'role': ..., 'content': ...} dicts.
-            **kwargs: Overrides for model, temperature, max_tokens.
-
-        Returns:
-            Assistant message content string.
-
-        Raises:
-            LLMError: Wraps any anthropic SDK exception.
+        Anthropic separates the system prompt from the messages list,
+        so we handle that conversion here.
         """
-        model = _resolve_model(kwargs.pop("model", None) or self._model)
-        temperature = kwargs.pop(
-            "temperature",
-            getattr(self._config, "temperature", 0.3),
-        )
-        max_tokens = kwargs.pop(
-            "max_tokens",
-            getattr(self._config, "max_tokens", 4096),
-        )
+        model = kwargs.pop("model", self._model)
+        max_tokens = kwargs.pop("max_tokens", 1024)
+        # Anthropic doesn't use temperature the same way; still accepted
+        temperature = kwargs.pop("temperature", 1.0)
 
-        # Anthropic separates system messages from the conversation
-        system_parts: list[str] = []
-        conversation: list[dict[str, str]] = []
-
+        # Extract system message if present (Anthropic uses a top-level param)
+        system_prompt: Optional[str] = None
+        filtered_messages: list[dict[str, str]] = []
         for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "system":
-                system_parts.append(content)
+            if msg.get("role") == "system":
+                # Concatenate multiple system messages
+                system_prompt = (
+                    (system_prompt + "\n\n" + msg["content"])
+                    if system_prompt
+                    else msg["content"]
+                )
             else:
-                conversation.append({"role": role, "content": content})
+                filtered_messages.append({"role": msg["role"], "content": msg["content"]})
 
-        system_prompt = "\n\n".join(system_parts) if system_parts else None
+        # Anthropic requires at least one human message
+        if not filtered_messages:
+            raise LLMError("AnthropicProvider requires at least one non-system message.")
 
         try:
-            create_kwargs: dict[str, Any] = {
-                "model": model,
-                "messages": conversation,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
+            create_kwargs: dict[str, Any] = dict(
+                model=model,
+                max_tokens=max_tokens,
+                messages=filtered_messages,
                 **kwargs,
-            }
+            )
             if system_prompt:
                 create_kwargs["system"] = system_prompt
+            # Only pass temperature if it's not the default (Anthropic's extended thinking
+            # requires temperature=1, regular calls accept 0-1)
+            create_kwargs["temperature"] = temperature
 
             response = self._client.messages.create(**create_kwargs)
-
-            # Extract text from the first content block
-            content_blocks = response.content
-            if not content_blocks:
-                raise LLMError("Anthropic returned an empty response.")
-
+            # Response content is a list of blocks; extract text blocks
             text_parts = [
                 block.text
-                for block in content_blocks
+                for block in response.content
                 if hasattr(block, "text")
             ]
-            if not text_parts:
-                raise LLMError("Anthropic response contained no text blocks.")
-
-            return "".join(text_parts)
-
-        except self._anthropic.AuthenticationError as exc:
-            raise LLMError(f"Anthropic authentication failed: {exc}") from exc
-        except self._anthropic.RateLimitError as exc:
-            raise LLMError(f"Anthropic rate limit exceeded: {exc}") from exc
-        except self._anthropic.BadRequestError as exc:
-            raise LLMError(f"Anthropic bad request: {exc}") from exc
-        except self._anthropic.APIConnectionError as exc:
-            raise LLMError(f"Anthropic connection error: {exc}") from exc
-        except self._anthropic.APIStatusError as exc:
-            raise LLMError(
-                f"Anthropic API error ({exc.status_code}): {exc.message}"
-            ) from exc
-        except LLMError:
-            raise
+            return "\n".join(text_parts)
         except Exception as exc:
-            raise LLMError(f"Unexpected Anthropic error: {exc}") from exc
+            raise self._map_error(exc) from exc
+
+    def count_tokens(self, text: str) -> int:
+        """
+        Estimate token count for Claude using a character-based heuristic.
+
+        Anthropic does not expose tiktoken, so we use a ~4 chars/token approximation.
+        """
+        return max(1, len(text) // self._CHARS_PER_TOKEN)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_api_key(self) -> str:
+        key = (
+            (self._config.anthropic_api_key if self._config and hasattr(self._config, "anthropic_api_key") else None)
+            or os.environ.get("ANTHROPIC_API_KEY")
+            or ""
+        )
+        if not key:
+            raise LLMError(
+                "Anthropic API key not found. Set ANTHROPIC_API_KEY env var or provide it in config."
+            )
+        return key
+
+    def _resolve_model(self) -> str:
+        return (
+            (self._config.anthropic_model if self._config and hasattr(self._config, "anthropic_model") else None)
+            or os.environ.get("ANTHROPIC_MODEL")
+            or self.DEFAULT_MODEL
+        )
+
+    def _build_client(self):
+        try:
+            import anthropic
+            return anthropic.Anthropic(api_key=self._api_key)
+        except ImportError as exc:
+            raise LLMError(
+                "The 'anthropic' package is required for the Anthropic provider. "
+                "Install it with: pip install anthropic"
+            ) from exc
+
+    @staticmethod
+    def _map_error(exc: Exception) -> LLMError:
+        """Map Anthropic SDK exceptions to LLMError."""
+        try:
+            import anthropic
+            if isinstance(exc, anthropic.AuthenticationError):
+                return LLMError(f"Anthropic authentication failed: {exc}")
+            if isinstance(exc, anthropic.RateLimitError):
+                return LLMError(f"Anthropic rate limit exceeded: {exc}")
+            if isinstance(exc, anthropic.APIConnectionError):
+                return LLMError(f"Anthropic connection error: {exc}")
+            if isinstance(exc, anthropic.APIStatusError):
+                return LLMError(f"Anthropic API error (status {exc.status_code}): {exc}")
+            if isinstance(exc, anthropic.BadRequestError):
+                return LLMError(f"Anthropic bad request: {exc}")
+        except ImportError:
+            pass
+        return LLMError(f"Anthropic provider error: {exc}")

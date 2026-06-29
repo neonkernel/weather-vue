@@ -1,38 +1,17 @@
-"""Summary styles and output format enumerations."""
+"""Available summary styles."""
 
-from enum import Enum
+AVAILABLE_STYLES: list[str] = [
+    "concise",
+    "detailed",
+    "bullet",
+    "eli5",
+    "executive",
+]
 
-
-class SummaryStyle(Enum):
-    """Available summary styles."""
-    BULLETS = "bullets"
-    BRIEF = "brief"
-    DETAILED = "detailed"
-    ELI5 = "eli5"
-    TLDR = "tldr"
-
-
-class OutputFormat(Enum):
-    """Available output formats."""
-    TEXT = "text"
-    MARKDOWN = "markdown"
-    JSON = "json"
-
-
-# Human-readable descriptions for each style
-STYLE_DESCRIPTIONS = {
-    SummaryStyle.BULLETS: "Bullet-point list of key takeaways",
-    SummaryStyle.BRIEF: "Short executive brief (2-3 paragraphs)",
-    SummaryStyle.DETAILED: "Comprehensive detailed analysis",
-    SummaryStyle.ELI5: "Explain like I'm 5 years old",
-    SummaryStyle.TLDR: "One-sentence TL;DR summary",
-}
-
-# Prompt template keys for each style
-STYLE_PROMPT_KEYS = {
-    SummaryStyle.BULLETS: "bullets",
-    SummaryStyle.BRIEF: "brief",
-    SummaryStyle.DETAILED: "detailed",
-    SummaryStyle.ELI5: "eli5",
-    SummaryStyle.TLDR: "tldr",
+STYLE_DESCRIPTIONS: dict[str, str] = {
+    "concise": "A brief 2-3 sentence summary of the main points.",
+    "detailed": "A comprehensive summary covering all key topics and details.",
+    "bullet": "Key takeaways presented as a bullet-point list.",
+    "eli5": "A simple explanation suitable for a general audience.",
+    "executive": "An executive summary focused on decisions, outcomes, and action items.",
 }

@@ -1,180 +1,179 @@
-"""Ollama provider — calls the local Ollama REST API over HTTP."""
+"""Ollama local LLM provider implementation."""
 from __future__ import annotations
 
 import json
 import os
-from typing import Any, TYPE_CHECKING
+from typing import Any, Optional
 
+from src.summarizer.config import Config
 from src.summarizer.exceptions import LLMError
 from src.summarizer.llm.base import BaseLLMProvider
 
-if TYPE_CHECKING:
-    from src.summarizer.config import Config
-
-_DEFAULT_MODEL = "llama3.2"
-_DEFAULT_HOST = "http://localhost:11434"
-_CHARS_PER_TOKEN = 4  # Conservative heuristic
-
 
 class OllamaProvider(BaseLLMProvider):
-    """LLM provider backed by a local Ollama instance."""
+    """
+    LLM provider that calls a local Ollama instance via its REST API.
 
-    def __init__(self, config: "Config") -> None:
+    Ollama must be running at the configured host (default: http://localhost:11434).
+    No API key is required.
+    """
+
+    DEFAULT_MODEL = "llama3.2"
+    DEFAULT_HOST = "http://localhost:11434"
+    _CHARS_PER_TOKEN = 4  # character-based approximation
+
+    def __init__(self, config: Optional[Config] = None) -> None:
         self._config = config
-        self._model = getattr(config, "model", None) or _DEFAULT_MODEL
-        self._host = (
-            getattr(config, "ollama_host", None)
-            or os.environ.get("OLLAMA_HOST", _DEFAULT_HOST)
-        ).rstrip("/")
-
-        try:
-            import requests as _requests
-            self._requests = _requests
-        except ImportError as exc:
-            raise LLMError(
-                "The 'requests' package is required for the Ollama provider. "
-                "Install it with: pip install requests"
-            ) from exc
+        self._host = self._resolve_host().rstrip("/")
+        self._model = self._resolve_model()
 
     # ------------------------------------------------------------------
     # BaseLLMProvider interface
     # ------------------------------------------------------------------
 
     @property
-    def default_model(self) -> str:
-        return _DEFAULT_MODEL
-
-    @property
     def provider_name(self) -> str:
         return "ollama"
 
-    def count_tokens(self, text: str) -> int:
-        """Character-based token heuristic."""
-        return max(1, len(text) // _CHARS_PER_TOKEN)
+    @property
+    def default_model(self) -> str:
+        return self.DEFAULT_MODEL
 
     def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """
-        Call the Ollama /api/chat endpoint.
+        Call the Ollama /api/chat endpoint and return the response text.
 
-        Args:
-            messages: List of {'role': ..., 'content': ...} dicts.
-            **kwargs: Overrides for model, temperature, max_tokens.
-
-        Returns:
-            Assistant message content string.
-
-        Raises:
-            LLMError: On HTTP errors, connection failures, or malformed responses.
+        Uses the OpenAI-compatible messages format that Ollama supports.
         """
-        model = kwargs.pop("model", None) or self._model
-        temperature = kwargs.pop(
-            "temperature",
-            getattr(self._config, "temperature", 0.3),
-        )
-        max_tokens = kwargs.pop(
-            "max_tokens",
-            getattr(self._config, "max_tokens", 4096),
-        )
+        model = kwargs.pop("model", self._model)
+        # Ollama accepts standard chat options
+        options: dict[str, Any] = {}
+        if "temperature" in kwargs:
+            options["temperature"] = kwargs.pop("temperature")
+        if "max_tokens" in kwargs:
+            options["num_predict"] = kwargs.pop("max_tokens")
 
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens,
-                **kwargs,
-            },
+            "options": options,
         }
+        payload.update(kwargs)
 
         url = f"{self._host}/api/chat"
-
         try:
-            response = self._requests.post(
+            import requests
+            response = requests.post(
                 url,
                 json=payload,
-                timeout=120,
+                timeout=120,  # local models can be slow
             )
-        except self._requests.exceptions.ConnectionError as exc:
-            raise LLMError(
-                f"Cannot connect to Ollama at {self._host}. "
-                "Make sure Ollama is running: https://ollama.ai"
-            ) from exc
-        except self._requests.exceptions.Timeout as exc:
-            raise LLMError(
-                f"Ollama request timed out after 120 seconds (model: {model})."
-            ) from exc
-        except self._requests.exceptions.RequestException as exc:
-            raise LLMError(f"Ollama request error: {exc}") from exc
-
-        self._raise_for_status(response, model)
-
-        try:
+            self._check_http_response(response)
             data = response.json()
-        except (json.JSONDecodeError, ValueError) as exc:
+            return data.get("message", {}).get("content", "")
+        except LLMError:
+            raise
+        except ImportError as exc:
             raise LLMError(
-                f"Ollama returned non-JSON response: {response.text[:200]}"
+                "The 'requests' package is required for the Ollama provider. "
+                "Install it with: pip install requests"
             ) from exc
+        except Exception as exc:
+            raise self._map_error(exc) from exc
 
-        # Ollama /api/chat response shape:
-        # {"message": {"role": "assistant", "content": "..."}, ...}
+    def count_tokens(self, text: str) -> int:
+        """Estimate token count using a character-based heuristic."""
+        return max(1, len(text) // self._CHARS_PER_TOKEN)
+
+    # ------------------------------------------------------------------
+    # Ollama-specific helpers
+    # ------------------------------------------------------------------
+
+    def list_models(self) -> list[str]:
+        """
+        Return a list of model names available on the local Ollama instance.
+
+        Raises:
+            LLMError: If the Ollama server is unreachable or returns an error.
+        """
+        url = f"{self._host}/api/tags"
         try:
-            content = data["message"]["content"]
-        except (KeyError, TypeError) as exc:
+            import requests
+            response = requests.get(url, timeout=10)
+            self._check_http_response(response)
+            data = response.json()
+            return [m["name"] for m in data.get("models", [])]
+        except LLMError:
+            raise
+        except ImportError as exc:
             raise LLMError(
-                f"Unexpected Ollama response structure: {data}"
+                "The 'requests' package is required for the Ollama provider."
             ) from exc
+        except Exception as exc:
+            raise LLMError(f"Failed to list Ollama models: {exc}") from exc
 
-        if not content:
-            raise LLMError("Ollama returned an empty response.")
-
-        return content
+    def is_available(self) -> bool:
+        """Return True if the Ollama server is reachable."""
+        try:
+            import requests
+            response = requests.get(f"{self._host}/api/tags", timeout=5)
+            return response.status_code == 200
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Internal helpers
     # ------------------------------------------------------------------
 
-    def _raise_for_status(self, response: Any, model: str) -> None:
-        """Convert HTTP error codes to LLMError."""
-        status = response.status_code
-        if status == 200:
-            return
-        if status == 404:
+    def _resolve_host(self) -> str:
+        return (
+            (self._config.ollama_host if self._config and hasattr(self._config, "ollama_host") else None)
+            or os.environ.get("OLLAMA_HOST")
+            or self.DEFAULT_HOST
+        )
+
+    def _resolve_model(self) -> str:
+        return (
+            (self._config.ollama_model if self._config and hasattr(self._config, "ollama_model") else None)
+            or os.environ.get("OLLAMA_MODEL")
+            or self.DEFAULT_MODEL
+        )
+
+    @staticmethod
+    def _check_http_response(response: Any) -> None:
+        """Raise LLMError for non-2xx HTTP responses."""
+        if response.status_code == 404:
             raise LLMError(
-                f"Ollama model '{model}' not found. "
-                f"Pull it first with: ollama pull {model}"
+                f"Ollama model not found (404). "
+                f"Pull it first with: ollama pull <model_name>"
             )
-        if status == 400:
+        if response.status_code == 500:
             try:
                 detail = response.json().get("error", response.text)
             except Exception:
                 detail = response.text
-            raise LLMError(f"Ollama bad request: {detail}")
-        if status == 500:
-            raise LLMError(f"Ollama internal server error: {response.text[:300]}")
-        raise LLMError(
-            f"Ollama returned HTTP {status}: {response.text[:300]}"
-        )
-
-    def list_models(self) -> list[str]:
-        """
-        Query Ollama for available local models.
-
-        Returns:
-            List of model name strings.
-
-        Raises:
-            LLMError: On connection or API errors.
-        """
-        url = f"{self._host}/api/tags"
-        try:
-            response = self._requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            return [m["name"] for m in data.get("models", [])]
-        except self._requests.exceptions.ConnectionError as exc:
+            raise LLMError(f"Ollama server error: {detail}")
+        if not (200 <= response.status_code < 300):
             raise LLMError(
-                f"Cannot connect to Ollama at {self._host}."
-            ) from exc
-        except Exception as exc:
-            raise LLMError(f"Failed to list Ollama models: {exc}") from exc
+                f"Ollama returned unexpected status {response.status_code}: {response.text}"
+            )
+
+    @staticmethod
+    def _map_error(exc: Exception) -> LLMError:
+        """Map requests exceptions to LLMError."""
+        exc_type = type(exc).__name__
+        try:
+            import requests
+            if isinstance(exc, requests.ConnectionError):
+                return LLMError(
+                    f"Cannot connect to Ollama. Is it running? "
+                    f"Start it with: ollama serve ({exc})"
+                )
+            if isinstance(exc, requests.Timeout):
+                return LLMError(f"Ollama request timed out: {exc}")
+            if isinstance(exc, requests.RequestException):
+                return LLMError(f"Ollama request error: {exc}")
+        except ImportError:
+            pass
+        return LLMError(f"Ollama provider error ({exc_type}): {exc}")

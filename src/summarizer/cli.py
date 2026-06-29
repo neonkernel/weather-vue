@@ -5,29 +5,44 @@ import argparse
 import sys
 from typing import Optional
 
+from src.summarizer.config import Config
+from src.summarizer.exceptions import LLMError, SummarizerError
+from src.summarizer.llm.factory import ProviderFactory
+from src.summarizer.styles import AVAILABLE_STYLES
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Construct and return the argument parser."""
     parser = argparse.ArgumentParser(
         prog="summarizer",
-        description="Summarize articles and documents using LLMs.",
+        description="Summarize text content using various LLM backends.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  summarizer article.txt
+  summarizer article.txt --provider anthropic --style bullet
+  summarizer article.txt --provider ollama --model llama3.2
+  echo "Some text" | summarizer --provider openai
+        """,
     )
 
     # Input
     parser.add_argument(
         "input",
         nargs="?",
-        help="URL or file path to summarize. Reads from stdin if omitted.",
+        default="-",
+        help="Path to the input file, or '-' to read from stdin (default: stdin)",
     )
 
     # Provider selection
     parser.add_argument(
         "--provider",
-        choices=["openai", "anthropic", "ollama"],
+        choices=ProviderFactory.available_providers(),
         default=None,
+        metavar="PROVIDER",
         help=(
-            "LLM backend to use. Overrides the LLM_PROVIDER environment variable. "
-            "Choices: openai (default), anthropic, ollama."
+            f"LLM backend to use. Choices: {', '.join(ProviderFactory.available_providers())}. "
+            "Overrides the LLM_PROVIDER env var. (default: openai)"
         ),
     )
 
@@ -36,163 +51,199 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         default=None,
         help=(
-            "Model name to use. Provider-specific defaults apply when omitted. "
-            "Examples: gpt-4o, claude-3-5-sonnet, llama3.2"
+            "Model name to use (provider-specific). "
+            "Overrides the provider's default model and the OPENAI_MODEL / "
+            "ANTHROPIC_MODEL / OLLAMA_MODEL env vars."
         ),
     )
 
-    # Style / output
+    # Summary style
     parser.add_argument(
         "--style",
-        choices=["concise", "detailed", "bullet", "academic"],
-        default="concise",
-        help="Summary style (default: concise).",
-    )
-    parser.add_argument(
-        "--format",
-        dest="output_format",
-        choices=["markdown", "plain", "json"],
-        default="markdown",
-        help="Output format (default: markdown).",
-    )
-    parser.add_argument(
-        "--max-length",
-        type=int,
+        choices=AVAILABLE_STYLES,
         default=None,
-        help="Maximum word count for the summary.",
+        help="Summary style to apply. (default: concise)",
     )
 
-    # Generation parameters
+    # Output options
     parser.add_argument(
-        "--temperature",
-        type=float,
+        "--output",
+        "-o",
         default=None,
-        help="Sampling temperature (0.0–2.0). Provider default used when omitted.",
+        help="Write the summary to this file instead of stdout.",
     )
+
+    # Token / chunk settings
     parser.add_argument(
         "--max-tokens",
         type=int,
         default=None,
-        help="Maximum tokens in the LLM response.",
+        help="Maximum number of tokens in the LLM response. (default: 1024)",
     )
-
-    # Ollama-specific
     parser.add_argument(
-        "--ollama-host",
+        "--chunk-tokens",
+        type=int,
         default=None,
-        help=(
-            "Ollama server URL (default: http://localhost:11434). "
-            "Overrides OLLAMA_HOST env var."
-        ),
+        help="Maximum tokens per chunk when splitting long documents. (default: 3000)",
     )
 
-    # Utility flags
-    parser.add_argument(
-        "--list-models",
-        action="store_true",
-        help="List available models for the selected provider and exit.",
-    )
+    # Verbosity
     parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
-        help="Enable verbose/debug output.",
+        default=False,
+        help="Enable verbose logging.",
+    )
+
+    # List available Ollama models
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        default=False,
+        help="List available models for the selected provider and exit (Ollama only).",
     )
 
     return parser
 
 
-def _build_config(args: argparse.Namespace):
-    """Construct a Config object from parsed CLI arguments."""
-    from src.summarizer.config import Config
-
-    config = Config.from_env()
-
-    # CLI flags override env / defaults
-    if args.provider:
-        config.provider = args.provider
-    if args.model:
-        config.model = args.model
-    if args.style:
-        config.style = args.style
-    if args.output_format:
-        config.output_format = args.output_format
-    if args.max_length is not None:
-        config.max_length = args.max_length
-    if args.temperature is not None:
-        config.temperature = args.temperature
-    if args.max_tokens is not None:
-        config.max_tokens = args.max_tokens
-    if args.ollama_host:
-        config.ollama_host = args.ollama_host
-
-    return config
+def read_input(path: str) -> str:
+    """Read text from a file path or stdin ('-')."""
+    if path == "-":
+        if sys.stdin.isatty():
+            print("Reading from stdin (press Ctrl+D when done):", file=sys.stderr)
+        return sys.stdin.read()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read()
+    except FileNotFoundError:
+        raise SummarizerError(f"Input file not found: {path}")
+    except PermissionError:
+        raise SummarizerError(f"Permission denied reading: {path}")
 
 
-def _list_models(provider_name: str, config) -> None:
-    """Print available models for the given provider."""
-    from src.summarizer.llm.factory import ProviderFactory
-
-    provider = ProviderFactory.create(provider_name, config)
-
-    if hasattr(provider, "list_models"):
-        models = provider.list_models()
-        if models:
-            print(f"Available {provider_name} models:")
-            for m in models:
-                print(f"  - {m}")
-        else:
-            print(f"No models found for provider '{provider_name}'.")
+def write_output(text: str, path: Optional[str]) -> None:
+    """Write text to a file or stdout."""
+    if path:
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        except PermissionError:
+            raise SummarizerError(f"Permission denied writing to: {path}")
     else:
-        print(
-            f"Provider '{provider_name}' does not support model listing. "
-            f"Default model: {provider.default_model}"
-        )
+        print(text)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    """Entry point. Returns process exit code."""
+    """
+    Entry point for the CLI.
+
+    Returns:
+        Exit code (0 = success, non-zero = error).
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    try:
-        config = _build_config(args)
-    except Exception as exc:  # noqa: BLE001
-        print(f"Configuration error: {exc}", file=sys.stderr)
-        return 1
+    # Build config, allowing CLI args to override env/defaults
+    config = Config(
+        provider=args.provider or None,  # None means Config picks from env
+        style=args.style or None,
+        max_output_tokens=args.max_tokens or None,
+        max_chunk_tokens=args.chunk_tokens or None,
+    )
+    # Re-apply provider from CLI (highest priority)
+    if args.provider:
+        config.provider = args.provider
 
-    # --list-models early exit
-    if args.list_models:
-        try:
-            _list_models(config.provider, config)
-        except Exception as exc:  # noqa: BLE001
-            print(f"Error listing models: {exc}", file=sys.stderr)
+    try:
+        provider = ProviderFactory.create(
+            provider_name=args.provider,
+            config=config,
+        )
+
+        # Handle --list-models (Ollama only for now)
+        if args.list_models:
+            if hasattr(provider, "list_models"):
+                models = provider.list_models()
+                if models:
+                    print(f"Available models on {provider.provider_name}:")
+                    for m in models:
+                        print(f"  - {m}")
+                else:
+                    print(f"No models found for provider '{provider.provider_name}'.")
+            else:
+                print(
+                    f"The '{provider.provider_name}' provider does not support model listing.",
+                    file=sys.stderr,
+                )
+            return 0
+
+        # Read input
+        text = read_input(args.input)
+        if not text.strip():
+            print("Error: Input text is empty.", file=sys.stderr)
             return 1
-        return 0
 
-    # Determine input source
-    if args.input:
-        input_source = args.input
-    elif not sys.stdin.isatty():
-        input_source = sys.stdin.read()
-    else:
-        print("Error: provide an input URL/file or pipe text via stdin.", file=sys.stderr)
-        parser.print_help(sys.stderr)
-        return 1
-
-    try:
-        from src.summarizer.summarize import summarize
-
-        result = summarize(input_source, config=config, verbose=args.verbose)
-        print(result)
-        return 0
-
-    except Exception as exc:  # noqa: BLE001
-        print(f"Error: {exc}", file=sys.stderr)
         if args.verbose:
-            import traceback
-            traceback.print_exc()
+            print(
+                f"[summarizer] Using provider: {provider.provider_name} "
+                f"(model: {provider.default_model})",
+                file=sys.stderr,
+            )
+
+        # Build messages
+        style = args.style or config.style or "concise"
+        model_override = args.model
+
+        messages = _build_messages(text, style)
+        complete_kwargs: dict = {}
+        if model_override:
+            complete_kwargs["model"] = model_override
+        if args.max_tokens:
+            complete_kwargs["max_tokens"] = args.max_tokens
+
+        # Call LLM
+        summary = provider.complete(messages, **complete_kwargs)
+
+        # Output
+        write_output(summary, args.output)
+        return 0
+
+    except (LLMError, SummarizerError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("\nAborted.", file=sys.stderr)
+        return 130
+
+
+def _build_messages(text: str, style: str = "concise") -> list[dict[str, str]]:
+    """Construct the messages list for the LLM."""
+    style_instructions = {
+        "concise": "Provide a concise summary in 2-3 sentences.",
+        "detailed": "Provide a detailed summary covering all main points.",
+        "bullet": "Summarize the content as a bullet-point list of key takeaways.",
+        "eli5": "Explain this content as if the reader is 5 years old.",
+        "executive": (
+            "Write an executive summary suitable for senior stakeholders: "
+            "key decisions, outcomes, and action items only."
+        ),
+    }
+    instruction = style_instructions.get(style, style_instructions["concise"])
+
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are an expert summarizer. Your task is to summarize the provided text "
+                f"accurately and concisely. {instruction}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Please summarize the following text:\n\n{text}",
+        },
+    ]
 
 
 if __name__ == "__main__":

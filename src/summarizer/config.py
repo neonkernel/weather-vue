@@ -1,4 +1,4 @@
-"""Application configuration."""
+"""Configuration management for the summarizer."""
 from __future__ import annotations
 
 import os
@@ -8,62 +8,77 @@ from typing import Optional
 
 @dataclass
 class Config:
-    """Central configuration for the summarizer application."""
+    """
+    Central configuration for the summarizer application.
 
-    # --- LLM provider ---
-    provider: str = field(
-        default_factory=lambda: os.environ.get("LLM_PROVIDER", "openai")
+    Values are resolved in this order (highest priority first):
+    1. Explicit constructor arguments
+    2. Environment variables
+    3. Hard-coded defaults
+    """
+
+    # ------------------------------------------------------------------
+    # Provider selection
+    # ------------------------------------------------------------------
+    provider: str = field(default_factory=lambda: os.environ.get("LLM_PROVIDER", "openai"))
+
+    # ------------------------------------------------------------------
+    # OpenAI settings
+    # ------------------------------------------------------------------
+    openai_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("OPENAI_API_KEY")
+    )
+    openai_model: Optional[str] = field(
+        default_factory=lambda: os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     )
 
-    # --- Model settings ---
-    model: Optional[str] = field(
-        default_factory=lambda: os.environ.get("DEFAULT_MODEL", None)
+    # ------------------------------------------------------------------
+    # Anthropic settings
+    # ------------------------------------------------------------------
+    anthropic_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY")
+    )
+    anthropic_model: Optional[str] = field(
+        default_factory=lambda: os.environ.get("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+    )
+
+    # ------------------------------------------------------------------
+    # Ollama settings
+    # ------------------------------------------------------------------
+    ollama_host: Optional[str] = field(
+        default_factory=lambda: os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    )
+    ollama_model: Optional[str] = field(
+        default_factory=lambda: os.environ.get("OLLAMA_MODEL", "llama3.2")
+    )
+
+    # ------------------------------------------------------------------
+    # General summarizer settings
+    # ------------------------------------------------------------------
+    max_chunk_tokens: int = field(
+        default_factory=lambda: int(os.environ.get("MAX_CHUNK_TOKENS", "3000"))
+    )
+    max_output_tokens: int = field(
+        default_factory=lambda: int(os.environ.get("MAX_OUTPUT_TOKENS", "1024"))
     )
     temperature: float = field(
         default_factory=lambda: float(os.environ.get("TEMPERATURE", "0.3"))
     )
-    max_tokens: int = field(
-        default_factory=lambda: int(os.environ.get("MAX_TOKENS", "4096"))
+    style: str = field(
+        default_factory=lambda: os.environ.get("SUMMARY_STYLE", "concise")
     )
-
-    # --- Provider credentials / endpoints ---
-    openai_api_key: Optional[str] = field(
-        default_factory=lambda: os.environ.get("OPENAI_API_KEY")
-    )
-    anthropic_api_key: Optional[str] = field(
-        default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY")
-    )
-    ollama_host: str = field(
-        default_factory=lambda: os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-    )
-
-    # --- Output settings ---
-    output_format: str = "markdown"
-    max_length: Optional[int] = None
-    style: str = "concise"
-
-    # --- Chunking ---
-    chunk_size: int = field(
-        default_factory=lambda: int(os.environ.get("CHUNK_SIZE", "3000"))
-    )
-    chunk_overlap: int = field(
-        default_factory=lambda: int(os.environ.get("CHUNK_OVERLAP", "200"))
+    language: str = field(
+        default_factory=lambda: os.environ.get("SUMMARY_LANGUAGE", "en")
     )
 
     @classmethod
     def from_env(cls) -> "Config":
-        """Create a Config instance populated from environment variables."""
+        """Create a Config instance populated entirely from environment variables."""
         return cls()
 
-    def resolve_model(self) -> str:
-        """Return the model to use, falling back to the provider default."""
-        if self.model:
-            return self.model
-        # Import lazily to avoid circular imports
-        from src.summarizer.llm.factory import ProviderFactory  # noqa: F401
-        _defaults = {
-            "openai": "gpt-4o-mini",
-            "anthropic": "claude-3-5-haiku-20241022",
-            "ollama": "llama3.2",
-        }
-        return _defaults.get(self.provider, "gpt-4o-mini")
+    def __post_init__(self) -> None:
+        """Normalize values after initialization."""
+        if self.provider:
+            self.provider = self.provider.lower().strip()
+        if self.ollama_host:
+            self.ollama_host = self.ollama_host.rstrip("/")

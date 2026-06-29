@@ -1,73 +1,84 @@
-"""Factory for instantiating LLM providers from config or CLI flags."""
-from __future__ import annotations
-
+"""Factory for creating LLM provider instances."""
 import os
-from typing import TYPE_CHECKING
+from typing import Optional
 
+from src.summarizer.config import Config
 from src.summarizer.exceptions import LLMError
-
-if TYPE_CHECKING:
-    from src.summarizer.config import Config
-    from src.summarizer.llm.base import BaseLLMProvider
-
-PROVIDER_REGISTRY: dict[str, str] = {
-    "openai": "src.summarizer.llm.providers.openai_provider.OpenAIProvider",
-    "anthropic": "src.summarizer.llm.providers.anthropic_provider.AnthropicProvider",
-    "ollama": "src.summarizer.llm.providers.ollama_provider.OllamaProvider",
-}
+from src.summarizer.llm.base import BaseLLMProvider
 
 
 class ProviderFactory:
-    """Creates and returns an LLM provider instance based on configuration."""
+    """Maps provider name strings to provider classes and instantiates them with config."""
 
-    @staticmethod
-    def _import_provider(dotted_path: str) -> type:
-        """Dynamically import a provider class from a dotted module path."""
-        module_path, class_name = dotted_path.rsplit(".", 1)
-        import importlib
-        module = importlib.import_module(module_path)
-        return getattr(module, class_name)
+    _PROVIDER_MAP: dict[str, str] = {
+        "openai": "src.summarizer.llm.providers.openai_provider.OpenAIProvider",
+        "anthropic": "src.summarizer.llm.providers.anthropic_provider.AnthropicProvider",
+        "ollama": "src.summarizer.llm.providers.ollama_provider.OllamaProvider",
+    }
 
     @classmethod
-    def from_config(cls, config: "Config") -> "BaseLLMProvider":
+    def create(
+        cls,
+        provider_name: Optional[str] = None,
+        config: Optional[Config] = None,
+    ) -> BaseLLMProvider:
         """
-        Instantiate the appropriate provider from a Config object.
+        Create and return the appropriate LLM provider instance.
 
         Provider resolution order:
-        1. config.provider (set from --provider CLI flag)
-        2. LLM_PROVIDER environment variable
-        3. Default: 'openai'
-        """
-        provider_name = (
-            getattr(config, "provider", None)
-            or os.environ.get("LLM_PROVIDER", "openai")
-        ).lower().strip()
-
-        return cls.create(provider_name, config)
-
-    @classmethod
-    def create(cls, provider_name: str, config: "Config") -> "BaseLLMProvider":
-        """
-        Instantiate a provider by name.
+        1. Explicit `provider_name` argument
+        2. `config.provider` field
+        3. `LLM_PROVIDER` environment variable
+        4. Default to 'openai'
 
         Args:
-            provider_name: One of 'openai', 'anthropic', 'ollama'.
-            config: Application config object.
+            provider_name: Optional explicit provider name ('openai', 'anthropic', 'ollama').
+            config: Optional Config instance to pull settings from.
 
         Returns:
-            An instance of the requested provider.
+            A fully-configured BaseLLMProvider instance.
 
         Raises:
-            LLMError: If provider_name is not recognised.
+            LLMError: If the provider name is unknown or instantiation fails.
         """
-        provider_name = provider_name.lower().strip()
+        resolved_name = (
+            provider_name
+            or (config.provider if config and config.provider else None)
+            or os.environ.get("LLM_PROVIDER")
+            or "openai"
+        ).lower().strip()
 
-        if provider_name not in PROVIDER_REGISTRY:
-            available = ", ".join(sorted(PROVIDER_REGISTRY.keys()))
+        if resolved_name not in cls._PROVIDER_MAP:
+            available = ", ".join(sorted(cls._PROVIDER_MAP.keys()))
             raise LLMError(
-                f"Unknown provider '{provider_name}'. "
+                f"Unknown LLM provider '{resolved_name}'. "
                 f"Available providers: {available}"
             )
 
-        provider_cls = cls._import_provider(PROVIDER_REGISTRY[provider_name])
-        return provider_cls(config)
+        # Lazy import to avoid pulling in optional dependencies unless needed
+        module_path, class_name = cls._PROVIDER_MAP[resolved_name].rsplit(".", 1)
+        try:
+            import importlib
+            module = importlib.import_module(module_path)
+            provider_class = getattr(module, class_name)
+        except ImportError as exc:
+            raise LLMError(
+                f"Failed to import provider '{resolved_name}': {exc}. "
+                f"Make sure the required dependencies are installed."
+            ) from exc
+        except AttributeError as exc:
+            raise LLMError(
+                f"Provider class '{class_name}' not found in module '{module_path}': {exc}"
+            ) from exc
+
+        try:
+            return provider_class(config=config)
+        except Exception as exc:
+            raise LLMError(
+                f"Failed to instantiate provider '{resolved_name}': {exc}"
+            ) from exc
+
+    @classmethod
+    def available_providers(cls) -> list[str]:
+        """Return a sorted list of all registered provider names."""
+        return sorted(cls._PROVIDER_MAP.keys())
