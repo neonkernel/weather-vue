@@ -1,5 +1,9 @@
-"""LLM module for summarizer."""
-from src.summarizer.llm.base import BaseLLMProvider
-from src.summarizer.llm.factory import ProviderFactory
+"""LLM abstraction layer for the summarizer."""
 
-__all__ = ["BaseLLMProvider", "ProviderFactory"]
+from summarizer.llm.base import BaseLLMProvider
+from summarizer.llm.factory import ProviderFactory
+
+__all__ = [
+    "BaseLLMProvider",
+    "ProviderFactory",
+]

@@ -1,32 +1,33 @@
-"""Base LLM provider abstract class."""
+"""Abstract base class for LLM providers."""
 
 from abc import ABC, abstractmethod
 from typing import Any
 
 
 class BaseLLMProvider(ABC):
-    """Abstract base class that all LLM providers must implement."""
+    """Abstract base class defining the interface all LLM providers must implement."""
 
     @abstractmethod
     def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """
-        Send messages to the LLM and return the completion text.
+        Send a list of messages to the LLM and return the completion text.
 
         Args:
-            messages: List of message dicts with 'role' and 'content' keys.
-            **kwargs: Provider-specific options (temperature, max_tokens, etc.)
+            messages: A list of message dicts with 'role' and 'content' keys.
+                      Roles are typically 'system', 'user', or 'assistant'.
+            **kwargs: Additional provider-specific parameters (e.g., temperature,
+                      max_tokens, model override).
 
         Returns:
-            The text response from the LLM.
+            The completion text as a string.
 
         Raises:
-            LLMError: On any provider-side error.
+            LLMError: On any provider-level error (auth, rate limit, network, etc.)
         """
         ...
 
-    @property
     @abstractmethod
-    def default_model(self) -> str:
+    def get_default_model(self) -> str:
         """Return the default model name for this provider."""
         ...
 
@@ -39,6 +40,10 @@ class BaseLLMProvider(ABC):
             text: The text to count tokens for.
 
         Returns:
-            Estimated token count.
+            An integer token count (may be approximate for some providers).
         """
         ...
+
+    def get_provider_name(self) -> str:
+        """Return a human-readable name for this provider."""
+        return self.__class__.__name__

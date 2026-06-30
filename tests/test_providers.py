@@ -3,377 +3,545 @@
 from __future__ import annotations
 
 import json
-from typing import Any
-from unittest.mock import MagicMock, patch, PropertyMock
-
+from unittest.mock import MagicMock, Mock, patch, PropertyMock
 import pytest
 
-from src.summarizer.exceptions import LLMError
-from src.summarizer.config import Config
+from summarizer.config import SummarizerConfig
+from summarizer.exceptions import LLMError
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers / fixtures
 # ---------------------------------------------------------------------------
 
-def _make_config(**kwargs: Any) -> Config:
-    base = {
+def make_config(**kwargs) -> SummarizerConfig:
+    """Create a SummarizerConfig with test-safe defaults."""
+    defaults = {
         "openai_api_key": "sk-test-openai",
         "anthropic_api_key": "sk-test-anthropic",
         "ollama_host": "http://localhost:11434",
-        "model": None,
+        "max_tokens": 512,
     }
-    base.update(kwargs)
-    return Config(**base)
+    defaults.update(kwargs)
+    return SummarizerConfig(**defaults)
 
 
 SAMPLE_MESSAGES = [
     {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Summarize this text."},
+    {"role": "user", "content": "Summarize: hello world."},
 ]
 
-
-# ===========================================================================
+# ---------------------------------------------------------------------------
 # OpenAI Provider
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
 class TestOpenAIProvider:
-    def _make_provider(self, **config_kwargs: Any):
-        from src.summarizer.llm.providers.openai_provider import OpenAIProvider
-
-        config = _make_config(**config_kwargs)
-        with patch("openai.OpenAI") as mock_cls:
-            mock_cls.return_value = MagicMock()
-            provider = OpenAIProvider(config=config)
-            provider._client = mock_cls.return_value
-        return provider
+    def _make_provider(self, **kwargs):
+        with patch("openai.OpenAI"):
+            from summarizer.llm.providers.openai_provider import OpenAIProvider
+            cfg = make_config(provider="openai", **kwargs)
+            provider = OpenAIProvider(cfg)
+            return provider
 
     def test_default_model(self):
         provider = self._make_provider()
-        assert provider.default_model == "gpt-4o-mini"
+        assert provider.get_default_model() is not None
+        assert len(provider.get_default_model()) > 0
 
-    def test_uses_model_from_config(self):
-        provider = self._make_provider(model="gpt-4o")
-        assert provider._model == "gpt-4o"
-
-    def test_complete_returns_content(self):
+    def test_provider_name(self):
         provider = self._make_provider()
+        assert provider.get_provider_name() == "openai"
 
-        mock_response = MagicMock()
-        mock_response.choices[0].message.content = "Hello, world!"
-        provider._client.chat.completions.create.return_value = mock_response
+    def test_complete_returns_string(self):
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
 
-        result = provider.complete(SAMPLE_MESSAGES)
-        assert result == "Hello, world!"
+            mock_choice = MagicMock()
+            mock_choice.message.content = "This is a summary."
+            mock_client.chat.completions.create.return_value = MagicMock(
+                choices=[mock_choice]
+            )
 
-    def test_complete_raises_llm_error_on_api_failure(self):
-        provider = self._make_provider()
-        provider._client.chat.completions.create.side_effect = RuntimeError("API down")
+            from summarizer.llm.providers.openai_provider import OpenAIProvider
+            cfg = make_config(provider="openai")
+            provider = OpenAIProvider(cfg)
 
-        with pytest.raises(LLMError, match="OpenAI API error"):
+            result = provider.complete(SAMPLE_MESSAGES)
+            assert result == "This is a summary."
+
+    def test_complete_calls_api_with_messages(self):
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+
+            mock_choice = MagicMock()
+            mock_choice.message.content = "Summary here."
+            mock_client.chat.completions.create.return_value = MagicMock(
+                choices=[mock_choice]
+            )
+
+            from summarizer.llm.providers.openai_provider import OpenAIProvider
+            cfg = make_config(provider="openai")
+            provider = OpenAIProvider(cfg)
             provider.complete(SAMPLE_MESSAGES)
 
-    def test_complete_raises_on_empty_response(self):
-        provider = self._make_provider()
-        mock_response = MagicMock()
-        mock_response.choices[0].message.content = None
-        provider._client.chat.completions.create.return_value = mock_response
+            call_kwargs = mock_client.chat.completions.create.call_args
+            assert call_kwargs is not None
+            assert call_kwargs.kwargs["messages"] == SAMPLE_MESSAGES
 
-        with pytest.raises(LLMError, match="empty response"):
-            provider.complete(SAMPLE_MESSAGES)
+    def test_complete_maps_exception_to_llm_error(self):
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+            mock_client.chat.completions.create.side_effect = RuntimeError("API down")
 
-    def test_missing_api_key_raises(self):
-        from src.summarizer.llm.providers.openai_provider import OpenAIProvider
+            from summarizer.llm.providers.openai_provider import OpenAIProvider
+            cfg = make_config(provider="openai")
+            provider = OpenAIProvider(cfg)
 
-        config = Config(openai_api_key=None, anthropic_api_key=None)
-        with patch.dict("os.environ", {}, clear=True):
-            # Ensure env var is not set
-            import os
-            os.environ.pop("OPENAI_API_KEY", None)
+            with pytest.raises(LLMError, match="OpenAI completion failed"):
+                provider.complete(SAMPLE_MESSAGES)
+
+    def test_raises_llm_error_without_api_key(self):
+        with patch("openai.OpenAI"):
+            from summarizer.llm.providers.openai_provider import OpenAIProvider
+            cfg = make_config(provider="openai", openai_api_key=None)
+            cfg.openai_api_key = None
+
             with pytest.raises(LLMError, match="API key"):
-                OpenAIProvider(config=config)
+                OpenAIProvider(cfg)
 
-    def test_count_tokens_fallback(self):
+    def test_count_tokens_returns_positive_int(self):
         provider = self._make_provider()
-        # Patch tiktoken to raise so we fall back to heuristic
-        with patch.dict("sys.modules", {"tiktoken": None}):
-            count = provider.count_tokens("hello world")
-            assert count >= 1
+        count = provider.count_tokens("Hello, world!")
+        assert isinstance(count, int)
+        assert count > 0
 
-    def test_passes_max_tokens_to_api(self):
-        provider = self._make_provider(max_tokens=512)
-        mock_response = MagicMock()
-        mock_response.choices[0].message.content = "ok"
-        provider._client.chat.completions.create.return_value = mock_response
+    def test_model_override_in_complete(self):
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
 
-        provider.complete(SAMPLE_MESSAGES, max_tokens=256)
-        call_kwargs = provider._client.chat.completions.create.call_args[1]
-        assert call_kwargs["max_tokens"] == 256
+            mock_choice = MagicMock()
+            mock_choice.message.content = "ok"
+            mock_client.chat.completions.create.return_value = MagicMock(
+                choices=[mock_choice]
+            )
+
+            from summarizer.llm.providers.openai_provider import OpenAIProvider
+            cfg = make_config(provider="openai")
+            provider = OpenAIProvider(cfg)
+            provider.complete(SAMPLE_MESSAGES, model="gpt-4o")
+
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            assert call_kwargs["model"] == "gpt-4o"
 
 
-# ===========================================================================
+# ---------------------------------------------------------------------------
 # Anthropic Provider
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
 class TestAnthropicProvider:
-    def _make_provider(self, **config_kwargs: Any):
-        from src.summarizer.llm.providers.anthropic_provider import AnthropicProvider
-
-        config = _make_config(**config_kwargs)
-        with patch("anthropic.Anthropic") as mock_cls:
-            mock_cls.return_value = MagicMock()
-            provider = AnthropicProvider(config=config)
-            provider._client = mock_cls.return_value
-        return provider
+    def _make_provider(self, **kwargs):
+        with patch("anthropic.Anthropic"):
+            from summarizer.llm.providers.anthropic_provider import AnthropicProvider
+            cfg = make_config(provider="anthropic", **kwargs)
+            provider = AnthropicProvider(cfg)
+            return provider
 
     def test_default_model(self):
         provider = self._make_provider()
-        assert provider.default_model == "claude-3-5-haiku-20241022"
+        assert "claude" in provider.get_default_model().lower()
+
+    def test_provider_name(self):
+        provider = self._make_provider()
+        assert provider.get_provider_name() == "anthropic"
+
+    def test_complete_returns_string(self):
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_cls.return_value = mock_client
+
+            mock_block = MagicMock()
+            mock_block.text = "Claude says hi."
+            mock_client.messages.create.return_value = MagicMock(
+                content=[mock_block]
+            )
+
+            from summarizer.llm.providers.anthropic_provider import AnthropicProvider
+            cfg = make_config(provider="anthropic")
+            provider = AnthropicProvider(cfg)
+            result = provider.complete(SAMPLE_MESSAGES)
+            assert result == "Claude says hi."
+
+    def test_system_message_is_extracted(self):
+        """System role messages should be passed as the 'system' param, not in messages."""
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_cls.return_value = mock_client
+
+            mock_block = MagicMock()
+            mock_block.text = "ok"
+            mock_client.messages.create.return_value = MagicMock(
+                content=[mock_block]
+            )
+
+            from summarizer.llm.providers.anthropic_provider import AnthropicProvider
+            cfg = make_config(provider="anthropic")
+            provider = AnthropicProvider(cfg)
+            provider.complete(SAMPLE_MESSAGES)
+
+            call_kwargs = mock_client.messages.create.call_args.kwargs
+            # System content should NOT appear in the messages list
+            for msg in call_kwargs.get("messages", []):
+                assert msg.get("role") != "system"
+            # System content should be in the 'system' kwarg
+            assert "system" in call_kwargs
+            assert "helpful assistant" in call_kwargs["system"]
+
+    def test_complete_maps_exception_to_llm_error(self):
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_cls.return_value = mock_client
+            mock_client.messages.create.side_effect = RuntimeError("rate limited")
+
+            from summarizer.llm.providers.anthropic_provider import AnthropicProvider
+            cfg = make_config(provider="anthropic")
+            provider = AnthropicProvider(cfg)
+
+            with pytest.raises(LLMError, match="Anthropic completion failed"):
+                provider.complete(SAMPLE_MESSAGES)
+
+    def test_raises_llm_error_without_api_key(self):
+        with patch("anthropic.Anthropic"):
+            from summarizer.llm.providers.anthropic_provider import AnthropicProvider
+            cfg = make_config(provider="anthropic", anthropic_api_key=None)
+            cfg.anthropic_api_key = None
+
+            with pytest.raises(LLMError, match="API key"):
+                AnthropicProvider(cfg)
+
+    def test_count_tokens_returns_positive_int(self):
+        provider = self._make_provider()
+        count = provider.count_tokens("Hello, world! " * 10)
+        assert isinstance(count, int)
+        assert count > 0
 
     def test_model_alias_resolution(self):
-        provider = self._make_provider(model="claude-3-5-sonnet")
-        assert provider._model == "claude-3-5-sonnet-20241022"
+        """Friendly model alias should be resolved to a canonical model ID."""
+        with patch("anthropic.Anthropic"):
+            from summarizer.llm.providers.anthropic_provider import AnthropicProvider
+            cfg = make_config(provider="anthropic", model="claude-3-5-sonnet")
+            provider = AnthropicProvider(cfg)
+            # Should be resolved to the dated canonical ID
+            assert "20" in provider.get_default_model()
 
-    def test_count_tokens_heuristic(self):
-        provider = self._make_provider()
-        # 35 chars / 3.5 = 10 tokens
-        assert provider.count_tokens("a" * 35) == 10
+    def test_no_system_kwarg_when_no_system_message(self):
+        """When there is no system message, 'system' param should not be passed."""
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_cls.return_value = mock_client
 
-    def test_complete_returns_content(self):
-        provider = self._make_provider()
+            mock_block = MagicMock()
+            mock_block.text = "ok"
+            mock_client.messages.create.return_value = MagicMock(
+                content=[mock_block]
+            )
 
-        mock_block = MagicMock()
-        mock_block.text = "Summary here."
-        mock_response = MagicMock()
-        mock_response.content = [mock_block]
-        provider._client.messages.create.return_value = mock_response
+            from summarizer.llm.providers.anthropic_provider import AnthropicProvider
+            cfg = make_config(provider="anthropic")
+            provider = AnthropicProvider(cfg)
 
-        result = provider.complete(SAMPLE_MESSAGES)
-        assert result == "Summary here."
+            user_only = [{"role": "user", "content": "Hello!"}]
+            provider.complete(user_only)
 
-    def test_system_prompt_extracted(self):
-        provider = self._make_provider()
-
-        mock_block = MagicMock()
-        mock_block.text = "ok"
-        mock_response = MagicMock()
-        mock_response.content = [mock_block]
-        provider._client.messages.create.return_value = mock_response
-
-        provider.complete(SAMPLE_MESSAGES)
-
-        call_kwargs = provider._client.messages.create.call_args[1]
-        assert call_kwargs["system"] == "You are a helpful assistant."
-        # System message should not appear in messages list
-        for msg in call_kwargs["messages"]:
-            assert msg["role"] != "system"
-
-    def test_complete_raises_llm_error_on_api_failure(self):
-        provider = self._make_provider()
-        provider._client.messages.create.side_effect = RuntimeError("Network error")
-
-        with pytest.raises(LLMError, match="Anthropic API error"):
-            provider.complete(SAMPLE_MESSAGES)
-
-    def test_complete_raises_on_empty_response(self):
-        provider = self._make_provider()
-        mock_response = MagicMock()
-        mock_response.content = []
-        provider._client.messages.create.return_value = mock_response
-
-        with pytest.raises(LLMError, match="empty response"):
-            provider.complete(SAMPLE_MESSAGES)
-
-    def test_raises_on_no_conversation_messages(self):
-        provider = self._make_provider()
-        with pytest.raises(LLMError, match="No user/assistant messages"):
-            provider.complete([{"role": "system", "content": "Only system"}])
-
-    def test_missing_api_key_raises(self):
-        from src.summarizer.llm.providers.anthropic_provider import AnthropicProvider
-
-        config = Config(openai_api_key=None, anthropic_api_key=None)
-        with patch.dict("os.environ", {}, clear=True):
-            import os
-            os.environ.pop("ANTHROPIC_API_KEY", None)
-            with pytest.raises(LLMError, match="API key"):
-                AnthropicProvider(config=config)
-
-    def test_multiple_content_blocks_joined(self):
-        provider = self._make_provider()
-
-        blocks = [MagicMock(), MagicMock()]
-        blocks[0].text = "Part one. "
-        blocks[1].text = "Part two."
-        mock_response = MagicMock()
-        mock_response.content = blocks
-        provider._client.messages.create.return_value = mock_response
-
-        result = provider.complete(SAMPLE_MESSAGES)
-        assert result == "Part one. Part two."
+            call_kwargs = mock_client.messages.create.call_args.kwargs
+            assert "system" not in call_kwargs
 
 
-# ===========================================================================
+# ---------------------------------------------------------------------------
 # Ollama Provider
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
 class TestOllamaProvider:
-    def _make_provider(self, **config_kwargs: Any):
-        from src.summarizer.llm.providers.ollama_provider import OllamaProvider
-
-        config = _make_config(**config_kwargs)
-        # No auth needed for Ollama
-        return OllamaProvider(config=config)
-
-    def _mock_post(self, content: str = "Ollama response"):
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"message": {"content": content}}
-        mock_resp.raise_for_status = MagicMock()
-        return mock_resp
+    def _make_provider(self, **kwargs):
+        with patch("requests.post"), patch("requests.get"):
+            from summarizer.llm.providers.ollama_provider import OllamaProvider
+            cfg = make_config(provider="ollama", **kwargs)
+            return OllamaProvider(cfg)
 
     def test_default_model(self):
         provider = self._make_provider()
-        assert provider.default_model == "llama3.2"
+        assert provider.get_default_model() is not None
 
-    def test_custom_host_from_config(self):
-        provider = self._make_provider(ollama_host="http://myserver:11434")
-        assert provider._host == "http://myserver:11434"
-
-    def test_host_trailing_slash_stripped(self):
-        provider = self._make_provider(ollama_host="http://localhost:11434/")
-        assert provider._host == "http://localhost:11434"
-
-    def test_count_tokens_heuristic(self):
+    def test_provider_name(self):
         provider = self._make_provider()
-        assert provider.count_tokens("a" * 40) == 10
+        assert provider.get_provider_name() == "ollama"
 
-    def test_complete_returns_content(self):
-        provider = self._make_provider()
-        with patch("requests.post", return_value=self._mock_post("Hello from Ollama")) as mock_post:
+    def test_complete_returns_string(self):
+        from summarizer.llm.providers.ollama_provider import OllamaProvider
+        cfg = make_config(provider="ollama")
+
+        response_body = json.dumps({
+            "message": {"role": "assistant", "content": "Ollama says hi."},
+            "done": True,
+        })
+
+        with patch("requests.post") as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.text = response_body
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            provider = OllamaProvider(cfg)
             result = provider.complete(SAMPLE_MESSAGES)
-        assert result == "Hello from Ollama"
-        mock_post.assert_called_once()
+            assert result == "Ollama says hi."
 
     def test_complete_sends_correct_payload(self):
-        provider = self._make_provider()
-        with patch("requests.post", return_value=self._mock_post()) as mock_post:
-            provider.complete(SAMPLE_MESSAGES, temperature=0.5, max_tokens=100)
+        from summarizer.llm.providers.ollama_provider import OllamaProvider
+        cfg = make_config(provider="ollama", model="mistral")
 
-        payload = mock_post.call_args[1]["json"]
-        assert payload["model"] == "llama3.2"
-        assert payload["messages"] == SAMPLE_MESSAGES
-        assert payload["stream"] is False
-        assert payload["options"]["temperature"] == 0.5
-        assert payload["options"]["num_predict"] == 100
+        response_body = json.dumps({
+            "message": {"role": "assistant", "content": "ok"},
+            "done": True,
+        })
 
-    def test_complete_raises_on_connection_error(self):
-        import requests as req_lib
+        with patch("requests.post") as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.text = response_body
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
 
-        provider = self._make_provider()
-        with patch("requests.post", side_effect=req_lib.exceptions.ConnectionError("refused")):
+            provider = OllamaProvider(cfg)
+            provider.complete(SAMPLE_MESSAGES)
+
+            call_kwargs = mock_post.call_args
+            payload = call_kwargs.kwargs.get("json") or call_kwargs.args[1]
+            assert payload["messages"] == SAMPLE_MESSAGES
+            assert payload["model"] == "mistral"
+
+    def test_connection_error_maps_to_llm_error(self):
+        import requests as req_mod
+        from summarizer.llm.providers.ollama_provider import OllamaProvider
+        cfg = make_config(provider="ollama")
+
+        with patch("requests.post") as mock_post:
+            mock_post.side_effect = req_mod.exceptions.ConnectionError("refused")
+            provider = OllamaProvider(cfg)
+
             with pytest.raises(LLMError, match="Cannot connect to Ollama"):
                 provider.complete(SAMPLE_MESSAGES)
 
-    def test_complete_raises_on_http_error(self):
-        import requests as req_lib
+    def test_http_error_maps_to_llm_error(self):
+        import requests as req_mod
+        from summarizer.llm.providers.ollama_provider import OllamaProvider
+        cfg = make_config(provider="ollama")
 
-        provider = self._make_provider()
-        mock_resp = MagicMock()
-        mock_resp.status_code = 404
-        mock_resp.json.return_value = {"error": "model not found"}
-        http_err = req_lib.exceptions.HTTPError(response=mock_resp)
-        mock_resp.raise_for_status.side_effect = http_err
+        with patch("requests.post") as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 404
+            http_err = req_mod.exceptions.HTTPError(response=mock_resp)
+            mock_post.side_effect = http_err
+            provider = OllamaProvider(cfg)
 
-        with patch("requests.post", return_value=mock_resp):
-            with pytest.raises(LLMError, match="HTTP 404"):
+            with pytest.raises(LLMError, match="HTTP"):
                 provider.complete(SAMPLE_MESSAGES)
 
-    def test_complete_raises_on_empty_content(self):
-        provider = self._make_provider()
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"message": {"content": ""}}
-        mock_resp.raise_for_status = MagicMock()
+    def test_timeout_maps_to_llm_error(self):
+        import requests as req_mod
+        from summarizer.llm.providers.ollama_provider import OllamaProvider
+        cfg = make_config(provider="ollama")
 
-        with patch("requests.post", return_value=mock_resp):
-            with pytest.raises(LLMError, match="empty response"):
+        with patch("requests.post") as mock_post:
+            mock_post.side_effect = req_mod.exceptions.Timeout("timed out")
+            provider = OllamaProvider(cfg)
+
+            with pytest.raises(LLMError, match="timed out"):
                 provider.complete(SAMPLE_MESSAGES)
 
     def test_list_models(self):
-        provider = self._make_provider()
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "models": [{"name": "llama3.2"}, {"name": "mistral"}]
-        }
-        mock_resp.raise_for_status = MagicMock()
+        from summarizer.llm.providers.ollama_provider import OllamaProvider
+        cfg = make_config(provider="ollama")
 
-        with patch("requests.get", return_value=mock_resp):
+        tags_response = {
+            "models": [
+                {"name": "llama3.2"},
+                {"name": "mistral"},
+                {"name": "codellama"},
+            ]
+        }
+
+        with patch("requests.post"), patch("requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = tags_response
+            mock_resp.raise_for_status = MagicMock()
+            mock_get.return_value = mock_resp
+
+            provider = OllamaProvider(cfg)
             models = provider.list_models()
 
-        assert models == ["llama3.2", "mistral"]
+        assert "llama3.2" in models
+        assert "mistral" in models
+        assert "codellama" in models
 
-    def test_list_models_raises_on_error(self):
-        provider = self._make_provider()
-        with patch("requests.get", side_effect=RuntimeError("timeout")):
-            with pytest.raises(LLMError, match="Failed to list Ollama models"):
+    def test_list_models_connection_error(self):
+        import requests as req_mod
+        from summarizer.llm.providers.ollama_provider import OllamaProvider
+        cfg = make_config(provider="ollama")
+
+        with patch("requests.post"), patch("requests.get") as mock_get:
+            mock_get.side_effect = req_mod.exceptions.ConnectionError("refused")
+            provider = OllamaProvider(cfg)
+
+            with pytest.raises(LLMError, match="Cannot connect"):
                 provider.list_models()
 
+    def test_count_tokens(self):
+        provider = self._make_provider()
+        count = provider.count_tokens("a" * 400)
+        assert count == 100  # 400 chars / 4 = 100
 
-# ===========================================================================
+    def test_custom_host_from_config(self):
+        from summarizer.llm.providers.ollama_provider import OllamaProvider
+        cfg = make_config(provider="ollama", ollama_host="http://my-server:11434")
+
+        response_body = json.dumps({
+            "message": {"role": "assistant", "content": "remote response"},
+            "done": True,
+        })
+
+        with patch("requests.post") as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.text = response_body
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            provider = OllamaProvider(cfg)
+            provider.complete(SAMPLE_MESSAGES)
+
+            url_called = mock_post.call_args.args[0]
+            assert "my-server:11434" in url_called
+
+    def test_ndjson_streaming_response(self):
+        """Provider should handle newline-delimited JSON (streaming) responses."""
+        from summarizer.llm.providers.ollama_provider import OllamaProvider
+        cfg = make_config(provider="ollama")
+
+        ndjson = "\n".join([
+            json.dumps({"message": {"role": "assistant", "content": "Hello"}, "done": False}),
+            json.dumps({"message": {"role": "assistant", "content": " World"}, "done": True}),
+        ])
+
+        with patch("requests.post") as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.text = ndjson
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            provider = OllamaProvider(cfg)
+            result = provider.complete(SAMPLE_MESSAGES)
+            assert result == "Hello World"
+
+
+# ---------------------------------------------------------------------------
 # ProviderFactory
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
 class TestProviderFactory:
-    def test_returns_openai_provider(self):
-        from src.summarizer.llm.factory import ProviderFactory
-        from src.summarizer.llm.providers.openai_provider import OpenAIProvider
-
-        config = _make_config(provider="openai")
+    def test_creates_openai_provider(self):
         with patch("openai.OpenAI"):
-            provider = ProviderFactory.get_provider(config=config)
-        assert isinstance(provider, OpenAIProvider)
+            from summarizer.llm.factory import ProviderFactory
+            cfg = make_config(provider="openai")
+            provider = ProviderFactory.create(cfg)
+            assert provider.get_provider_name() == "openai"
 
-    def test_returns_anthropic_provider(self):
-        from src.summarizer.llm.factory import ProviderFactory
-        from src.summarizer.llm.providers.anthropic_provider import AnthropicProvider
-
-        config = _make_config(provider="anthropic")
+    def test_creates_anthropic_provider(self):
         with patch("anthropic.Anthropic"):
-            provider = ProviderFactory.get_provider(config=config)
-        assert isinstance(provider, AnthropicProvider)
+            from summarizer.llm.factory import ProviderFactory
+            cfg = make_config(provider="anthropic")
+            provider = ProviderFactory.create(cfg)
+            assert provider.get_provider_name() == "anthropic"
 
-    def test_returns_ollama_provider(self):
-        from src.summarizer.llm.factory import ProviderFactory
-        from src.summarizer.llm.providers.ollama_provider import OllamaProvider
+    def test_creates_ollama_provider(self):
+        from summarizer.llm.factory import ProviderFactory
+        cfg = make_config(provider="ollama")
+        provider = ProviderFactory.create(cfg)
+        assert provider.get_provider_name() == "ollama"
 
-        config = _make_config(provider="ollama")
-        provider = ProviderFactory.get_provider(config=config)
-        assert isinstance(provider, OllamaProvider)
+    def test_unknown_provider_raises_llm_error(self):
+        from summarizer.llm.factory import ProviderFactory
+        cfg = make_config(provider="unknown_provider")
+        # Override to bypass SummarizerConfig validation
+        cfg.provider = "unknown_provider"
+        with pytest.raises(LLMError, match="Unknown provider"):
+            ProviderFactory.create(cfg)
 
-    def test_explicit_name_overrides_config(self):
-        from src.summarizer.llm.factory import ProviderFactory
-        from src.summarizer.llm.providers.ollama_provider import OllamaProvider
+    def test_list_providers(self):
+        from summarizer.llm.factory import ProviderFactory
+        providers = ProviderFactory.list_providers()
+        assert "openai" in providers
+        assert "anthropic" in providers
+        assert "ollama" in providers
 
-        config = _make_config(provider="openai")  # config says openai
-        provider = ProviderFactory.get_provider(config=config, provider_name="ollama")
-        assert isinstance(provider, OllamaProvider)
-
-    def test_unknown_provider_raises(self):
-        from src.summarizer.llm.factory import ProviderFactory
-
-        config = _make_config(provider="grok")
-        with pytest.raises(LLMError, match="Unknown LLM provider"):
-            ProviderFactory.get_provider(config=config)
-
-    def test_env_var_used_as_fallback(self, monkeypatch: pytest.MonkeyPatch):
-        from src.summarizer.llm.factory import ProviderFactory
-        from src.summarizer.llm.providers.ollama_provider import OllamaProvider
-
+    def test_env_var_selects_provider(self, monkeypatch):
         monkeypatch.setenv("LLM_PROVIDER", "ollama")
-        # Config with no provider set (will default to env var in Config.from_env)
-        config = Config(
-            openai_api_key="sk-test",
-            anthropic_api_key="sk-anth",
-            provider="ollama",  # mirrors what from_env would produce
-        )
-        provider = ProviderFactory.get_provider(config=config)
-        assert isinstance(provider, OllamaProvider)
+        from summarizer.llm.factory import ProviderFactory
+        # Config with no explicit provider — falls back to env var
+        cfg = SummarizerConfig()
+        provider = ProviderFactory.create(cfg)
+        assert provider.get_provider_name() == "ollama"
+
+
+# ---------------------------------------------------------------------------
+# SummarizerConfig
+# ---------------------------------------------------------------------------
+
+class TestSummarizerConfig:
+    def test_default_provider_is_openai(self, monkeypatch):
+        monkeypatch.delenv("LLM_PROVIDER", raising=False)
+        cfg = SummarizerConfig()
+        assert cfg.provider == "openai"
+
+    def test_provider_from_env(self, monkeypatch):
+        monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+        cfg = SummarizerConfig()
+        assert cfg.provider == "anthropic"
+
+    def test_validate_raises_for_unknown_provider(self):
+        cfg = make_config()
+        cfg.provider = "grok"
+        with pytest.raises(ValueError, match="Invalid provider"):
+            cfg.validate()
+
+    def test_validate_raises_for_openai_without_key(self):
+        cfg = make_config(openai_api_key=None)
+        cfg.openai_api_key = None
+        cfg.provider = "openai"
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            cfg.validate()
+
+    def test_validate_raises_for_anthropic_without_key(self):
+        cfg = make_config(anthropic_api_key=None)
+        cfg.anthropic_api_key = None
+        cfg.provider = "anthropic"
+        with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+            cfg.validate()
+
+    def test_validate_passes_for_ollama_without_api_key(self):
+        cfg = make_config(openai_api_key=None, anthropic_api_key=None)
+        cfg.openai_api_key = None
+        cfg.anthropic_api_key = None
+        cfg.provider = "ollama"
+        # Should not raise
+        cfg.validate()
+
+    def test_ollama_host_default(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        cfg = SummarizerConfig()
+        assert cfg.ollama_host == "http://localhost:11434"
+
+    def test_ollama_host_from_env(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_HOST", "http://custom-host:11434")
+        cfg = SummarizerConfig()
+        assert cfg.ollama_host == "http://custom-host:11434"

@@ -6,12 +6,21 @@ class SummarizerError(Exception):
 
 
 class LLMError(SummarizerError):
-    """Raised when an LLM provider call fails."""
+    """
+    Raised when an LLM provider encounters an error.
+
+    This includes authentication failures, rate limits, network errors,
+    invalid responses, and model-not-found errors.
+    """
 
 
 class IngestionError(SummarizerError):
-    """Raised when fetching or parsing input content fails."""
+    """Raised when document ingestion or parsing fails."""
 
 
-class ConfigError(SummarizerError):
-    """Raised for invalid or missing configuration."""
+class ConfigurationError(SummarizerError):
+    """Raised when the configuration is invalid or incomplete."""
+
+
+class ChunkingError(SummarizerError):
+    """Raised when document chunking fails."""

@@ -1,86 +1,97 @@
-"""OpenAI LLM provider."""
+"""OpenAI provider implementation."""
 
 from __future__ import annotations
 
 import os
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from src.summarizer.exceptions import LLMError
-from src.summarizer.llm.base import BaseLLMProvider
+from summarizer.exceptions import LLMError
+from summarizer.llm.base import BaseLLMProvider
 
 if TYPE_CHECKING:
-    from src.summarizer.config import Config
+    from summarizer.config import SummarizerConfig
+
+DEFAULT_MODEL = "gpt-4o-mini"
+FALLBACK_CHARS_PER_TOKEN = 4
 
 
 class OpenAIProvider(BaseLLMProvider):
-    """LLM provider backed by the OpenAI API."""
+    """
+    LLM provider backed by the OpenAI Chat Completions API.
 
-    DEFAULT_MODEL = "gpt-4o-mini"
+    Uses tiktoken for accurate token counting when available,
+    falling back to a character-based heuristic otherwise.
+    """
 
-    def __init__(self, config: "Config | None" = None) -> None:
+    def __init__(self, config: "SummarizerConfig") -> None:
         self._config = config
         api_key = (
-            (config.openai_api_key if config and hasattr(config, "openai_api_key") else None)
-            or os.environ.get("OPENAI_API_KEY")
+            getattr(config, "openai_api_key", None)
+            or os.environ.get("OPENAI_API_KEY", "")
         )
         if not api_key:
             raise LLMError(
                 "OpenAI API key not found. Set OPENAI_API_KEY environment variable "
-                "or provide it in the config."
+                "or openai_api_key in config."
             )
+
         try:
             import openai
+            self._client = openai.OpenAI(api_key=api_key)
         except ImportError as exc:
             raise LLMError(
-                "The 'openai' package is required for the OpenAI provider. "
-                "Install it with: pip install openai"
+                "openai package is not installed. Run: pip install openai"
             ) from exc
 
-        self._client = openai.OpenAI(api_key=api_key)
         self._model = (
-            (config.model if config and hasattr(config, "model") and config.model else None)
-            or os.environ.get("DEFAULT_MODEL")
-            or self.DEFAULT_MODEL
+            getattr(config, "model", None)
+            or os.environ.get("DEFAULT_MODEL", DEFAULT_MODEL)
         )
+        self._tiktoken_enc = self._load_tiktoken()
 
-    @property
-    def default_model(self) -> str:
-        return self.DEFAULT_MODEL
-
-    def count_tokens(self, text: str) -> int:
-        """Use tiktoken for accurate OpenAI token counting."""
-        try:
-            import tiktoken
-            enc = tiktoken.encoding_for_model(self._model)
-            return len(enc.encode(text))
-        except Exception:
-            # Fallback heuristic: ~4 characters per token
-            return max(1, len(text) // 4)
+    # ------------------------------------------------------------------
+    # BaseLLMProvider interface
+    # ------------------------------------------------------------------
 
     def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
-        """Send a chat completion request to OpenAI."""
+        """Send messages to OpenAI and return the assistant reply."""
         model = kwargs.pop("model", self._model)
-        max_tokens = kwargs.pop("max_tokens", None)
-        if max_tokens is None and self._config and hasattr(self._config, "max_tokens"):
-            max_tokens = self._config.max_tokens
-        temperature = kwargs.pop("temperature", 0.3)
+        max_tokens = kwargs.pop("max_tokens", getattr(self._config, "max_tokens", 4096))
 
         try:
-            request_kwargs: dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
+            response = self._client.chat.completions.create(
+                model=model,
+                messages=messages,  # type: ignore[arg-type]
+                max_tokens=max_tokens,
                 **kwargs,
-            }
-            if max_tokens is not None:
-                request_kwargs["max_tokens"] = max_tokens
-
-            response = self._client.chat.completions.create(**request_kwargs)
-            content = response.choices[0].message.content
-            if content is None:
-                raise LLMError("OpenAI returned an empty response.")
-            return content
-        except LLMError:
-            raise
+            )
+            return response.choices[0].message.content or ""
         except Exception as exc:
-            raise LLMError(f"OpenAI API error: {exc}") from exc
+            raise LLMError(f"OpenAI completion failed: {exc}") from exc
+
+    def get_default_model(self) -> str:
+        return self._model or DEFAULT_MODEL
+
+    def count_tokens(self, text: str) -> int:
+        if self._tiktoken_enc is not None:
+            return len(self._tiktoken_enc.encode(text))
+        return max(1, len(text) // FALLBACK_CHARS_PER_TOKEN)
+
+    def get_provider_name(self) -> str:
+        return "openai"
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _load_tiktoken(self):
+        """Attempt to load a tiktoken encoder; return None on failure."""
+        try:
+            import tiktoken
+            return tiktoken.encoding_for_model(self._model or DEFAULT_MODEL)
+        except Exception:
+            try:
+                import tiktoken
+                return tiktoken.get_encoding("cl100k_base")
+            except Exception:
+                return None
