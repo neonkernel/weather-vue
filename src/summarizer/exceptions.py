@@ -6,16 +6,12 @@ class SummarizerError(Exception):
 
 
 class LLMError(SummarizerError):
-    """Raised when an LLM provider call fails for any reason.
-
-    This includes authentication errors, rate limits, network issues,
-    malformed responses, and provider-specific errors.
-    """
+    """Raised when an LLM provider encounters an error."""
 
 
 class IngestionError(SummarizerError):
-    """Raised when input text cannot be fetched or parsed."""
+    """Raised when content ingestion (fetch/parse) fails."""
 
 
-class ConfigurationError(SummarizerError):
-    """Raised when the summarizer is misconfigured."""
+class ConfigError(SummarizerError):
+    """Raised for invalid or missing configuration."""

@@ -1,75 +1,66 @@
-"""Configuration dataclass for the summarizer."""
+"""Configuration management for the summarizer."""
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Literal
-
-ProviderName = Literal["openai", "anthropic", "ollama"]
+from typing import Optional
 
 
 @dataclass
 class SummarizerConfig:
-    """Holds all runtime configuration for the summarizer.
+    """
+    Central configuration object for the summarizer.
 
-    Values are resolved from (in priority order):
+    Values are sourced (in priority order) from:
     1. Explicit constructor arguments
     2. Environment variables
-    3. Hard-coded defaults
+    3. Defaults defined here
     """
 
-    # --- Provider selection ---
-    provider: ProviderName = field(
-        default_factory=lambda: os.getenv("LLM_PROVIDER", "openai")  # type: ignore[return-value]
+    # ── Provider selection ────────────────────────────────────────────────────
+    provider: str = field(
+        default_factory=lambda: os.environ.get("LLM_PROVIDER", "openai")
     )
 
-    # --- OpenAI ---
+    # ── OpenAI ────────────────────────────────────────────────────────────────
     openai_api_key: str = field(
-        default_factory=lambda: os.getenv("OPENAI_API_KEY", "")
+        default_factory=lambda: os.environ.get("OPENAI_API_KEY", "")
     )
-    default_model: str = field(
-        default_factory=lambda: os.getenv("DEFAULT_MODEL", "")
+    openai_model: Optional[str] = field(
+        default_factory=lambda: os.environ.get("OPENAI_MODEL") or None
     )
 
-    # --- Anthropic ---
+    # ── Anthropic ─────────────────────────────────────────────────────────────
     anthropic_api_key: str = field(
-        default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "")
+        default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", "")
+    )
+    anthropic_model: Optional[str] = field(
+        default_factory=lambda: os.environ.get("ANTHROPIC_MODEL") or None
     )
 
-    # --- Ollama ---
+    # ── Ollama ────────────────────────────────────────────────────────────────
     ollama_host: str = field(
-        default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        default_factory=lambda: os.environ.get(
+            "OLLAMA_HOST", "http://localhost:11434"
+        )
+    )
+    ollama_model: Optional[str] = field(
+        default_factory=lambda: os.environ.get("OLLAMA_MODEL") or None
     )
 
-    # --- General LLM parameters ---
-    temperature: float = field(
-        default_factory=lambda: float(os.getenv("TEMPERATURE", "0.3"))
-    )
+    # ── General summarizer settings ───────────────────────────────────────────
     max_tokens: int = field(
-        default_factory=lambda: int(os.getenv("MAX_TOKENS", "4096"))
+        default_factory=lambda: int(os.environ.get("MAX_TOKENS", "4096"))
     )
-
-    # --- Summarization behaviour ---
-    style: str = field(
-        default_factory=lambda: os.getenv("SUMMARY_STYLE", "concise")
-    )
-    language: str = field(
-        default_factory=lambda: os.getenv("SUMMARY_LANGUAGE", "en")
+    temperature: float = field(
+        default_factory=lambda: float(os.environ.get("TEMPERATURE", "0.3"))
     )
     chunk_size: int = field(
-        default_factory=lambda: int(os.getenv("CHUNK_SIZE", "3000"))
+        default_factory=lambda: int(os.environ.get("CHUNK_SIZE", "3000"))
     )
     chunk_overlap: int = field(
-        default_factory=lambda: int(os.getenv("CHUNK_OVERLAP", "200"))
-    )
-
-    # --- Output ---
-    output_format: str = field(
-        default_factory=lambda: os.getenv("OUTPUT_FORMAT", "text")
-    )
-    verbose: bool = field(
-        default_factory=lambda: os.getenv("VERBOSE", "").lower() in ("1", "true", "yes")
+        default_factory=lambda: int(os.environ.get("CHUNK_OVERLAP", "200"))
     )
 
     @classmethod
@@ -78,30 +69,26 @@ class SummarizerConfig:
         return cls()
 
     def validate(self) -> None:
-        """Raise ValueError if the config is in an invalid state."""
-        valid_providers = ("openai", "anthropic", "ollama")
-        if self.provider not in valid_providers:
+        """
+        Validate that the configuration is consistent.
+
+        Raises:
+            ValueError: If required fields for the chosen provider are missing.
+        """
+        provider = self.provider.lower()
+
+        if provider == "openai" and not self.openai_api_key:
             raise ValueError(
-                f"Invalid provider '{self.provider}'. "
-                f"Must be one of: {', '.join(valid_providers)}"
+                "OpenAI provider selected but OPENAI_API_KEY is not set."
             )
 
-        if self.provider == "openai" and not self.openai_api_key:
+        if provider == "anthropic" and not self.anthropic_api_key:
             raise ValueError(
-                "openai_api_key is required when provider is 'openai'. "
-                "Set the OPENAI_API_KEY environment variable."
+                "Anthropic provider selected but ANTHROPIC_API_KEY is not set."
             )
 
-        if self.provider == "anthropic" and not self.anthropic_api_key:
+        if provider not in ("openai", "anthropic", "ollama"):
             raise ValueError(
-                "anthropic_api_key is required when provider is 'anthropic'. "
-                "Set the ANTHROPIC_API_KEY environment variable."
+                f"Unknown provider '{provider}'. "
+                "Valid options: openai, anthropic, ollama"
             )
-
-        if self.temperature < 0.0 or self.temperature > 2.0:
-            raise ValueError(
-                f"temperature must be between 0.0 and 2.0, got {self.temperature}"
-            )
-
-        if self.max_tokens < 1:
-            raise ValueError(f"max_tokens must be >= 1, got {self.max_tokens}")

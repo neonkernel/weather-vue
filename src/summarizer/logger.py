@@ -1,27 +1,18 @@
-"""Logging configuration for the summarizer package."""
-
-from __future__ import annotations
+"""Logging utilities for the summarizer package."""
 
 import logging
-import sys
 
 
-def setup_logging(level: int = logging.WARNING) -> None:
-    """Configure the root logger for the summarizer package.
-
-    Args:
-        level: Python logging level constant (e.g. ``logging.DEBUG``).
-    """
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(
-        logging.Formatter(
-            fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%dT%H:%M:%S",
+def get_logger(name: str) -> logging.Logger:
+    """Return a logger namespaced under 'summarizer'."""
+    # Ensure the root summarizer logger has a handler if running standalone
+    root_logger = logging.getLogger("summarizer")
+    if not root_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         )
-    )
+        root_logger.addHandler(handler)
+        root_logger.setLevel(logging.WARNING)
 
-    root_logger = logging.getLogger("src.summarizer")
-    root_logger.handlers.clear()
-    root_logger.addHandler(handler)
-    root_logger.setLevel(level)
-    root_logger.propagate = False
+    return logging.getLogger(name)

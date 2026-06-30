@@ -1,128 +1,135 @@
-"""Anthropic Claude LLM provider."""
+"""Anthropic Claude LLM provider implementation."""
 
-from __future__ import annotations
-
-import logging
 from typing import Any
 
 from ...exceptions import LLMError
+from ...logger import get_logger
 from ..base import BaseLLMProvider
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-_DEFAULT_MODEL = "claude-3-5-sonnet-20241022"
-_CHARS_PER_TOKEN = 4  # Conservative heuristic for Claude
+try:
+    import anthropic as anthropic_sdk
+    from anthropic import (
+        Anthropic,
+        APIError,
+        AuthenticationError,
+        RateLimitError,
+        BadRequestError,
+    )
+    _ANTHROPIC_AVAILABLE = True
+except ImportError:
+    _ANTHROPIC_AVAILABLE = False
 
 
 class AnthropicProvider(BaseLLMProvider):
-    """LLM provider backed by the Anthropic Messages API."""
+    """Anthropic Claude provider using the official anthropic SDK."""
+
+    DEFAULT_MODEL = "claude-3-5-sonnet-20241022"
+    DEFAULT_MAX_TOKENS = 4096
+    DEFAULT_TEMPERATURE = 0.3
 
     def __init__(
         self,
         api_key: str,
         model: str | None = None,
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
     ) -> None:
-        try:
-            import anthropic  # type: ignore
-        except ImportError as exc:
+        if not _ANTHROPIC_AVAILABLE:
             raise LLMError(
-                "The 'anthropic' package is required for AnthropicProvider. "
-                "Install it with: pip install anthropic"
-            ) from exc
+                "anthropic package is not installed. Run: pip install anthropic"
+            )
 
-        self._anthropic = anthropic
-        self._client = anthropic.Anthropic(api_key=api_key)
-        self._model = model or _DEFAULT_MODEL
-        self._temperature = temperature
-        self._max_tokens = max_tokens
+        if not api_key:
+            raise LLMError(
+                "Anthropic API key is required. Set ANTHROPIC_API_KEY or pass api_key."
+            )
 
-    # ------------------------------------------------------------------
-    # BaseLLMProvider interface
-    # ------------------------------------------------------------------
+        self._model = model or self.DEFAULT_MODEL
+        self._client = Anthropic(api_key=api_key)
+        logger.debug("AnthropicProvider initialized with model=%s", self._model)
+
+    @property
+    def default_model(self) -> str:
+        return self.DEFAULT_MODEL
 
     @property
     def provider_name(self) -> str:
         return "anthropic"
 
-    @property
-    def default_model(self) -> str:
-        return _DEFAULT_MODEL
-
-    def count_tokens(self, text: str) -> int:
-        # Character-based heuristic — Anthropic does not expose a public
-        # standalone tokeniser in the SDK at this time.
-        return max(1, len(text) // _CHARS_PER_TOKEN)
-
-    def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
-        model = kwargs.pop("model", self._model)
-        temperature = kwargs.pop("temperature", self._temperature)
-        max_tokens = kwargs.pop("max_tokens", self._max_tokens)
-
-        # Anthropic separates the system prompt from the conversation turns.
+    def _split_messages(
+        self, messages: list[dict[str, str]]
+    ) -> tuple[str | None, list[dict[str, str]]]:
+        """
+        Anthropic's API separates the system prompt from conversation messages.
+        Extract any leading 'system' role message and return it separately.
+        """
         system_prompt: str | None = None
         conversation: list[dict[str, str]] = []
 
         for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "system":
-                # Concatenate multiple system messages if present
-                system_prompt = (
-                    content if system_prompt is None else f"{system_prompt}\n{content}"
-                )
+            if msg["role"] == "system" and system_prompt is None and not conversation:
+                system_prompt = msg["content"]
             else:
-                # Map 'user' / 'assistant' directly; unknown roles become 'user'
-                mapped_role = role if role in ("user", "assistant") else "user"
-                conversation.append({"role": mapped_role, "content": content})
+                conversation.append(msg)
+
+        return system_prompt, conversation
+
+    def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
+        """Call the Anthropic Messages API."""
+        temperature = kwargs.get("temperature", self.DEFAULT_TEMPERATURE)
+        max_tokens = kwargs.get("max_tokens", self.DEFAULT_MAX_TOKENS)
+        model = kwargs.get("model", self._model)
+
+        system_prompt, conversation = self._split_messages(messages)
 
         if not conversation:
-            raise LLMError(
-                "AnthropicProvider requires at least one non-system message."
-            )
+            raise LLMError("At least one non-system message is required.")
 
         logger.debug(
-            "Anthropic request | model=%s temperature=%s max_tokens=%s turns=%d",
+            "Anthropic request: model=%s, messages=%d, max_tokens=%d",
             model,
-            temperature,
-            max_tokens,
             len(conversation),
+            max_tokens,
         )
-
-        create_kwargs: dict[str, Any] = dict(
-            model=model,
-            max_tokens=max_tokens,
-            messages=conversation,
-            temperature=temperature,
-            **kwargs,
-        )
-        if system_prompt is not None:
-            create_kwargs["system"] = system_prompt
 
         try:
-            response = self._client.messages.create(**create_kwargs)
-        except self._anthropic.AuthenticationError as exc:
+            kwargs_api: dict[str, Any] = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "messages": conversation,  # type: ignore[arg-type]
+            }
+            if system_prompt:
+                kwargs_api["system"] = system_prompt
+
+            response = self._client.messages.create(**kwargs_api)
+
+            # Extract text from the response content blocks
+            content_parts: list[str] = []
+            for block in response.content:
+                if hasattr(block, "text"):
+                    content_parts.append(block.text)
+
+            result = "".join(content_parts)
+            logger.debug(
+                "Anthropic response received, length=%d chars", len(result)
+            )
+            return result
+
+        except AuthenticationError as exc:
             raise LLMError(f"Anthropic authentication failed: {exc}") from exc
-        except self._anthropic.RateLimitError as exc:
+        except RateLimitError as exc:
             raise LLMError(f"Anthropic rate limit exceeded: {exc}") from exc
-        except self._anthropic.BadRequestError as exc:
+        except BadRequestError as exc:
             raise LLMError(f"Anthropic bad request: {exc}") from exc
-        except self._anthropic.APIConnectionError as exc:
-            raise LLMError(f"Anthropic connection error: {exc}") from exc
-        except self._anthropic.APIError as exc:
+        except APIError as exc:
             raise LLMError(f"Anthropic API error: {exc}") from exc
         except Exception as exc:
             raise LLMError(f"Unexpected error calling Anthropic: {exc}") from exc
 
-        # Extract text from the first content block
-        if not response.content:
-            raise LLMError("Anthropic returned an empty response.")
-
-        first_block = response.content[0]
-        if hasattr(first_block, "text"):
-            return first_block.text
-
-        raise LLMError(
-            f"Unexpected Anthropic response content type: {type(first_block)}"
-        )
+    def count_tokens(self, text: str) -> int:
+        """
+        Anthropic doesn't expose tiktoken-style counting publicly.
+        Use a character-based heuristic: ~3.5 chars per token for Claude models.
+        """
+        return max(1, int(len(text) / 3.5))

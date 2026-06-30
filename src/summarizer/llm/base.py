@@ -1,4 +1,4 @@
-"""Base abstract class for LLM providers."""
+"""Abstract base class for LLM providers."""
 
 from abc import ABC, abstractmethod
 from typing import Any
@@ -10,13 +10,12 @@ class BaseLLMProvider(ABC):
     @abstractmethod
     def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """
-        Send messages to the LLM and return the completion text.
+        Send a list of messages to the LLM and return the completion text.
 
         Args:
-            messages: List of message dicts with 'role' and 'content' keys.
-                      Roles are typically 'system', 'user', and 'assistant'.
-            **kwargs: Additional provider-specific parameters (e.g., temperature,
-                      max_tokens, model).
+            messages: A list of message dicts with 'role' and 'content' keys.
+                      Roles are 'system', 'user', or 'assistant'.
+            **kwargs: Additional provider-specific parameters (temperature, max_tokens, etc.)
 
         Returns:
             The text content of the LLM's response.
@@ -29,7 +28,7 @@ class BaseLLMProvider(ABC):
     @abstractmethod
     def count_tokens(self, text: str) -> int:
         """
-        Estimate the number of tokens in a string of text.
+        Estimate the number of tokens in the given text.
 
         Args:
             text: The text to count tokens for.
@@ -48,5 +47,5 @@ class BaseLLMProvider(ABC):
     @property
     @abstractmethod
     def provider_name(self) -> str:
-        """Return the canonical name of this provider."""
+        """Return the canonical name of this provider (e.g. 'openai', 'anthropic', 'ollama')."""
         ...

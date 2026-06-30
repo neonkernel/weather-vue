@@ -1,140 +1,94 @@
-"""Provider factory — maps provider names to concrete provider instances."""
+"""ProviderFactory: maps provider names to provider classes and instantiates them."""
 
 from __future__ import annotations
 
-import logging
-import os
 from typing import TYPE_CHECKING
 
 from ..exceptions import LLMError
+from ..logger import get_logger
 from .base import BaseLLMProvider
 
 if TYPE_CHECKING:
     from ..config import SummarizerConfig
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-_PROVIDER_NAMES = ("openai", "anthropic", "ollama")
+# Lazy imports to avoid hard failures when optional packages aren't installed
+_PROVIDER_MAP: dict[str, str] = {
+    "openai": "src.summarizer.llm.providers.openai_provider.OpenAIProvider",
+    "anthropic": "src.summarizer.llm.providers.anthropic_provider.AnthropicProvider",
+    "ollama": "src.summarizer.llm.providers.ollama_provider.OllamaProvider",
+}
+
+SUPPORTED_PROVIDERS = list(_PROVIDER_MAP.keys())
 
 
 class ProviderFactory:
-    """Creates and returns the correct :class:`BaseLLMProvider` for a given name."""
+    """
+    Factory that creates the appropriate BaseLLMProvider given a config object.
+
+    Provider resolution order:
+    1. ``config.provider`` field (set from --provider CLI flag or LLM_PROVIDER env var)
+    2. Falls back to 'openai' if not set.
+    """
 
     @staticmethod
-    def create(provider_name: str | None = None, config: "SummarizerConfig | None" = None) -> BaseLLMProvider:
+    def create(config: "SummarizerConfig") -> BaseLLMProvider:
         """
-        Instantiate the requested LLM provider.
-
-        Resolution order for ``provider_name``:
-        1. Explicit ``provider_name`` argument
-        2. ``config.provider`` (if config is supplied)
-        3. ``LLM_PROVIDER`` environment variable
-        4. Falls back to ``"openai"``
+        Instantiate and return the correct LLM provider from config.
 
         Args:
-            provider_name: One of ``"openai"``, ``"anthropic"``, or ``"ollama"``.
-            config: Optional :class:`SummarizerConfig` instance.
+            config: A SummarizerConfig instance containing provider settings.
 
         Returns:
-            A concrete :class:`BaseLLMProvider` instance.
+            An instance of a BaseLLMProvider subclass.
 
         Raises:
-            LLMError: If the provider name is unknown or required credentials
-                      are missing.
+            LLMError: If the provider name is unsupported or instantiation fails.
         """
-        resolved_name = (
-            provider_name
-            or (config.provider if config is not None else None)
-            or os.getenv("LLM_PROVIDER", "openai")
-        ).lower()
+        provider_name = (getattr(config, "provider", None) or "openai").lower().strip()
 
-        if resolved_name not in _PROVIDER_NAMES:
+        if provider_name not in SUPPORTED_PROVIDERS:
             raise LLMError(
-                f"Unknown provider '{resolved_name}'. "
-                f"Valid choices are: {', '.join(_PROVIDER_NAMES)}"
+                f"Unsupported provider '{provider_name}'. "
+                f"Choose from: {', '.join(SUPPORTED_PROVIDERS)}"
             )
 
-        logger.debug("ProviderFactory: creating provider '%s'", resolved_name)
+        logger.debug("ProviderFactory: creating provider '%s'", provider_name)
 
-        if resolved_name == "openai":
-            return ProviderFactory._make_openai(config)
-        if resolved_name == "anthropic":
-            return ProviderFactory._make_anthropic(config)
-        if resolved_name == "ollama":
-            return ProviderFactory._make_ollama(config)
+        if provider_name == "openai":
+            return ProviderFactory._create_openai(config)
+        elif provider_name == "anthropic":
+            return ProviderFactory._create_anthropic(config)
+        elif provider_name == "ollama":
+            return ProviderFactory._create_ollama(config)
 
-        # Should never reach here, but keeps type checkers happy
-        raise LLMError(f"Unhandled provider: {resolved_name}")
-
-    # ------------------------------------------------------------------
-    # Private factory helpers
-    # ------------------------------------------------------------------
+        # Should never reach here due to the check above
+        raise LLMError(f"Provider '{provider_name}' is registered but has no factory method.")
 
     @staticmethod
-    def _make_openai(config: "SummarizerConfig | None") -> BaseLLMProvider:
+    def _create_openai(config: "SummarizerConfig") -> BaseLLMProvider:
         from .providers.openai_provider import OpenAIProvider
 
-        api_key = (
-            (config.openai_api_key if config is not None else None)
-            or os.getenv("OPENAI_API_KEY", "")
-        )
-        if not api_key:
-            raise LLMError(
-                "OpenAI API key is required. Set OPENAI_API_KEY environment variable "
-                "or provide it in the config."
-            )
+        api_key = getattr(config, "openai_api_key", None) or ""
+        model = getattr(config, "openai_model", None)
 
-        model = (config.default_model if config is not None else None) or None
-        temperature = (config.temperature if config is not None else 0.3) or 0.3
-        max_tokens = (config.max_tokens if config is not None else 4096) or 4096
-
-        return OpenAIProvider(
-            api_key=api_key,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        return OpenAIProvider(api_key=api_key, model=model)
 
     @staticmethod
-    def _make_anthropic(config: "SummarizerConfig | None") -> BaseLLMProvider:
+    def _create_anthropic(config: "SummarizerConfig") -> BaseLLMProvider:
         from .providers.anthropic_provider import AnthropicProvider
 
-        api_key = (
-            (config.anthropic_api_key if config is not None else None)
-            or os.getenv("ANTHROPIC_API_KEY", "")
-        )
-        if not api_key:
-            raise LLMError(
-                "Anthropic API key is required. Set ANTHROPIC_API_KEY environment variable "
-                "or provide it in the config."
-            )
+        api_key = getattr(config, "anthropic_api_key", None) or ""
+        model = getattr(config, "anthropic_model", None)
 
-        model = (config.default_model if config is not None else None) or None
-        temperature = (config.temperature if config is not None else 0.3) or 0.3
-        max_tokens = (config.max_tokens if config is not None else 4096) or 4096
-
-        return AnthropicProvider(
-            api_key=api_key,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        return AnthropicProvider(api_key=api_key, model=model)
 
     @staticmethod
-    def _make_ollama(config: "SummarizerConfig | None") -> BaseLLMProvider:
+    def _create_ollama(config: "SummarizerConfig") -> BaseLLMProvider:
         from .providers.ollama_provider import OllamaProvider
 
-        host = (
-            (config.ollama_host if config is not None else None)
-            or os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        )
-        model = (config.default_model if config is not None else None) or None
-        temperature = (config.temperature if config is not None else 0.3) or 0.3
-        max_tokens = (config.max_tokens if config is not None else 4096) or 4096
+        host = getattr(config, "ollama_host", None)
+        model = getattr(config, "ollama_model", None)
 
-        return OllamaProvider(
-            host=host,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        return OllamaProvider(host=host, model=model)
