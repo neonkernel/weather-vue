@@ -1,4 +1,4 @@
-"""Custom exceptions for the summarizer package."""
+"""Shared exception hierarchy for the summarizer package."""
 
 
 class SummarizerError(Exception):
@@ -6,21 +6,16 @@ class SummarizerError(Exception):
 
 
 class LLMError(SummarizerError):
-    """
-    Raised when an LLM provider encounters an error.
+    """Raised when an LLM provider call fails for any reason.
 
-    This includes authentication failures, rate limits, network errors,
-    invalid responses, and model-not-found errors.
+    This includes authentication errors, rate limits, network issues,
+    malformed responses, and provider-specific errors.
     """
 
 
 class IngestionError(SummarizerError):
-    """Raised when document ingestion or parsing fails."""
+    """Raised when input text cannot be fetched or parsed."""
 
 
 class ConfigurationError(SummarizerError):
-    """Raised when the configuration is invalid or incomplete."""
-
-
-class ChunkingError(SummarizerError):
-    """Raised when document chunking fails."""
+    """Raised when the summarizer is misconfigured."""

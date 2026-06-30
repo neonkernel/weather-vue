@@ -1,144 +1,153 @@
-"""Core summarization logic."""
+"""Core summarization logic — provider-agnostic."""
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
-from .exceptions import LLMError, SummarizerError
+from .exceptions import SummarizerError
 
 if TYPE_CHECKING:
-    from .config import Config
+    from .config import SummarizerConfig
     from .llm.base import BaseLLMProvider
 
+logger = logging.getLogger(__name__)
 
 _STYLE_INSTRUCTIONS: dict[str, str] = {
-    "concise": "Provide a concise summary in 2–4 sentences.",
-    "detailed": "Provide a detailed summary covering all key points.",
-    "bullet": "Summarize using a bulleted list of key points.",
+    "concise": "Write a concise summary in 2-4 sentences.",
+    "detailed": "Write a detailed summary covering all key points.",
+    "bullet": "Write the summary as a bullet-point list of key takeaways.",
+    "academic": (
+        "Write an academic-style abstract summarising the main argument, "
+        "methodology, findings, and conclusions."
+    ),
 }
 
-_DEFAULT_SYSTEM_PROMPT = (
-    "You are a professional summarizer. Your task is to summarize the provided text "
-    "clearly and accurately. Do not add information not present in the source text."
-)
 
-
-def _build_messages(
-    text: str,
-    style: str = "concise",
-    language: str = "en",
-) -> list[dict[str, str]]:
-    """Build the message list to send to the LLM."""
-    style_instruction = _STYLE_INSTRUCTIONS.get(style, _STYLE_INSTRUCTIONS["concise"])
-    lang_note = f" Respond in language: {language}." if language != "en" else ""
-
-    user_content = (
-        f"{style_instruction}{lang_note}\n\n"
-        f"Text to summarize:\n\n{text}"
+def _build_system_prompt(config: "SummarizerConfig") -> str:
+    style_instruction = _STYLE_INSTRUCTIONS.get(
+        config.style, _STYLE_INSTRUCTIONS["concise"]
+    )
+    lang_note = (
+        f" Respond in {config.language}." if config.language != "en" else ""
+    )
+    return (
+        f"You are an expert summarizer. {style_instruction}{lang_note} "
+        "Focus on accuracy and clarity. Do not add information not present "
+        "in the source text."
     )
 
-    return [
-        {"role": "system", "content": _DEFAULT_SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
-    ]
 
-
-def _chunk_text(text: str, provider: "BaseLLMProvider", max_tokens: int) -> list[str]:
-    """
-    Split text into chunks that fit within max_tokens.
-
-    Uses the provider's token counter for accurate splitting.
-    """
-    # Simple paragraph-based chunking
-    paragraphs = text.split("\n\n")
+def _chunk_text(
+    text: str, provider: "BaseLLMProvider", chunk_size: int, overlap: int
+) -> list[str]:
+    """Split text into chunks based on provider-aware token estimates."""
+    words = text.split()
     chunks: list[str] = []
-    current_parts: list[str] = []
-    current_count = 0
+    start = 0
 
-    for para in paragraphs:
-        para_tokens = provider.count_tokens(para)
-        if current_count + para_tokens > max_tokens and current_parts:
-            chunks.append("\n\n".join(current_parts))
-            current_parts = [para]
-            current_count = para_tokens
-        else:
-            current_parts.append(para)
-            current_count += para_tokens
+    while start < len(words):
+        end = start
+        current_tokens = 0
+        while end < len(words) and current_tokens < chunk_size:
+            word_tokens = provider.count_tokens(words[end])
+            current_tokens += word_tokens
+            end += 1
 
-    if current_parts:
-        chunks.append("\n\n".join(current_parts))
+        chunk = " ".join(words[start:end])
+        chunks.append(chunk)
 
-    return chunks or [text]
+        # Step forward, minus the overlap window (in words, approximated)
+        overlap_words = max(1, overlap // 4)  # rough word-level overlap
+        start = max(start + 1, end - overlap_words)
+
+    return chunks
 
 
 def summarize(
     text: str,
+    *,
     provider: "BaseLLMProvider",
-    config: "Config",
+    config: "SummarizerConfig",
 ) -> str:
     """
-    Summarize the given text using the provided LLM provider.
+    Summarize ``text`` using the given provider and config.
 
-    For documents that exceed max_chunk_tokens, the text is split into chunks,
-    each chunk is summarized independently, and the partial summaries are
-    combined into a final summary.
+    For long texts, the document is split into chunks and a final
+    consolidation pass is run over the intermediate summaries.
 
     Args:
-        text: The text to summarize.
-        provider: An instantiated BaseLLMProvider.
-        config: Application configuration.
+        text: Raw input text to summarise.
+        provider: An instantiated :class:`~summarizer.llm.base.BaseLLMProvider`.
+        config: Runtime configuration.
 
     Returns:
-        The summary string.
+        The final summary string.
 
     Raises:
-        SummarizerError: If summarization fails.
+        SummarizerError: If the text is empty or summarization fails.
     """
+    text = text.strip()
+    if not text:
+        raise SummarizerError("Cannot summarize empty text.")
+
+    system_prompt = _build_system_prompt(config)
     total_tokens = provider.count_tokens(text)
 
-    try:
-        if total_tokens <= config.max_chunk_tokens:
-            # Single-shot summarization
-            messages = _build_messages(text, config.style, config.language)
-            return provider.complete(
-                messages,
-                temperature=config.temperature,
-                max_tokens=config.max_tokens,
-            )
+    logger.debug(
+        "summarize | provider=%s style=%s total_tokens≈%d chunk_size=%d",
+        provider.provider_name,
+        config.style,
+        total_tokens,
+        config.chunk_size,
+    )
 
-        # Multi-chunk summarization
-        chunks = _chunk_text(text, provider, config.max_chunk_tokens)
-        partial_summaries: list[str] = []
+    if total_tokens <= config.chunk_size:
+        # Single-pass summarization
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Please summarize the following text:\n\n{text}"},
+        ]
+        return provider.complete(messages)
 
-        for i, chunk in enumerate(chunks, start=1):
-            messages = _build_messages(chunk, config.style, config.language)
-            partial = provider.complete(
-                messages,
-                temperature=config.temperature,
-                max_tokens=config.max_tokens,
-            )
-            partial_summaries.append(f"[Part {i}]\n{partial}")
+    # Multi-chunk summarization
+    logger.info(
+        "Text is ~%d tokens — splitting into chunks of %d.",
+        total_tokens,
+        config.chunk_size,
+    )
+    chunks = _chunk_text(text, provider, config.chunk_size, config.chunk_overlap)
+    logger.info("Split into %d chunk(s).", len(chunks))
 
-        # Combine partial summaries
-        combined = "\n\n".join(partial_summaries)
-        combine_messages = [
-            {"role": "system", "content": _DEFAULT_SYSTEM_PROMPT},
+    intermediate_summaries: list[str] = []
+    for i, chunk in enumerate(chunks, start=1):
+        logger.debug("Summarizing chunk %d/%d …", i, len(chunks))
+        messages = [
+            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": (
-                    f"The following are partial summaries of a longer document. "
-                    f"Combine them into a single coherent summary. "
-                    f"{_STYLE_INSTRUCTIONS.get(config.style, '')}\n\n{combined}"
+                    f"This is part {i} of {len(chunks)} of a longer document. "
+                    f"Please summarize this section:\n\n{chunk}"
                 ),
             },
         ]
-        return provider.complete(
-            combine_messages,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-        )
+        summary = provider.complete(messages)
+        intermediate_summaries.append(summary)
 
-    except LLMError as exc:
-        raise SummarizerError(f"LLM error during summarization: {exc}") from exc
-    except Exception as exc:
-        raise SummarizerError(f"Unexpected summarization error: {exc}") from exc
+    # Consolidation pass
+    combined = "\n\n---\n\n".join(
+        f"Section {i}:\n{s}" for i, s in enumerate(intermediate_summaries, start=1)
+    )
+    consolidation_messages = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": (
+                "Below are summaries of individual sections of a longer document. "
+                "Please consolidate them into a single coherent summary:\n\n"
+                f"{combined}"
+            ),
+        },
+    ]
+    return provider.complete(consolidation_messages)

@@ -1,82 +1,76 @@
-"""Configuration management for the summarizer."""
+"""Configuration dataclass for the summarizer."""
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Literal
+
+ProviderName = Literal["openai", "anthropic", "ollama"]
 
 
 @dataclass
 class SummarizerConfig:
+    """Holds all runtime configuration for the summarizer.
+
+    Values are resolved from (in priority order):
+    1. Explicit constructor arguments
+    2. Environment variables
+    3. Hard-coded defaults
     """
-    Central configuration object for the summarizer.
 
-    Values are resolved from explicit constructor arguments first,
-    then from environment variables, then from built-in defaults.
-    """
-
-    # ------------------------------------------------------------------
-    # LLM provider selection
-    # ------------------------------------------------------------------
-    provider: str = field(default_factory=lambda: os.environ.get("LLM_PROVIDER", "openai"))
-    """Which LLM backend to use: 'openai', 'anthropic', or 'ollama'."""
-
-    # ------------------------------------------------------------------
-    # Model selection (provider-specific defaults apply when None/empty)
-    # ------------------------------------------------------------------
-    model: Optional[str] = field(
-        default_factory=lambda: os.environ.get("DEFAULT_MODEL") or None
+    # --- Provider selection ---
+    provider: ProviderName = field(
+        default_factory=lambda: os.getenv("LLM_PROVIDER", "openai")  # type: ignore[return-value]
     )
-    """Override the provider's default model."""
 
-    # ------------------------------------------------------------------
-    # API keys
-    # ------------------------------------------------------------------
-    openai_api_key: Optional[str] = field(
-        default_factory=lambda: os.environ.get("OPENAI_API_KEY") or None
+    # --- OpenAI ---
+    openai_api_key: str = field(
+        default_factory=lambda: os.getenv("OPENAI_API_KEY", "")
     )
-    """OpenAI API key (falls back to OPENAI_API_KEY env var)."""
-
-    anthropic_api_key: Optional[str] = field(
-        default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY") or None
+    default_model: str = field(
+        default_factory=lambda: os.getenv("DEFAULT_MODEL", "")
     )
-    """Anthropic API key (falls back to ANTHROPIC_API_KEY env var)."""
 
-    # ------------------------------------------------------------------
-    # Ollama
-    # ------------------------------------------------------------------
+    # --- Anthropic ---
+    anthropic_api_key: str = field(
+        default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "")
+    )
+
+    # --- Ollama ---
     ollama_host: str = field(
-        default_factory=lambda: os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434")
     )
-    """Base URL of the local Ollama instance."""
 
-    # ------------------------------------------------------------------
-    # Generation parameters
-    # ------------------------------------------------------------------
+    # --- General LLM parameters ---
+    temperature: float = field(
+        default_factory=lambda: float(os.getenv("TEMPERATURE", "0.3"))
+    )
     max_tokens: int = field(
-        default_factory=lambda: int(os.environ.get("MAX_TOKENS", "4096"))
+        default_factory=lambda: int(os.getenv("MAX_TOKENS", "4096"))
     )
-    """Maximum tokens for LLM completions."""
 
-    temperature: float = 0.3
-    """Sampling temperature for generation."""
+    # --- Summarization behaviour ---
+    style: str = field(
+        default_factory=lambda: os.getenv("SUMMARY_STYLE", "concise")
+    )
+    language: str = field(
+        default_factory=lambda: os.getenv("SUMMARY_LANGUAGE", "en")
+    )
+    chunk_size: int = field(
+        default_factory=lambda: int(os.getenv("CHUNK_SIZE", "3000"))
+    )
+    chunk_overlap: int = field(
+        default_factory=lambda: int(os.getenv("CHUNK_OVERLAP", "200"))
+    )
 
-    # ------------------------------------------------------------------
-    # Summarization behaviour
-    # ------------------------------------------------------------------
-    style: str = "concise"
-    """Summary style: 'concise', 'detailed', 'bullet', etc."""
-
-    chunk_size: int = 3000
-    """Target chunk size in tokens for long-document processing."""
-
-    chunk_overlap: int = 200
-    """Token overlap between adjacent chunks."""
-
-    # ------------------------------------------------------------------
-    # Class methods
-    # ------------------------------------------------------------------
+    # --- Output ---
+    output_format: str = field(
+        default_factory=lambda: os.getenv("OUTPUT_FORMAT", "text")
+    )
+    verbose: bool = field(
+        default_factory=lambda: os.getenv("VERBOSE", "").lower() in ("1", "true", "yes")
+    )
 
     @classmethod
     def from_env(cls) -> "SummarizerConfig":
@@ -84,31 +78,30 @@ class SummarizerConfig:
         return cls()
 
     def validate(self) -> None:
-        """
-        Validate the configuration for the selected provider.
-
-        Raises:
-            ValueError: If required fields are missing for the chosen provider.
-        """
-        valid_providers = {"openai", "anthropic", "ollama"}
+        """Raise ValueError if the config is in an invalid state."""
+        valid_providers = ("openai", "anthropic", "ollama")
         if self.provider not in valid_providers:
             raise ValueError(
                 f"Invalid provider '{self.provider}'. "
-                f"Must be one of: {', '.join(sorted(valid_providers))}"
+                f"Must be one of: {', '.join(valid_providers)}"
             )
 
         if self.provider == "openai" and not self.openai_api_key:
             raise ValueError(
-                "provider='openai' requires OPENAI_API_KEY to be set."
+                "openai_api_key is required when provider is 'openai'. "
+                "Set the OPENAI_API_KEY environment variable."
             )
 
         if self.provider == "anthropic" and not self.anthropic_api_key:
             raise ValueError(
-                "provider='anthropic' requires ANTHROPIC_API_KEY to be set."
+                "anthropic_api_key is required when provider is 'anthropic'. "
+                "Set the ANTHROPIC_API_KEY environment variable."
+            )
+
+        if self.temperature < 0.0 or self.temperature > 2.0:
+            raise ValueError(
+                f"temperature must be between 0.0 and 2.0, got {self.temperature}"
             )
 
         if self.max_tokens < 1:
-            raise ValueError("max_tokens must be a positive integer.")
-
-        if not (0.0 <= self.temperature <= 2.0):
-            raise ValueError("temperature must be between 0.0 and 2.0.")
+            raise ValueError(f"max_tokens must be >= 1, got {self.max_tokens}")

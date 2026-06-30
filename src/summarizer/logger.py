@@ -1,4 +1,4 @@
-"""Logging utilities for the summariser."""
+"""Logging configuration for the summarizer package."""
 
 from __future__ import annotations
 
@@ -6,21 +6,22 @@ import logging
 import sys
 
 
-def get_logger(name: str) -> logging.Logger:
-    """
-    Return a logger for *name*, configuring a StreamHandler if none exists.
+def setup_logging(level: int = logging.WARNING) -> None:
+    """Configure the root logger for the summarizer package.
 
     Args:
-        name: Usually ``__name__`` of the calling module.
-
-    Returns:
-        A :class:`logging.Logger` instance.
+        level: Python logging level constant (e.g. ``logging.DEBUG``).
     """
-    logger = logging.getLogger(name)
-    if not logger.handlers and not logging.getLogger().handlers:
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%S",
         )
-        logger.addHandler(handler)
-    return logger
+    )
+
+    root_logger = logging.getLogger("src.summarizer")
+    root_logger.handlers.clear()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(level)
+    root_logger.propagate = False
