@@ -1,4 +1,5 @@
 """Configuration management for the summarizer."""
+
 from __future__ import annotations
 
 import os
@@ -8,77 +9,45 @@ from typing import Optional
 
 @dataclass
 class Config:
-    """
-    Central configuration for the summarizer application.
+    """Holds all runtime configuration for the summarizer."""
 
-    Values are resolved in this order (highest priority first):
-    1. Explicit constructor arguments
-    2. Environment variables
-    3. Hard-coded defaults
-    """
-
-    # ------------------------------------------------------------------
-    # Provider selection
-    # ------------------------------------------------------------------
+    # --- LLM Provider ---
     provider: str = field(default_factory=lambda: os.environ.get("LLM_PROVIDER", "openai"))
+    model: Optional[str] = field(default_factory=lambda: os.environ.get("DEFAULT_MODEL"))
 
-    # ------------------------------------------------------------------
-    # OpenAI settings
-    # ------------------------------------------------------------------
+    # --- OpenAI ---
     openai_api_key: Optional[str] = field(
         default_factory=lambda: os.environ.get("OPENAI_API_KEY")
     )
-    openai_model: Optional[str] = field(
-        default_factory=lambda: os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-    )
 
-    # ------------------------------------------------------------------
-    # Anthropic settings
-    # ------------------------------------------------------------------
+    # --- Anthropic ---
     anthropic_api_key: Optional[str] = field(
         default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY")
     )
-    anthropic_model: Optional[str] = field(
-        default_factory=lambda: os.environ.get("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
-    )
 
-    # ------------------------------------------------------------------
-    # Ollama settings
-    # ------------------------------------------------------------------
-    ollama_host: Optional[str] = field(
+    # --- Ollama ---
+    ollama_host: str = field(
         default_factory=lambda: os.environ.get("OLLAMA_HOST", "http://localhost:11434")
     )
-    ollama_model: Optional[str] = field(
-        default_factory=lambda: os.environ.get("OLLAMA_MODEL", "llama3.2")
-    )
 
-    # ------------------------------------------------------------------
-    # General summarizer settings
-    # ------------------------------------------------------------------
-    max_chunk_tokens: int = field(
-        default_factory=lambda: int(os.environ.get("MAX_CHUNK_TOKENS", "3000"))
+    # --- Generation ---
+    max_tokens: int = field(
+        default_factory=lambda: int(os.environ.get("MAX_TOKENS", "4096"))
     )
-    max_output_tokens: int = field(
-        default_factory=lambda: int(os.environ.get("MAX_OUTPUT_TOKENS", "1024"))
-    )
-    temperature: float = field(
-        default_factory=lambda: float(os.environ.get("TEMPERATURE", "0.3"))
-    )
-    style: str = field(
-        default_factory=lambda: os.environ.get("SUMMARY_STYLE", "concise")
-    )
-    language: str = field(
-        default_factory=lambda: os.environ.get("SUMMARY_LANGUAGE", "en")
-    )
+    temperature: float = 0.3
+    chunk_size: int = 3000  # tokens per chunk
+    chunk_overlap: int = 200  # overlap between chunks
+
+    # --- Output ---
+    style: str = "default"
+    output_format: str = "text"
 
     @classmethod
     def from_env(cls) -> "Config":
         """Create a Config instance populated entirely from environment variables."""
         return cls()
 
-    def __post_init__(self) -> None:
-        """Normalize values after initialization."""
-        if self.provider:
-            self.provider = self.provider.lower().strip()
-        if self.ollama_host:
-            self.ollama_host = self.ollama_host.rstrip("/")
+    def with_overrides(self, **kwargs: object) -> "Config":
+        """Return a copy of this config with specific fields overridden."""
+        import dataclasses
+        return dataclasses.replace(self, **kwargs)  # type: ignore[arg-type]
