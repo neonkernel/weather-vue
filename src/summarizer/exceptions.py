@@ -6,12 +6,16 @@ class SummarizerError(Exception):
 
 
 class LLMError(SummarizerError):
-    """Raised when an LLM provider encounters an error."""
+    """Raised when an LLM provider call fails for any reason."""
 
 
 class IngestionError(SummarizerError):
-    """Raised when content ingestion (fetch/parse) fails."""
+    """Raised when document ingestion or parsing fails."""
 
 
 class ConfigError(SummarizerError):
     """Raised for invalid or missing configuration."""
+
+
+class ChunkingError(SummarizerError):
+    """Raised when text chunking fails."""

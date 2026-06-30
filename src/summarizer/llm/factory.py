@@ -1,59 +1,41 @@
-"""ProviderFactory: maps provider names to provider classes and instantiates them."""
-
-from __future__ import annotations
+"""Factory for creating LLM provider instances from configuration."""
 
 from typing import TYPE_CHECKING
 
-from ..exceptions import LLMError
-from ..logger import get_logger
-from .base import BaseLLMProvider
+from src.summarizer.exceptions import LLMError
+from src.summarizer.logger import get_logger
 
 if TYPE_CHECKING:
-    from ..config import SummarizerConfig
+    from src.summarizer.config import Config
+    from src.summarizer.llm.base import BaseLLMProvider
 
 logger = get_logger(__name__)
 
-# Lazy imports to avoid hard failures when optional packages aren't installed
-_PROVIDER_MAP: dict[str, str] = {
-    "openai": "src.summarizer.llm.providers.openai_provider.OpenAIProvider",
-    "anthropic": "src.summarizer.llm.providers.anthropic_provider.AnthropicProvider",
-    "ollama": "src.summarizer.llm.providers.ollama_provider.OllamaProvider",
-}
-
-SUPPORTED_PROVIDERS = list(_PROVIDER_MAP.keys())
+PROVIDER_NAMES = ("openai", "anthropic", "ollama")
 
 
 class ProviderFactory:
-    """
-    Factory that creates the appropriate BaseLLMProvider given a config object.
-
-    Provider resolution order:
-    1. ``config.provider`` field (set from --provider CLI flag or LLM_PROVIDER env var)
-    2. Falls back to 'openai' if not set.
-    """
+    """Creates the appropriate LLM provider from a Config object."""
 
     @staticmethod
-    def create(config: "SummarizerConfig") -> BaseLLMProvider:
+    def create(config: "Config") -> "BaseLLMProvider":
         """
-        Instantiate and return the correct LLM provider from config.
+        Instantiate and return the LLM provider specified in *config*.
+
+        The provider is determined by ``config.provider`` (which itself
+        honours the ``--provider`` CLI flag and the ``LLM_PROVIDER``
+        environment variable).
 
         Args:
-            config: A SummarizerConfig instance containing provider settings.
+            config: Application configuration object.
 
         Returns:
-            An instance of a BaseLLMProvider subclass.
+            A concrete :class:`BaseLLMProvider` instance.
 
         Raises:
-            LLMError: If the provider name is unsupported or instantiation fails.
+            LLMError: If the provider name is unknown or instantiation fails.
         """
-        provider_name = (getattr(config, "provider", None) or "openai").lower().strip()
-
-        if provider_name not in SUPPORTED_PROVIDERS:
-            raise LLMError(
-                f"Unsupported provider '{provider_name}'. "
-                f"Choose from: {', '.join(SUPPORTED_PROVIDERS)}"
-            )
-
+        provider_name = (config.provider or "openai").lower().strip()
         logger.debug("ProviderFactory: creating provider '%s'", provider_name)
 
         if provider_name == "openai":
@@ -62,33 +44,60 @@ class ProviderFactory:
             return ProviderFactory._create_anthropic(config)
         elif provider_name == "ollama":
             return ProviderFactory._create_ollama(config)
+        else:
+            raise LLMError(
+                f"Unknown LLM provider '{provider_name}'. "
+                f"Valid choices are: {', '.join(PROVIDER_NAMES)}"
+            )
 
-        # Should never reach here due to the check above
-        raise LLMError(f"Provider '{provider_name}' is registered but has no factory method.")
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _create_openai(config: "SummarizerConfig") -> BaseLLMProvider:
-        from .providers.openai_provider import OpenAIProvider
+    def _create_openai(config: "Config") -> "BaseLLMProvider":
+        from src.summarizer.llm.providers.openai_provider import OpenAIProvider
 
         api_key = getattr(config, "openai_api_key", None) or ""
-        model = getattr(config, "openai_model", None)
+        model = getattr(config, "model", None)
+        max_tokens = getattr(config, "max_tokens", 4096)
+        temperature = getattr(config, "temperature", 0.3)
 
-        return OpenAIProvider(api_key=api_key, model=model)
+        return OpenAIProvider(
+            api_key=api_key,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
 
     @staticmethod
-    def _create_anthropic(config: "SummarizerConfig") -> BaseLLMProvider:
-        from .providers.anthropic_provider import AnthropicProvider
+    def _create_anthropic(config: "Config") -> "BaseLLMProvider":
+        from src.summarizer.llm.providers.anthropic_provider import AnthropicProvider
 
         api_key = getattr(config, "anthropic_api_key", None) or ""
-        model = getattr(config, "anthropic_model", None)
+        model = getattr(config, "model", None)
+        max_tokens = getattr(config, "max_tokens", 4096)
+        temperature = getattr(config, "temperature", 0.3)
 
-        return AnthropicProvider(api_key=api_key, model=model)
+        return AnthropicProvider(
+            api_key=api_key,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
 
     @staticmethod
-    def _create_ollama(config: "SummarizerConfig") -> BaseLLMProvider:
-        from .providers.ollama_provider import OllamaProvider
+    def _create_ollama(config: "Config") -> "BaseLLMProvider":
+        from src.summarizer.llm.providers.ollama_provider import OllamaProvider
 
         host = getattr(config, "ollama_host", None)
-        model = getattr(config, "ollama_model", None)
+        model = getattr(config, "model", None)
+        max_tokens = getattr(config, "max_tokens", 4096)
+        temperature = getattr(config, "temperature", 0.3)
 
-        return OllamaProvider(host=host, model=model)
+        return OllamaProvider(
+            host=host,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )

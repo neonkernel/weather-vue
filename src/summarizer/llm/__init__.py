@@ -1,14 +1,10 @@
 """LLM abstraction layer for the summarizer."""
 
-from .base import BaseLLMProvider
-from .factory import ProviderFactory, SUPPORTED_PROVIDERS
-from .providers import OpenAIProvider, AnthropicProvider, OllamaProvider
+from src.summarizer.llm.base import BaseLLMProvider
+from src.summarizer.llm.factory import ProviderFactory, PROVIDER_NAMES
 
 __all__ = [
     "BaseLLMProvider",
     "ProviderFactory",
-    "SUPPORTED_PROVIDERS",
-    "OpenAIProvider",
-    "AnthropicProvider",
-    "OllamaProvider",
+    "PROVIDER_NAMES",
 ]

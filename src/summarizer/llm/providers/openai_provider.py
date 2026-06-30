@@ -2,103 +2,102 @@
 
 from typing import Any
 
-from ...exceptions import LLMError
-from ...logger import get_logger
-from ..base import BaseLLMProvider
+from src.summarizer.exceptions import LLMError
+from src.summarizer.llm.base import BaseLLMProvider
+from src.summarizer.logger import get_logger
 
 logger = get_logger(__name__)
 
+_TIKTOKEN_AVAILABLE = False
 try:
     import tiktoken
     _TIKTOKEN_AVAILABLE = True
 except ImportError:
-    _TIKTOKEN_AVAILABLE = False
-
-try:
-    from openai import OpenAI, APIError, AuthenticationError, RateLimitError
-    _OPENAI_AVAILABLE = True
-except ImportError:
-    _OPENAI_AVAILABLE = False
+    pass
 
 
 class OpenAIProvider(BaseLLMProvider):
-    """OpenAI GPT provider conforming to BaseLLMProvider."""
+    """LLM provider backed by the OpenAI API."""
 
-    DEFAULT_MODEL = "gpt-4o"
-    DEFAULT_MAX_TOKENS = 4096
-    DEFAULT_TEMPERATURE = 0.3
+    DEFAULT_MODEL = "gpt-4o-mini"
+    FALLBACK_CHARS_PER_TOKEN = 4
 
     def __init__(
         self,
         api_key: str,
         model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
     ) -> None:
-        if not _OPENAI_AVAILABLE:
-            raise LLMError(
-                "openai package is not installed. Run: pip install openai"
-            )
-
         if not api_key:
+            raise LLMError("OpenAI API key is required.")
+
+        try:
+            from openai import OpenAI, APIError, AuthenticationError, RateLimitError
+        except ImportError as exc:
             raise LLMError(
-                "OpenAI API key is required. Set OPENAI_API_KEY or pass api_key."
-            )
+                "The 'openai' package is not installed. "
+                "Run: pip install openai"
+            ) from exc
+
+        self._client = OpenAI(api_key=api_key)
+        self._OpenAI = OpenAI
+        self._APIError = APIError
+        self._AuthenticationError = AuthenticationError
+        self._RateLimitError = RateLimitError
 
         self._model = model or self.DEFAULT_MODEL
-        self._client = OpenAI(api_key=api_key)
-        logger.debug("OpenAIProvider initialized with model=%s", self._model)
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        self._encoding = None
+
+        if _TIKTOKEN_AVAILABLE:
+            try:
+                self._encoding = tiktoken.encoding_for_model(self._model)
+            except KeyError:
+                try:
+                    self._encoding = tiktoken.get_encoding("cl100k_base")
+                except Exception:
+                    self._encoding = None
 
     @property
     def default_model(self) -> str:
         return self.DEFAULT_MODEL
 
-    @property
-    def provider_name(self) -> str:
-        return "openai"
-
     def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
-        """Call the OpenAI chat completions API."""
-        temperature = kwargs.get("temperature", self.DEFAULT_TEMPERATURE)
-        max_tokens = kwargs.get("max_tokens", self.DEFAULT_MAX_TOKENS)
+        """Call the OpenAI Chat Completions API."""
         model = kwargs.get("model", self._model)
+        max_tokens = kwargs.get("max_tokens", self._max_tokens)
+        temperature = kwargs.get("temperature", self._temperature)
 
         logger.debug(
-            "OpenAI request: model=%s, messages=%d, max_tokens=%d",
-            model,
-            len(messages),
-            max_tokens,
+            "OpenAIProvider.complete: model=%s, messages=%d", model, len(messages)
         )
 
         try:
             response = self._client.chat.completions.create(
                 model=model,
                 messages=messages,  # type: ignore[arg-type]
-                temperature=temperature,
                 max_tokens=max_tokens,
+                temperature=temperature,
             )
-            content = response.choices[0].message.content or ""
-            logger.debug(
-                "OpenAI response received, length=%d chars", len(content)
-            )
-            return content
+            content = response.choices[0].message.content
+            if content is None:
+                raise LLMError("OpenAI returned an empty response.")
+            return content.strip()
 
-        except AuthenticationError as exc:
+        except self._AuthenticationError as exc:
             raise LLMError(f"OpenAI authentication failed: {exc}") from exc
-        except RateLimitError as exc:
+        except self._RateLimitError as exc:
             raise LLMError(f"OpenAI rate limit exceeded: {exc}") from exc
-        except APIError as exc:
+        except self._APIError as exc:
             raise LLMError(f"OpenAI API error: {exc}") from exc
         except Exception as exc:
             raise LLMError(f"Unexpected error calling OpenAI: {exc}") from exc
 
     def count_tokens(self, text: str) -> int:
-        """Use tiktoken for accurate token counting when available."""
-        if _TIKTOKEN_AVAILABLE:
-            try:
-                encoding = tiktoken.encoding_for_model(self._model)
-                return len(encoding.encode(text))
-            except KeyError:
-                # Fall back to cl100k_base for unknown models
-                encoding = tiktoken.get_encoding("cl100k_base")
-                return len(encoding.encode(text))
-        # Fallback heuristic: ~4 chars per token
-        return max(1, len(text) // 4)
+        """Count tokens using tiktoken when available, otherwise use heuristic."""
+        if self._encoding is not None:
+            return len(self._encoding.encode(text))
+        # Fallback: ~4 characters per token
+        return max(1, len(text) // self.FALLBACK_CHARS_PER_TOKEN)
