@@ -2,93 +2,157 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import logging
+import time
+from typing import Optional
 
-from src.summarizer.exceptions import SummarizerError
-from src.summarizer.logger import get_logger
-from src.summarizer.styles import build_prompt
+from .config import settings
+from .exceptions import SummarizerError
+from .ingestion import fetch_article
+from .llm.client import LLMClient
+from .models import Summary
+from .styles import SummaryStyle
+from .ui import chunk_progress, spinner
 
-if TYPE_CHECKING:
-    from src.summarizer.config import Config
-    from src.summarizer.llm.base import BaseLLMProvider
+logger = logging.getLogger(__name__)
 
-logger = get_logger(__name__)
+# Rough character-to-token ratio (conservative)
+CHARS_PER_TOKEN = 4
+# Maximum tokens to send to the model per chunk
+CHUNK_TOKEN_LIMIT = 3000
+CHUNK_CHAR_LIMIT = CHUNK_TOKEN_LIMIT * CHARS_PER_TOKEN
 
-_DEFAULT_CHUNK_SIZE = 3000
-_DEFAULT_CHUNK_OVERLAP = 200
+
+def _chunk_text(text: str, max_chars: int = CHUNK_CHAR_LIMIT) -> list[str]:
+    """Split text into chunks of at most max_chars characters."""
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: list[str] = []
+    while text:
+        chunk = text[:max_chars]
+        # Try to break on a sentence boundary
+        boundary = max(chunk.rfind(". "), chunk.rfind(".\n"), chunk.rfind("! "), chunk.rfind("? "))
+        if boundary > max_chars // 2:
+            chunk = text[: boundary + 1]
+        chunks.append(chunk.strip())
+        text = text[len(chunk) :].strip()
+    return chunks
 
 
-class Summarizer:
-    """Orchestrates chunking, prompting, and LLM calls to produce a summary."""
+def _build_prompt(text: str, style: str, title: Optional[str]) -> str:
+    style_instructions = {
+        SummaryStyle.CONCISE.value: "Provide a concise 2-3 sentence summary.",
+        SummaryStyle.DETAILED.value: "Provide a detailed summary covering all major points.",
+        SummaryStyle.BULLET.value: "Summarize using clear bullet points (• prefix).",
+        SummaryStyle.ELI5.value: "Explain this article as if the reader is 5 years old.",
+        SummaryStyle.TECHNICAL.value: "Provide a technical summary focusing on methods and findings.",
+    }
+    instruction = style_instructions.get(style, "Summarize the following article.")
+    title_part = f'Title: "{title}"\n\n' if title else ""
+    return (
+        f"{title_part}"
+        f"Article text:\n\n{text}\n\n"
+        f"Instructions: {instruction}"
+    )
 
-    def __init__(self, provider: "BaseLLMProvider", config: "Config") -> None:
-        self._provider = provider
-        self._config = config
 
-    def summarize(self, text: str) -> str:
-        """Summarize *text* and return the summary string."""
-        text = text.strip()
-        if not text:
-            raise SummarizerError("Cannot summarize empty text.")
+def _merge_chunk_summaries(summaries: list[str], style: str, client: LLMClient) -> str:
+    """Merge multiple chunk summaries into a final coherent summary."""
+    if len(summaries) == 1:
+        return summaries[0]
 
-        chunk_size = self._config.chunk_size or _DEFAULT_CHUNK_SIZE
-        chunks = self._chunk_text(text, chunk_size)
+    combined = "\n\n---\n\n".join(summaries)
+    style_instructions = {
+        SummaryStyle.CONCISE.value: "Merge these partial summaries into a concise 2-3 sentence final summary.",
+        SummaryStyle.DETAILED.value: "Merge these partial summaries into a detailed, coherent summary.",
+        SummaryStyle.BULLET.value: "Merge and deduplicate these bullet-point summaries into a final list.",
+        SummaryStyle.ELI5.value: "Merge these partial summaries into a simple explanation for a 5-year-old.",
+        SummaryStyle.TECHNICAL.value: "Merge these partial summaries into a technical summary.",
+    }
+    instruction = style_instructions.get(style, "Merge these partial summaries into a final summary.")
+    prompt = f"Partial summaries:\n\n{combined}\n\n{instruction}"
+    return client.complete(prompt, estimated_tokens=len(combined) // CHARS_PER_TOKEN)
 
-        logger.debug("Summarizer: %d chunk(s) for provider=%s", len(chunks), self._config.provider)
 
-        if len(chunks) == 1:
-            return self._summarize_chunk(chunks[0])
+def summarize_url(
+    url: str,
+    style: str = SummaryStyle.CONCISE.value,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    quiet: bool = False,
+) -> Summary:
+    """
+    Fetch an article and summarize it.
 
-        # Map-reduce: summarize each chunk then combine
-        partial_summaries = [self._summarize_chunk(c) for c in chunks]
-        combined = "\n\n".join(partial_summaries)
-        logger.debug("Summarizer: combining %d partial summaries.", len(partial_summaries))
-        return self._summarize_chunk(combined)
+    Parameters
+    ----------
+    url:        Article URL to fetch and summarize.
+    style:      One of the SummaryStyle values.
+    provider:   LLM provider name (falls back to settings).
+    model:      Model identifier (falls back to settings).
+    quiet:      Suppress progress UI.
 
-    def _chunk_text(self, text: str, chunk_size: int) -> list[str]:
-        """Split *text* into chunks based on provider-aware token counts."""
-        overlap = self._config.chunk_overlap or _DEFAULT_CHUNK_OVERLAP
+    Returns
+    -------
+    Summary dataclass populated with the result.
+    """
+    start = time.monotonic()
 
-        # Use the provider's token counter
-        total_tokens = self._provider.count_tokens(text)
-        if total_tokens <= chunk_size:
-            return [text]
+    effective_provider = provider or settings.default_provider
+    effective_model = model or settings.default_model
 
-        # Split by paragraphs, accumulate into chunks
-        paragraphs = text.split("\n\n")
-        chunks: list[str] = []
-        current_parts: list[str] = []
-        current_tokens = 0
+    # ------------------------------------------------------------------ fetch
+    with spinner("Fetching article…", quiet=quiet):
+        try:
+            article = fetch_article(url)
+        except Exception as exc:
+            raise SummarizerError(f"Failed to fetch article: {exc}") from exc
 
-        for para in paragraphs:
-            para_tokens = self._provider.count_tokens(para)
-            if current_tokens + para_tokens > chunk_size and current_parts:
-                chunks.append("\n\n".join(current_parts))
-                # Keep some overlap
-                overlap_parts: list[str] = []
-                overlap_tokens = 0
-                for part in reversed(current_parts):
-                    part_t = self._provider.count_tokens(part)
-                    if overlap_tokens + part_t > overlap:
-                        break
-                    overlap_parts.insert(0, part)
-                    overlap_tokens += part_t
-                current_parts = overlap_parts
-                current_tokens = overlap_tokens
+    logger.debug(
+        "Fetched '%s' (%d chars)", article.title or url, len(article.text)
+    )
 
-            current_parts.append(para)
-            current_tokens += para_tokens
+    # ------------------------------------------------------------------ chunk
+    chunks = _chunk_text(article.text)
+    chunk_count = len(chunks)
+    logger.debug("Split article into %d chunk(s).", chunk_count)
 
-        if current_parts:
-            chunks.append("\n\n".join(current_parts))
+    # ------------------------------------------------------------------ LLM
+    client = LLMClient(provider=effective_provider, model=effective_model)
+    chunk_summaries: list[str] = []
 
-        return chunks if chunks else [text]
+    with chunk_progress(
+        total=chunk_count, description="Summarizing", quiet=quiet
+    ) as progress:
+        for i, chunk in enumerate(chunks):
+            prompt = _build_prompt(chunk, style, article.title if i == 0 else None)
+            estimated_tokens = len(chunk) // CHARS_PER_TOKEN + 200
+            try:
+                partial = client.complete(prompt, estimated_tokens=estimated_tokens)
+            except Exception as exc:
+                raise SummarizerError(f"LLM call failed on chunk {i + 1}: {exc}") from exc
+            chunk_summaries.append(partial)
+            progress.advance()
 
-    def _summarize_chunk(self, text: str) -> str:
-        """Send a single chunk to the LLM and return the summary."""
-        messages = build_prompt(
-            text=text,
-            style=self._config.style,
-            max_length=self._config.max_length,
-        )
-        return self._provider.complete(messages)
+    # ------------------------------------------------------------------ merge
+    if chunk_count > 1:
+        with spinner("Merging chunk summaries…", quiet=quiet):
+            final_summary = _merge_chunk_summaries(chunk_summaries, style, client)
+    else:
+        final_summary = chunk_summaries[0]
+
+    elapsed = time.monotonic() - start
+    word_count = len(final_summary.split())
+
+    return Summary(
+        url=url,
+        title=article.title or "",
+        summary=final_summary,
+        style=style,
+        provider=effective_provider,
+        model=effective_model,
+        word_count=word_count,
+        chunk_count=chunk_count,
+        elapsed_seconds=round(elapsed, 2),
+    )

@@ -1,146 +1,134 @@
-"""SummarizerClient: wraps openai.OpenAI with retry logic and prompt building."""
+"""LLM client with integrated rate limiting."""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Any
+from typing import Optional
 
-import openai
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-    before_sleep_log,
-)
-
-from .prompts import PromptBuilder, SummaryStyle
-from .token_utils import estimate_cost, fits_in_context
-from .chunker import map_reduce_summarize
+from ..rate_limiter import TokenBucket, get_rate_limiter
 
 logger = logging.getLogger(__name__)
 
-# Transient errors that warrant a retry
-_RETRYABLE_EXCEPTIONS = (
-    openai.APITimeoutError,
-    openai.APIConnectionError,
-    openai.RateLimitError,
-    openai.InternalServerError,
-)
-
-DEFAULT_MODEL = "gpt-4o-mini"
-DEFAULT_TEMPERATURE = 0.3
-DEFAULT_MAX_TOKENS = 1_024
+# Registry so one bucket is shared across all client instances per provider
+_rate_limiters: dict[str, TokenBucket] = {}
 
 
-@dataclass
-class SummarizerClient:
-    """High-level client for producing text summaries via the OpenAI API."""
+def _get_or_create_limiter(provider: str) -> TokenBucket:
+    if provider not in _rate_limiters:
+        _rate_limiters[provider] = get_rate_limiter(provider)
+    return _rate_limiters[provider]
 
-    api_key: str | None = None
-    model: str = DEFAULT_MODEL
-    temperature: float = DEFAULT_TEMPERATURE
-    max_tokens: int = DEFAULT_MAX_TOKENS
-    style: SummaryStyle = "concise"
-    base_url: str | None = None  # Override for compatible endpoints
-    extra_instructions: str = ""
 
-    # Set after __post_init__
-    _client: openai.OpenAI = field(init=False, repr=False)
-    prompt_builder: PromptBuilder = field(init=False, repr=False)
+class LLMClient:
+    """
+    Thin wrapper around provider-specific completion APIs.
 
-    def __post_init__(self) -> None:
-        client_kwargs: dict[str, Any] = {}
-        if self.api_key:
-            client_kwargs["api_key"] = self.api_key
-        if self.base_url:
-            client_kwargs["base_url"] = self.base_url
-        self._client = openai.OpenAI(**client_kwargs)
-        self.prompt_builder = PromptBuilder(
-            style=self.style,
-            extra_instructions=self.extra_instructions,
-        )
+    Integrates a TokenBucket rate limiter that is shared across all instances
+    for the same provider, so concurrent callers obey the same limits.
+    """
+
+    def __init__(
+        self,
+        provider: str = "openai",
+        model: Optional[str] = None,
+        rate_limiter: Optional[TokenBucket] = None,
+    ) -> None:
+        self.provider = provider.lower()
+        self.model = model or self._default_model()
+        self._rate_limiter = rate_limiter or _get_or_create_limiter(self.provider)
 
     # ------------------------------------------------------------------
-    # Internal API call (with retry)
+    # Internal helpers
     # ------------------------------------------------------------------
 
-    def _call_api(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
-        """Call the OpenAI chat completions endpoint with retry logic.
+    def _default_model(self) -> str:
+        defaults = {
+            "openai": "gpt-4o-mini",
+            "anthropic": "claude-3-haiku-20240307",
+            "ollama": "llama3",
+        }
+        return defaults.get(self.provider, "gpt-4o-mini")
 
-        Returns:
-            (content_text, usage_dict)
-        """
-        return self._call_api_with_retry(messages)
+    def _call_provider(self, prompt: str) -> str:
+        """Route to the correct provider backend. Override in tests."""
+        if self.provider == "openai":
+            return self._call_openai(prompt)
+        if self.provider == "anthropic":
+            return self._call_anthropic(prompt)
+        if self.provider == "ollama":
+            return self._call_ollama(prompt)
+        raise ValueError(f"Unknown provider: {self.provider!r}")
 
-    @property
-    def _retry_decorator(self):
-        return retry(
-            retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1, min=2, max=30),
-            before_sleep=before_sleep_log(logger, logging.WARNING),
-            reraise=True,
-        )
+    def _call_openai(self, prompt: str) -> str:
+        try:
+            import openai  # type: ignore
 
-    def _call_api_with_retry(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
-        """Wrapped API call with exponential backoff retry."""
-
-        @retry(
-            retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1, min=2, max=30),
-            before_sleep=before_sleep_log(logger, logging.WARNING),
-            reraise=True,
-        )
-        def _inner() -> tuple[str, dict[str, int]]:
-            response = self._client.chat.completions.create(
+            client = openai.OpenAI()
+            response = client.chat.completions.create(
                 model=self.model,
-                messages=messages,  # type: ignore[arg-type]
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
+                messages=[{"role": "user", "content": prompt}],
             )
-            content = response.choices[0].message.content or ""
-            usage = {
-                "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
-                "completion_tokens": response.usage.completion_tokens if response.usage else 0,
-                "total_tokens": response.usage.total_tokens if response.usage else 0,
-            }
-            cost = estimate_cost(usage["prompt_tokens"], usage["completion_tokens"], self.model)
-            logger.info(
-                "API call complete — model=%s prompt_tokens=%d completion_tokens=%d "
-                "total_tokens=%d estimated_cost=$%.6f",
-                self.model,
-                usage["prompt_tokens"],
-                usage["completion_tokens"],
-                usage["total_tokens"],
-                cost,
-            )
-            return content.strip(), usage
+            return response.choices[0].message.content or ""
+        except ImportError as exc:
+            raise RuntimeError(
+                "openai package not installed. Run: pip install openai"
+            ) from exc
 
-        return _inner()
+    def _call_anthropic(self, prompt: str) -> str:
+        try:
+            import anthropic  # type: ignore
+
+            client = anthropic.Anthropic()
+            message = client.messages.create(
+                model=self.model,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return message.content[0].text
+        except ImportError as exc:
+            raise RuntimeError(
+                "anthropic package not installed. Run: pip install anthropic"
+            ) from exc
+
+    def _call_ollama(self, prompt: str) -> str:
+        try:
+            import requests  # type: ignore
+
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={"model": self.model, "prompt": prompt, "stream": False},
+                timeout=120,
+            )
+            response.raise_for_status()
+            return response.json().get("response", "")
+        except ImportError as exc:
+            raise RuntimeError(
+                "requests package not installed. Run: pip install requests"
+            ) from exc
 
     # ------------------------------------------------------------------
-    # Public interface
+    # Public API
     # ------------------------------------------------------------------
 
-    def summarize(self, text: str) -> tuple[str, dict[str, int]]:
-        """Summarize *text*, using chunking if it exceeds the context window.
-
-        Returns:
-            (summary_text, usage_dict)
-            Note: for chunked summarization the usage dict reflects only the
-            final (reduce) call; individual chunk usages are logged separately.
+    def complete(self, prompt: str, estimated_tokens: int = 0) -> str:
         """
-        if fits_in_context(text, self.model):
-            messages = self.prompt_builder.build_messages(text)
-            return self._call_api(messages)
-        else:
-            logger.info(
-                "Text exceeds context window for model '%s'; switching to map-reduce.",
-                self.model,
-            )
-            summary = map_reduce_summarize(text, client=self, style=self.style)
-            # Return empty usage for the overall call (individual calls are logged)
-            return summary, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        Send a completion request, honoring rate limits.
+
+        Parameters
+        ----------
+        prompt:
+            The full prompt string to send to the model.
+        estimated_tokens:
+            Rough token count for the request+response, used by the
+            token-per-minute bucket.  Pass 0 to skip TPM limiting.
+        """
+        logger.debug(
+            "Acquiring rate-limit slot (provider=%s, est_tokens=%d)",
+            self.provider,
+            estimated_tokens,
+        )
+        self._rate_limiter.acquire(estimated_tokens=estimated_tokens)
+        logger.debug("Calling %s/%s", self.provider, self.model)
+        result = self._call_provider(prompt)
+        logger.debug("Provider returned %d chars", len(result))
+        return result
