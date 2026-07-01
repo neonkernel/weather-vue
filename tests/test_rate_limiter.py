@@ -1,201 +1,288 @@
-"""Tests for the TokenBucket rate limiter."""
+"""
+Tests for TokenBucket and RateLimiter: burst, sustained load, timeout, and token adjustment.
+"""
 
-from __future__ import annotations
-
+import threading
 import time
-from unittest.mock import patch
 
 import pytest
 
-from src.summarizer.rate_limiter import (
+from summarizer.rate_limiter import (
+    RateLimiter,
     RateLimitConfig,
     TokenBucket,
     get_rate_limiter,
+    reset_rate_limiters,
 )
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# TokenBucket tests
 # ---------------------------------------------------------------------------
 
 
-def _fast_bucket(rpm: float = 60.0, tpm: float = 6000.0) -> TokenBucket:
-    """Return a bucket with configurable limits."""
-    return TokenBucket(RateLimitConfig(requests_per_minute=rpm, tokens_per_minute=tpm))
+class TestTokenBucket:
+    def test_starts_full(self):
+        bucket = TokenBucket(capacity=10.0, refill_rate=1.0)
+        assert bucket.available_tokens() == pytest.approx(10.0, abs=0.1)
 
+    def test_consume_single_token(self):
+        bucket = TokenBucket(capacity=10.0, refill_rate=1.0)
+        result = bucket.consume(1.0)
+        assert result is True
+        assert bucket.available_tokens() == pytest.approx(9.0, abs=0.1)
 
-# ---------------------------------------------------------------------------
-# Basic acquisition
-# ---------------------------------------------------------------------------
+    def test_consume_all_tokens(self):
+        bucket = TokenBucket(capacity=5.0, refill_rate=1.0)
+        result = bucket.consume(5.0)
+        assert result is True
+        assert bucket.available_tokens() == pytest.approx(0.0, abs=0.1)
 
+    def test_consume_zero_tokens_always_succeeds(self):
+        bucket = TokenBucket(capacity=0.0, refill_rate=0.1)
+        assert bucket.consume(0) is True
+        assert bucket.consume(-1) is True
 
-class TestTokenBucketBasic:
-    def test_immediate_acquire_succeeds(self):
-        bucket = _fast_bucket()
-        # Should not raise or sleep
-        bucket.acquire()
-
-    def test_try_acquire_returns_true_when_available(self):
-        bucket = _fast_bucket()
-        assert bucket.try_acquire() is True
-
-    def test_try_acquire_returns_false_when_empty(self):
-        # Start with a bucket that is immediately empty after one request
-        bucket = TokenBucket(RateLimitConfig(requests_per_minute=0.001, tokens_per_minute=100))
-        # Force the bucket to be nearly empty
-        bucket._req_tokens = 0.5
-        assert bucket.try_acquire() is False
-
-    def test_multiple_quick_acquires_respect_limit(self):
-        # Very low RPM so we exhaust quickly
-        bucket = _fast_bucket(rpm=3.0)
-        bucket.acquire()
-        bucket.acquire()
-        bucket.acquire()
-        # 4th acquire should find bucket empty
-        assert bucket.try_acquire() is False
-
-    def test_token_budget_respected(self):
-        bucket = _fast_bucket(rpm=100, tpm=100)
-        assert bucket.try_acquire(estimated_tokens=50) is True
-        assert bucket.try_acquire(estimated_tokens=50) is True
-        # 101 tokens consumed, should fail
-        assert bucket.try_acquire(estimated_tokens=1) is False
-
-    def test_zero_estimated_tokens_skips_tpm(self):
-        """estimated_tokens=0 should skip the token bucket check."""
-        bucket = _fast_bucket(rpm=100, tpm=0.001)
-        # tpm is essentially 0 but estimated_tokens=0 means we don't check it
-        bucket._tok_tokens = 0.0
-        assert bucket.try_acquire(estimated_tokens=0) is True
-
-
-# ---------------------------------------------------------------------------
-# Refill behaviour
-# ---------------------------------------------------------------------------
-
-
-class TestTokenBucketRefill:
-    def test_refills_over_time(self):
-        bucket = _fast_bucket(rpm=60.0)
-        # Drain the request bucket
-        bucket._req_tokens = 0.0
-        bucket._req_last = time.monotonic()
-
-        # Simulate 1 second passing (= 1 token at 60 RPM)
-        with patch("time.monotonic", return_value=bucket._req_last + 1.0):
-            bucket._refill()
-        assert bucket._req_tokens == pytest.approx(1.0, abs=0.01)
+    def test_refill_over_time(self):
+        bucket = TokenBucket(capacity=10.0, refill_rate=10.0)  # 10 tokens/sec
+        bucket.consume(10.0)  # drain
+        assert bucket.available_tokens() == pytest.approx(0.0, abs=0.5)
+        time.sleep(0.5)  # should refill ~5 tokens
+        assert bucket.available_tokens() == pytest.approx(5.0, abs=1.0)
 
     def test_refill_does_not_exceed_capacity(self):
-        bucket = _fast_bucket(rpm=60.0)
-        bucket._req_tokens = 59.9
-        bucket._req_last = time.monotonic() - 100  # 100 seconds elapsed
+        bucket = TokenBucket(capacity=5.0, refill_rate=100.0)
+        time.sleep(0.2)  # would add 20 tokens without a cap
+        assert bucket.available_tokens() <= 5.0 + 0.1  # small tolerance
 
-        bucket._refill()
-        assert bucket._req_tokens == pytest.approx(60.0, abs=0.01)
+    def test_blocking_consume_waits_for_refill(self):
+        bucket = TokenBucket(capacity=5.0, refill_rate=10.0)  # 10 tokens/sec
+        bucket.consume(5.0)  # drain completely
 
-    def test_tpm_refills_proportionally(self):
-        bucket = _fast_bucket(rpm=60.0, tpm=6000.0)
-        bucket._tok_tokens = 0.0
-        t0 = time.monotonic()
-        bucket._tok_last = t0
+        start = time.monotonic()
+        result = bucket.consume(1.0)  # should wait ~0.1s
+        elapsed = time.monotonic() - start
 
-        # 30 seconds elapsed → half the per-minute allowance = 3000 tokens
-        with patch("time.monotonic", return_value=t0 + 30.0):
-            bucket._refill()
-        assert bucket._tok_tokens == pytest.approx(3000.0, abs=1.0)
+        assert result is True
+        assert elapsed >= 0.05  # at least some waiting happened
+
+    def test_timeout_returns_false_when_not_enough_tokens(self):
+        bucket = TokenBucket(capacity=1.0, refill_rate=0.01)  # very slow refill
+        bucket.consume(1.0)  # drain
+
+        result = bucket.consume(1.0, timeout=0.1)
+        assert result is False
+
+    def test_timeout_succeeds_if_tokens_available_in_time(self):
+        bucket = TokenBucket(capacity=10.0, refill_rate=20.0)  # fast refill
+        bucket.consume(10.0)  # drain
+
+        result = bucket.consume(1.0, timeout=2.0)  # should refill quickly
+        assert result is True
+
+    def test_burst_capacity_allows_initial_burst(self):
+        bucket = TokenBucket(capacity=100.0, refill_rate=1.0)
+        # Should be able to consume all 100 at once without waiting
+        result = bucket.consume(100.0)
+        assert result is True
+
+    def test_multiple_threads_safe(self):
+        """Token bucket should be thread-safe."""
+        bucket = TokenBucket(capacity=100.0, refill_rate=50.0)
+        consumed = []
+        errors = []
+
+        def worker():
+            try:
+                if bucket.consume(1.0, timeout=5.0):
+                    consumed.append(1)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(50)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        assert len(consumed) == 50
+
+    def test_successive_consumes_deplete_bucket(self):
+        bucket = TokenBucket(capacity=3.0, refill_rate=0.1)  # slow refill
+        assert bucket.consume(1.0) is True
+        assert bucket.consume(1.0) is True
+        assert bucket.consume(1.0) is True
+        # 4th should time out (capacity = 3, very slow refill)
+        result = bucket.consume(1.0, timeout=0.05)
+        assert result is False
 
 
 # ---------------------------------------------------------------------------
-# Blocking acquire with mocked sleep
+# RateLimiter tests
 # ---------------------------------------------------------------------------
 
 
-class TestTokenBucketBlocking:
-    def test_acquire_sleeps_when_exhausted(self):
-        bucket = _fast_bucket(rpm=60.0)
-        bucket._req_tokens = 0.0
-        t0 = time.monotonic()
-        bucket._req_last = t0
+class TestRateLimiter:
+    def setup_method(self):
+        reset_rate_limiters()
 
-        sleep_calls: list[float] = []
+    def teardown_method(self):
+        reset_rate_limiters()
 
-        def fake_sleep(secs: float) -> None:
-            sleep_calls.append(secs)
-            # Simulate refill by advancing _req_last
-            bucket._req_last = time.monotonic() - secs
-            bucket._req_tokens = 1.0
+    def test_acquire_returns_true_under_limit(self):
+        config = RateLimitConfig(requests_per_minute=60, tokens_per_minute=100_000)
+        limiter = RateLimiter(config=config, provider="test")
+        result = limiter.acquire(estimated_tokens=100)
+        assert result is True
 
-        with patch("src.summarizer.rate_limiter.time.sleep", side_effect=fake_sleep):
-            bucket.acquire()
+    def test_acquire_with_no_tokens(self):
+        config = RateLimitConfig(requests_per_minute=60, tokens_per_minute=100_000)
+        limiter = RateLimiter(config=config, provider="test")
+        result = limiter.acquire(estimated_tokens=0)
+        assert result is True
 
-        assert len(sleep_calls) >= 1
+    def test_acquire_timeout_when_rate_exceeded(self):
+        # 1 RPM with no burst — will exhaust quickly
+        config = RateLimitConfig(
+            requests_per_minute=1,
+            tokens_per_minute=100_000,
+            burst_multiplier=1.0,
+        )
+        limiter = RateLimiter(config=config, provider="test")
+        # First acquire consumes the single request token
+        limiter.acquire(estimated_tokens=0, timeout=1.0)
+        # Second should time out
+        result = limiter.acquire(estimated_tokens=0, timeout=0.1)
+        assert result is False
 
-    def test_acquire_waits_for_both_buckets(self):
-        """acquire() should wait when tokens-per-minute is exhausted too."""
-        bucket = _fast_bucket(rpm=100, tpm=10)
-        bucket._tok_tokens = 0.0
+    def test_available_requests_decreases_after_acquire(self):
+        config = RateLimitConfig(
+            requests_per_minute=60,
+            tokens_per_minute=1_000_000,
+            burst_multiplier=1.0,  # no burst
+        )
+        limiter = RateLimiter(config=config, provider="test")
+        before = limiter.available_requests
+        limiter.acquire(estimated_tokens=0)
+        after = limiter.available_requests
+        assert after < before
 
-        sleep_calls: list[float] = []
+    def test_available_tokens_decreases_after_acquire(self):
+        config = RateLimitConfig(requests_per_minute=1000, tokens_per_minute=10_000)
+        limiter = RateLimiter(config=config, provider="test")
+        before = limiter.available_tokens
+        limiter.acquire(estimated_tokens=500)
+        after = limiter.available_tokens
+        assert after < before
 
-        def fake_sleep(secs: float) -> None:
-            sleep_calls.append(secs)
-            bucket._tok_tokens = 100.0  # Simulate refill
+    def test_record_actual_tokens_adjusts_bucket_upward(self):
+        config = RateLimitConfig(requests_per_minute=1000, tokens_per_minute=10_000)
+        limiter = RateLimiter(config=config, provider="test")
+        limiter.acquire(estimated_tokens=100)
+        before = limiter.available_tokens
+        # Actual was less than estimated — tokens should be returned
+        limiter.record_actual_tokens(actual_tokens=50, estimated_tokens=100)
+        after = limiter.available_tokens
+        assert after > before
 
-        with patch("src.summarizer.rate_limiter.time.sleep", side_effect=fake_sleep):
-            bucket.acquire(estimated_tokens=5)
+    def test_record_actual_tokens_adjusts_bucket_downward(self):
+        config = RateLimitConfig(requests_per_minute=1000, tokens_per_minute=10_000)
+        limiter = RateLimiter(config=config, provider="test")
+        limiter.acquire(estimated_tokens=100)
+        before = limiter.available_tokens
+        # Actual was more than estimated — extra tokens should be consumed
+        limiter.record_actual_tokens(actual_tokens=200, estimated_tokens=100)
+        after = limiter.available_tokens
+        assert after < before
 
-        assert len(sleep_calls) >= 1
+    def test_record_actual_tokens_same_is_noop(self):
+        config = RateLimitConfig(requests_per_minute=1000, tokens_per_minute=10_000)
+        limiter = RateLimiter(config=config, provider="test")
+        limiter.acquire(estimated_tokens=100)
+        before = limiter.available_tokens
+        limiter.record_actual_tokens(actual_tokens=100, estimated_tokens=100)
+        after = limiter.available_tokens
+        # Should be essentially the same (within floating point tolerance)
+        assert abs(after - before) < 1.0
 
 
 # ---------------------------------------------------------------------------
-# Burst behaviour
+# get_rate_limiter registry
 # ---------------------------------------------------------------------------
 
 
-class TestTokenBucketBurst:
-    def test_burst_up_to_capacity(self):
-        """A full bucket allows a burst equal to its capacity."""
-        bucket = _fast_bucket(rpm=10.0)
-        # Bucket starts full (10 tokens)
-        successes = sum(bucket.try_acquire() for _ in range(10))
-        assert successes == 10
-        # Next one should fail
-        assert bucket.try_acquire() is False
+class TestRateLimiterRegistry:
+    def setup_method(self):
+        reset_rate_limiters()
 
-    def test_sustained_load(self):
+    def teardown_method(self):
+        reset_rate_limiters()
+
+    def test_same_provider_returns_same_instance(self):
+        l1 = get_rate_limiter("openai")
+        l2 = get_rate_limiter("openai")
+        assert l1 is l2
+
+    def test_different_providers_return_different_instances(self):
+        l1 = get_rate_limiter("openai")
+        l2 = get_rate_limiter("anthropic")
+        assert l1 is not l2
+
+    def test_provider_name_is_case_insensitive(self):
+        l1 = get_rate_limiter("OpenAI")
+        l2 = get_rate_limiter("openai")
+        assert l1 is l2
+
+    def test_reset_clears_registry(self):
+        l1 = get_rate_limiter("openai")
+        reset_rate_limiters()
+        l2 = get_rate_limiter("openai")
+        assert l1 is not l2
+
+    def test_custom_config_applied_on_first_call(self):
+        config = RateLimitConfig(requests_per_minute=5, tokens_per_minute=5_000)
+        limiter = get_rate_limiter("custom_provider", config=config)
+        assert limiter.config.requests_per_minute == 5
+        assert limiter.config.tokens_per_minute == 5_000
+
+
+# ---------------------------------------------------------------------------
+# Sustained load simulation
+# ---------------------------------------------------------------------------
+
+
+class TestSustainedLoad:
+    def test_sustained_requests_within_rpm(self):
         """
-        After a burst drains the bucket, tokens should refill.
-        We fake time.monotonic to avoid actual sleeps.
+        Fire 5 requests at 60 RPM — should all succeed without blocking significantly.
         """
-        bucket = _fast_bucket(rpm=60.0)
-        # Drain
-        for _ in range(60):
-            bucket.try_acquire()
-        assert bucket.try_acquire() is False
+        config = RateLimitConfig(
+            requests_per_minute=60,
+            tokens_per_minute=1_000_000,
+            burst_multiplier=2.0,
+        )
+        limiter = RateLimiter(config=config, provider="test_sustained")
+        start = time.monotonic()
+        for _ in range(5):
+            result = limiter.acquire(estimated_tokens=100, timeout=2.0)
+            assert result is True
+        elapsed = time.monotonic() - start
+        # 5 requests at 60 RPM with 2x burst should complete in well under 1 second
+        assert elapsed < 1.0
 
-        # Advance clock by 1 second → should have 1 new token
-        bucket._req_last -= 1.0
-        assert bucket.try_acquire() is True
-
-
-# ---------------------------------------------------------------------------
-# get_rate_limiter factory
-# ---------------------------------------------------------------------------
-
-
-class TestGetRateLimiter:
-    def test_known_provider_returns_configured_bucket(self):
-        bucket = get_rate_limiter("openai")
-        assert isinstance(bucket, TokenBucket)
-        assert bucket._rpm == pytest.approx(60.0)
-
-    def test_unknown_provider_returns_default_bucket(self):
-        bucket = get_rate_limiter("some_unknown_provider")
-        assert isinstance(bucket, TokenBucket)
-
-    def test_case_insensitive(self):
-        b1 = get_rate_limiter("OpenAI")
-        b2 = get_rate_limiter("openai")
-        assert b1._rpm == b2._rpm
+    def test_burst_then_rate_limited(self):
+        """
+        Burst capacity should be exhausted, causing subsequent requests to be rate-limited.
+        """
+        config = RateLimitConfig(
+            requests_per_minute=6,        # 0.1 req/sec
+            tokens_per_minute=1_000_000,
+            burst_multiplier=1.0,         # no burst
+        )
+        limiter = RateLimiter(config=config, provider="test_burst")
+        # First request should succeed immediately
+        assert limiter.acquire(estimated_tokens=0, timeout=0.5) is True
+        # Second request should fail quickly (only 6 rpm = 0.1/s, timeout < refill time)
+        result = limiter.acquire(estimated_tokens=0, timeout=0.05)
+        assert result is False

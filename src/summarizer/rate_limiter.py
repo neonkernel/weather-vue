@@ -1,6 +1,7 @@
-"""Token bucket rate limiter for API calls."""
-
-from __future__ import annotations
+"""
+Token bucket rate limiter for API calls.
+Supports requests-per-minute (RPM) and tokens-per-minute (TPM) limits.
+"""
 
 import logging
 import threading
@@ -13,127 +14,199 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RateLimitConfig:
-    """Per-provider rate limit configuration."""
+    """Configuration for rate limiting per provider."""
+    requests_per_minute: int = 60          # max RPM
+    tokens_per_minute: int = 90_000        # max TPM
+    burst_multiplier: float = 1.5          # allow short bursts above sustained rate
+    min_sleep_seconds: float = 0.05        # minimum sleep to avoid busy-wait
 
-    requests_per_minute: float = 60.0
-    tokens_per_minute: float = 90_000.0
 
-
-# Sensible defaults for well-known providers
+# Sensible defaults per provider
 PROVIDER_DEFAULTS: dict[str, RateLimitConfig] = {
     "openai": RateLimitConfig(requests_per_minute=60, tokens_per_minute=90_000),
     "anthropic": RateLimitConfig(requests_per_minute=50, tokens_per_minute=100_000),
-    "ollama": RateLimitConfig(requests_per_minute=120, tokens_per_minute=200_000),
+    "cohere": RateLimitConfig(requests_per_minute=100, tokens_per_minute=200_000),
+    "ollama": RateLimitConfig(requests_per_minute=500, tokens_per_minute=1_000_000),
+    "default": RateLimitConfig(requests_per_minute=60, tokens_per_minute=90_000),
 }
 
 
 class TokenBucket:
     """
-    Thread-safe token bucket for rate limiting.
+    A token bucket algorithm implementation for rate limiting.
 
-    Supports two independent buckets:
-      - request bucket  (1 token consumed per API call)
-      - token bucket    (N tokens consumed per API call based on estimated usage)
+    The bucket refills at a constant rate (tokens / second).
+    If the bucket has enough tokens, consume them immediately.
+    If not, sleep until enough tokens are available.
     """
 
-    def __init__(self, config: Optional[RateLimitConfig] = None):
-        cfg = config or RateLimitConfig()
-        self._rpm = cfg.requests_per_minute
-        self._tpm = cfg.tokens_per_minute
-
-        # Request bucket state
-        self._req_tokens: float = self._rpm
-        self._req_last: float = time.monotonic()
-
-        # Token bucket state
-        self._tok_tokens: float = self._tpm
-        self._tok_last: float = time.monotonic()
-
+    def __init__(self, capacity: float, refill_rate: float):
+        """
+        Args:
+            capacity: Maximum number of tokens in the bucket (burst capacity).
+            refill_rate: Tokens added per second (sustained rate).
+        """
+        self.capacity = float(capacity)
+        self.refill_rate = float(refill_rate)
+        self._tokens = float(capacity)  # start full
+        self._last_refill = time.monotonic()
         self._lock = threading.Lock()
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _refill(self) -> None:
-        """Refill both buckets based on elapsed time (called with lock held)."""
+        """Add tokens based on elapsed time since last refill (must hold lock)."""
         now = time.monotonic()
+        elapsed = now - self._last_refill
+        added = elapsed * self.refill_rate
+        self._tokens = min(self.capacity, self._tokens + added)
+        self._last_refill = now
 
-        req_elapsed = now - self._req_last
-        self._req_tokens = min(
-            self._rpm,
-            self._req_tokens + req_elapsed * (self._rpm / 60.0),
-        )
-        self._req_last = now
-
-        tok_elapsed = now - self._tok_last
-        self._tok_tokens = min(
-            self._tpm,
-            self._tok_tokens + tok_elapsed * (self._tpm / 60.0),
-        )
-        self._tok_last = now
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def acquire(self, estimated_tokens: int = 0) -> None:
+    def consume(self, tokens: float = 1.0, timeout: Optional[float] = None) -> bool:
         """
-        Block until both a request slot and token budget are available.
+        Consume `tokens` from the bucket, blocking until they are available.
 
-        Parameters
-        ----------
-        estimated_tokens:
-            Rough estimate of tokens this request will consume.
-            If 0, only the request-per-minute limit is enforced.
+        Args:
+            tokens: Number of tokens to consume.
+            timeout: Maximum seconds to wait. None = wait forever.
+
+        Returns:
+            True if tokens were consumed, False if timed out.
         """
+        if tokens <= 0:
+            return True
+
+        deadline = (time.monotonic() + timeout) if timeout is not None else None
+
         while True:
             with self._lock:
                 self._refill()
+                if self._tokens >= tokens:
+                    self._tokens -= tokens
+                    return True
+                # Calculate how long until we have enough tokens
+                deficit = tokens - self._tokens
+                wait_time = deficit / self.refill_rate
 
-                req_ok = self._req_tokens >= 1.0
-                tok_ok = estimated_tokens == 0 or self._tok_tokens >= estimated_tokens
+            # Check timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning("Rate limit timeout waiting for %s tokens", tokens)
+                    return False
+                wait_time = min(wait_time, remaining)
 
-                if req_ok and tok_ok:
-                    self._req_tokens -= 1.0
-                    if estimated_tokens:
-                        self._tok_tokens -= estimated_tokens
-                    logger.debug(
-                        "Rate limiter acquired (req_remaining=%.1f, tok_remaining=%.0f)",
-                        self._req_tokens,
-                        self._tok_tokens,
-                    )
-                    return
+            logger.debug("Rate limit: sleeping %.2fs for %s tokens", wait_time, tokens)
+            time.sleep(max(wait_time, 0.001))
 
-                # Calculate how long we need to wait
-                waits: list[float] = []
-                if not req_ok:
-                    deficit = 1.0 - self._req_tokens
-                    waits.append(deficit / (self._rpm / 60.0))
-                if not tok_ok and estimated_tokens:
-                    deficit = estimated_tokens - self._tok_tokens
-                    waits.append(deficit / (self._tpm / 60.0))
-
-                wait_secs = max(waits) if waits else 0.1
-
-            logger.debug("Rate limit reached; sleeping %.2fs", wait_secs)
-            time.sleep(wait_secs)
-
-    def try_acquire(self, estimated_tokens: int = 0) -> bool:
-        """Non-blocking version; returns False if tokens are not available."""
+    def available_tokens(self) -> float:
+        """Return the current number of available tokens (approximate)."""
         with self._lock:
             self._refill()
-            req_ok = self._req_tokens >= 1.0
-            tok_ok = estimated_tokens == 0 or self._tok_tokens >= estimated_tokens
-            if req_ok and tok_ok:
-                self._req_tokens -= 1.0
-                if estimated_tokens:
-                    self._tok_tokens -= estimated_tokens
-                return True
+            return self._tokens
+
+
+class RateLimiter:
+    """
+    Composite rate limiter that enforces both RPM and TPM limits using token buckets.
+    Thread-safe and suitable for use across concurrent calls.
+    """
+
+    def __init__(self, config: Optional[RateLimitConfig] = None, provider: str = "default"):
+        if config is None:
+            config = PROVIDER_DEFAULTS.get(provider.lower(), PROVIDER_DEFAULTS["default"])
+        self.config = config
+        self.provider = provider
+
+        rpm_capacity = config.requests_per_minute * config.burst_multiplier
+        rpm_rate = config.requests_per_minute / 60.0  # tokens per second
+
+        tpm_capacity = config.tokens_per_minute * config.burst_multiplier
+        tpm_rate = config.tokens_per_minute / 60.0  # tokens per second
+
+        self._request_bucket = TokenBucket(capacity=rpm_capacity, refill_rate=rpm_rate)
+        self._token_bucket = TokenBucket(capacity=tpm_capacity, refill_rate=tpm_rate)
+
+        logger.debug(
+            "RateLimiter initialized for %s: RPM=%d, TPM=%d",
+            provider, config.requests_per_minute, config.tokens_per_minute
+        )
+
+    def acquire(self, estimated_tokens: int = 0, timeout: Optional[float] = None) -> bool:
+        """
+        Acquire rate limit slots for one API request with an estimated token count.
+
+        Args:
+            estimated_tokens: Estimated number of tokens for this request.
+            timeout: Maximum seconds to wait. None = wait forever.
+
+        Returns:
+            True if slots acquired, False if timed out.
+        """
+        # First acquire a request slot
+        if not self._request_bucket.consume(1.0, timeout=timeout):
+            logger.warning("RateLimiter: timed out waiting for request slot (%s)", self.provider)
             return False
 
+        # Then acquire token slots if we have an estimate
+        if estimated_tokens > 0:
+            if not self._token_bucket.consume(float(estimated_tokens), timeout=timeout):
+                logger.warning(
+                    "RateLimiter: timed out waiting for %d token slots (%s)",
+                    estimated_tokens, self.provider
+                )
+                # We consumed a request slot but couldn't get tokens — release isn't possible
+                # in a simple bucket, but the request slot will refill naturally.
+                return False
 
-def get_rate_limiter(provider: str) -> TokenBucket:
-    """Return a TokenBucket configured with provider-specific defaults."""
-    config = PROVIDER_DEFAULTS.get(provider.lower(), RateLimitConfig())
-    return TokenBucket(config)
+        return True
+
+    def record_actual_tokens(self, actual_tokens: int, estimated_tokens: int = 0) -> None:
+        """
+        Adjust the token bucket for the difference between estimated and actual token usage.
+        Call this after a successful API response.
+
+        Args:
+            actual_tokens: Actual tokens used (from API response).
+            estimated_tokens: Tokens pre-consumed in acquire().
+        """
+        diff = actual_tokens - estimated_tokens
+        if diff > 0:
+            # Used more than estimated — consume the extra
+            self._token_bucket.consume(float(diff))
+        elif diff < 0:
+            # Used fewer — return the tokens (add back)
+            with self._token_bucket._lock:
+                self._token_bucket._tokens = min(
+                    self._token_bucket.capacity,
+                    self._token_bucket._tokens + abs(diff)
+                )
+
+    @property
+    def available_requests(self) -> float:
+        return self._request_bucket.available_tokens()
+
+    @property
+    def available_tokens(self) -> float:
+        return self._token_bucket.available_tokens()
+
+
+# Global registry of rate limiters (one per provider)
+_limiters: dict[str, RateLimiter] = {}
+_limiter_lock = threading.Lock()
+
+
+def get_rate_limiter(provider: str, config: Optional[RateLimitConfig] = None) -> RateLimiter:
+    """
+    Get or create a RateLimiter for the given provider.
+    Config is only used when creating a new limiter.
+    """
+    key = provider.lower()
+    with _limiter_lock:
+        if key not in _limiters:
+            _limiters[key] = RateLimiter(config=config, provider=key)
+        return _limiters[key]
+
+
+def reset_rate_limiters() -> None:
+    """Reset all rate limiters (useful in tests)."""
+    with _limiter_lock:
+        _limiters.clear()

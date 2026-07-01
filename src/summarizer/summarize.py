@@ -1,158 +1,202 @@
-"""Core summarization logic."""
-
-from __future__ import annotations
+"""
+Core summarization logic.
+Orchestrates fetching, chunking, LLM calls, and caching.
+"""
 
 import logging
-import time
 from typing import Optional
 
-from .config import settings
-from .exceptions import SummarizerError
-from .ingestion import fetch_article
-from .llm.client import LLMClient
-from .models import Summary
-from .styles import SummaryStyle
-from .ui import chunk_progress, spinner
+from summarizer.cache import SummaryCache
+from summarizer.models import Summary
 
 logger = logging.getLogger(__name__)
-
-# Rough character-to-token ratio (conservative)
-CHARS_PER_TOKEN = 4
-# Maximum tokens to send to the model per chunk
-CHUNK_TOKEN_LIMIT = 3000
-CHUNK_CHAR_LIMIT = CHUNK_TOKEN_LIMIT * CHARS_PER_TOKEN
-
-
-def _chunk_text(text: str, max_chars: int = CHUNK_CHAR_LIMIT) -> list[str]:
-    """Split text into chunks of at most max_chars characters."""
-    if len(text) <= max_chars:
-        return [text]
-
-    chunks: list[str] = []
-    while text:
-        chunk = text[:max_chars]
-        # Try to break on a sentence boundary
-        boundary = max(chunk.rfind(". "), chunk.rfind(".\n"), chunk.rfind("! "), chunk.rfind("? "))
-        if boundary > max_chars // 2:
-            chunk = text[: boundary + 1]
-        chunks.append(chunk.strip())
-        text = text[len(chunk) :].strip()
-    return chunks
-
-
-def _build_prompt(text: str, style: str, title: Optional[str]) -> str:
-    style_instructions = {
-        SummaryStyle.CONCISE.value: "Provide a concise 2-3 sentence summary.",
-        SummaryStyle.DETAILED.value: "Provide a detailed summary covering all major points.",
-        SummaryStyle.BULLET.value: "Summarize using clear bullet points (• prefix).",
-        SummaryStyle.ELI5.value: "Explain this article as if the reader is 5 years old.",
-        SummaryStyle.TECHNICAL.value: "Provide a technical summary focusing on methods and findings.",
-    }
-    instruction = style_instructions.get(style, "Summarize the following article.")
-    title_part = f'Title: "{title}"\n\n' if title else ""
-    return (
-        f"{title_part}"
-        f"Article text:\n\n{text}\n\n"
-        f"Instructions: {instruction}"
-    )
-
-
-def _merge_chunk_summaries(summaries: list[str], style: str, client: LLMClient) -> str:
-    """Merge multiple chunk summaries into a final coherent summary."""
-    if len(summaries) == 1:
-        return summaries[0]
-
-    combined = "\n\n---\n\n".join(summaries)
-    style_instructions = {
-        SummaryStyle.CONCISE.value: "Merge these partial summaries into a concise 2-3 sentence final summary.",
-        SummaryStyle.DETAILED.value: "Merge these partial summaries into a detailed, coherent summary.",
-        SummaryStyle.BULLET.value: "Merge and deduplicate these bullet-point summaries into a final list.",
-        SummaryStyle.ELI5.value: "Merge these partial summaries into a simple explanation for a 5-year-old.",
-        SummaryStyle.TECHNICAL.value: "Merge these partial summaries into a technical summary.",
-    }
-    instruction = style_instructions.get(style, "Merge these partial summaries into a final summary.")
-    prompt = f"Partial summaries:\n\n{combined}\n\n{instruction}"
-    return client.complete(prompt, estimated_tokens=len(combined) // CHARS_PER_TOKEN)
 
 
 def summarize_url(
     url: str,
-    style: str = SummaryStyle.CONCISE.value,
+    style: str = "concise",
     provider: Optional[str] = None,
     model: Optional[str] = None,
-    quiet: bool = False,
+    cache: Optional[SummaryCache] = None,
 ) -> Summary:
     """
-    Fetch an article and summarize it.
+    Summarize an article at the given URL.
 
-    Parameters
-    ----------
-    url:        Article URL to fetch and summarize.
-    style:      One of the SummaryStyle values.
-    provider:   LLM provider name (falls back to settings).
-    model:      Model identifier (falls back to settings).
-    quiet:      Suppress progress UI.
+    Pipeline:
+    1. Check cache (if enabled)
+    2. Fetch and parse the article
+    3. Chunk the content
+    4. Call LLM (with rate limiting)
+    5. Store result in cache
+    6. Return Summary
 
-    Returns
-    -------
-    Summary dataclass populated with the result.
+    Args:
+        url: The URL of the article to summarize.
+        style: Summary style (concise, detailed, bullet, eli5).
+        provider: LLM provider override.
+        model: Model override.
+        cache: SummaryCache instance. Pass None to disable caching.
+
+    Returns:
+        A Summary dataclass instance.
     """
-    start = time.monotonic()
+    from summarizer.config import get_config
+    from summarizer.ingestion import fetch_and_parse
+    from summarizer.llm.client import LLMClient
 
-    effective_provider = provider or settings.default_provider
-    effective_model = model or settings.default_model
+    config = get_config()
+    effective_provider = provider or config.provider
+    effective_model = model or config.model
 
-    # ------------------------------------------------------------------ fetch
-    with spinner("Fetching article…", quiet=quiet):
-        try:
-            article = fetch_article(url)
-        except Exception as exc:
-            raise SummarizerError(f"Failed to fetch article: {exc}") from exc
-
-    logger.debug(
-        "Fetched '%s' (%d chars)", article.title or url, len(article.text)
-    )
-
-    # ------------------------------------------------------------------ chunk
-    chunks = _chunk_text(article.text)
-    chunk_count = len(chunks)
-    logger.debug("Split article into %d chunk(s).", chunk_count)
-
-    # ------------------------------------------------------------------ LLM
-    client = LLMClient(provider=effective_provider, model=effective_model)
-    chunk_summaries: list[str] = []
-
-    with chunk_progress(
-        total=chunk_count, description="Summarizing", quiet=quiet
-    ) as progress:
-        for i, chunk in enumerate(chunks):
-            prompt = _build_prompt(chunk, style, article.title if i == 0 else None)
-            estimated_tokens = len(chunk) // CHARS_PER_TOKEN + 200
+    # --- Step 1: Cache lookup ---
+    if cache is not None:
+        cached_summary = cache.get(
+            url=url,
+            style=style,
+            provider=effective_provider,
+            model=effective_model,
+        )
+        if cached_summary is not None:
+            logger.info("Returning cached summary for %s", url)
+            # Mark as cached for display
             try:
-                partial = client.complete(prompt, estimated_tokens=estimated_tokens)
-            except Exception as exc:
-                raise SummarizerError(f"LLM call failed on chunk {i + 1}: {exc}") from exc
-            chunk_summaries.append(partial)
-            progress.advance()
+                object.__setattr__(cached_summary, "cached", True)
+            except (TypeError, AttributeError):
+                pass
+            return cached_summary
 
-    # ------------------------------------------------------------------ merge
-    if chunk_count > 1:
-        with spinner("Merging chunk summaries…", quiet=quiet):
-            final_summary = _merge_chunk_summaries(chunk_summaries, style, client)
+    # --- Step 2: Fetch and parse ---
+    logger.info("Fetching article: %s", url)
+    article = fetch_and_parse(url)
+    logger.debug("Fetched %d chars from %s", len(article.content), url)
+
+    # --- Step 3: Chunk content ---
+    chunks = _chunk_content(article.content, max_chunk_chars=config.max_chunk_chars)
+    logger.debug("Split into %d chunk(s)", len(chunks))
+
+    # --- Step 4: LLM call(s) ---
+    client = LLMClient(provider=effective_provider, model=effective_model)
+
+    if len(chunks) == 1:
+        summary_text = client.summarize(
+            text=chunks[0],
+            style=style,
+            title=article.title,
+        )
+        tokens_used = getattr(client, "last_tokens_used", None)
     else:
-        final_summary = chunk_summaries[0]
+        summary_text, tokens_used = _summarize_chunks(
+            client=client,
+            chunks=chunks,
+            style=style,
+            title=article.title,
+        )
 
-    elapsed = time.monotonic() - start
-    word_count = len(final_summary.split())
-
-    return Summary(
+    # --- Step 5: Build Summary object ---
+    summary = Summary(
         url=url,
-        title=article.title or "",
-        summary=final_summary,
+        title=article.title,
+        text=summary_text,
         style=style,
         provider=effective_provider,
         model=effective_model,
-        word_count=word_count,
-        chunk_count=chunk_count,
-        elapsed_seconds=round(elapsed, 2),
+        tokens_used=tokens_used,
+        cached=False,
     )
+
+    # --- Step 6: Store in cache ---
+    if cache is not None:
+        stored = cache.set(
+            url=url,
+            style=style,
+            provider=effective_provider,
+            model=effective_model,
+            summary=summary,
+        )
+        if stored:
+            logger.debug("Summary cached for %s", url)
+
+    return summary
+
+
+def _chunk_content(content: str, max_chunk_chars: int = 12_000) -> list[str]:
+    """
+    Split content into chunks of at most `max_chunk_chars` characters,
+    attempting to break on paragraph boundaries.
+    """
+    if len(content) <= max_chunk_chars:
+        return [content]
+
+    chunks = []
+    paragraphs = content.split("\n\n")
+    current_chunk: list[str] = []
+    current_len = 0
+
+    for para in paragraphs:
+        para_len = len(para)
+        if current_len + para_len + 2 > max_chunk_chars and current_chunk:
+            chunks.append("\n\n".join(current_chunk))
+            current_chunk = []
+            current_len = 0
+
+        # If a single paragraph exceeds the limit, hard-split it
+        if para_len > max_chunk_chars:
+            for i in range(0, para_len, max_chunk_chars):
+                chunks.append(para[i : i + max_chunk_chars])
+        else:
+            current_chunk.append(para)
+            current_len += para_len + 2  # +2 for '\n\n'
+
+    if current_chunk:
+        chunks.append("\n\n".join(current_chunk))
+
+    return [c for c in chunks if c.strip()]
+
+
+def _summarize_chunks(
+    client,
+    chunks: list[str],
+    style: str,
+    title: Optional[str] = None,
+) -> tuple[str, Optional[int]]:
+    """
+    Summarize multiple chunks individually, then combine into a final summary.
+    Shows a Rich progress bar during processing.
+
+    Returns:
+        (final_summary_text, total_tokens_used)
+    """
+    from summarizer.ui import chunked_progress
+
+    chunk_summaries = []
+    total_tokens = 0
+
+    with chunked_progress(total=len(chunks) + 1, description="Summarizing chunks") as progress:
+        for i, chunk in enumerate(chunks, 1):
+            logger.debug("Summarizing chunk %d/%d", i, len(chunks))
+            partial = client.summarize(
+                text=chunk,
+                style="concise",  # Use concise for intermediate summaries
+                title=title,
+            )
+            chunk_summaries.append(partial)
+            tokens = getattr(client, "last_tokens_used", None)
+            if tokens:
+                total_tokens += tokens
+            progress.advance()
+
+        # Final pass: combine chunk summaries
+        combined = "\n\n".join(chunk_summaries)
+        logger.debug("Combining %d chunk summaries", len(chunk_summaries))
+        final_summary = client.summarize(
+            text=combined,
+            style=style,
+            title=title,
+            is_combination=True,
+        )
+        tokens = getattr(client, "last_tokens_used", None)
+        if tokens:
+            total_tokens += tokens
+        progress.advance()
+
+    return final_summary, total_tokens if total_tokens > 0 else None

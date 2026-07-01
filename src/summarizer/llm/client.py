@@ -1,134 +1,197 @@
-"""LLM client with integrated rate limiting."""
-
-from __future__ import annotations
+"""
+LLM client that wraps provider-specific completion calls with rate limiting.
+"""
 
 import logging
 from typing import Optional
 
-from ..rate_limiter import TokenBucket, get_rate_limiter
+from summarizer.rate_limiter import RateLimiter, get_rate_limiter
 
 logger = logging.getLogger(__name__)
 
-# Registry so one bucket is shared across all client instances per provider
-_rate_limiters: dict[str, TokenBucket] = {}
+# Rough estimate: average tokens per character in English text
+_CHARS_PER_TOKEN = 4
 
 
-def _get_or_create_limiter(provider: str) -> TokenBucket:
-    if provider not in _rate_limiters:
-        _rate_limiters[provider] = get_rate_limiter(provider)
-    return _rate_limiters[provider]
+def _estimate_tokens(text: str) -> int:
+    """Rough token count estimate from character count."""
+    return max(1, len(text) // _CHARS_PER_TOKEN)
 
 
 class LLMClient:
     """
-    Thin wrapper around provider-specific completion APIs.
-
-    Integrates a TokenBucket rate limiter that is shared across all instances
-    for the same provider, so concurrent callers obey the same limits.
+    A unified LLM client that delegates to a provider-specific backend
+    and applies rate limiting around each API call.
     """
 
     def __init__(
         self,
         provider: str = "openai",
         model: Optional[str] = None,
-        rate_limiter: Optional[TokenBucket] = None,
+        rate_limiter: Optional[RateLimiter] = None,
     ) -> None:
-        self.provider = provider.lower()
-        self.model = model or self._default_model()
-        self._rate_limiter = rate_limiter or _get_or_create_limiter(self.provider)
+        self.provider = provider
+        self.model = model
+        self.last_tokens_used: Optional[int] = None
+        self._rate_limiter = rate_limiter or get_rate_limiter(provider)
+        self._backend = self._load_backend(provider, model)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _default_model(self) -> str:
-        defaults = {
-            "openai": "gpt-4o-mini",
-            "anthropic": "claude-3-haiku-20240307",
-            "ollama": "llama3",
-        }
-        return defaults.get(self.provider, "gpt-4o-mini")
-
-    def _call_provider(self, prompt: str) -> str:
-        """Route to the correct provider backend. Override in tests."""
-        if self.provider == "openai":
-            return self._call_openai(prompt)
-        if self.provider == "anthropic":
-            return self._call_anthropic(prompt)
-        if self.provider == "ollama":
-            return self._call_ollama(prompt)
-        raise ValueError(f"Unknown provider: {self.provider!r}")
-
-    def _call_openai(self, prompt: str) -> str:
+    def _load_backend(self, provider: str, model: Optional[str]):
+        """Load the provider-specific backend."""
         try:
-            import openai  # type: ignore
+            from summarizer.llm import providers
+            return providers.get_provider(provider, model)
+        except Exception as exc:
+            logger.error("Failed to load backend for provider %s: %s", provider, exc)
+            raise
 
-            client = openai.OpenAI()
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return response.choices[0].message.content or ""
-        except ImportError as exc:
-            raise RuntimeError(
-                "openai package not installed. Run: pip install openai"
-            ) from exc
-
-    def _call_anthropic(self, prompt: str) -> str:
-        try:
-            import anthropic  # type: ignore
-
-            client = anthropic.Anthropic()
-            message = client.messages.create(
-                model=self.model,
-                max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return message.content[0].text
-        except ImportError as exc:
-            raise RuntimeError(
-                "anthropic package not installed. Run: pip install anthropic"
-            ) from exc
-
-    def _call_ollama(self, prompt: str) -> str:
-        try:
-            import requests  # type: ignore
-
-            response = requests.post(
-                "http://localhost:11434/api/generate",
-                json={"model": self.model, "prompt": prompt, "stream": False},
-                timeout=120,
-            )
-            response.raise_for_status()
-            return response.json().get("response", "")
-        except ImportError as exc:
-            raise RuntimeError(
-                "requests package not installed. Run: pip install requests"
-            ) from exc
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def complete(self, prompt: str, estimated_tokens: int = 0) -> str:
+    def summarize(
+        self,
+        text: str,
+        style: str = "concise",
+        title: Optional[str] = None,
+        is_combination: bool = False,
+        timeout: Optional[float] = None,
+    ) -> str:
         """
-        Send a completion request, honoring rate limits.
+        Generate a summary for the given text using the configured LLM.
 
-        Parameters
-        ----------
-        prompt:
-            The full prompt string to send to the model.
-        estimated_tokens:
-            Rough token count for the request+response, used by the
-            token-per-minute bucket.  Pass 0 to skip TPM limiting.
+        Args:
+            text: The text to summarize.
+            style: Summary style (concise, detailed, bullet, eli5).
+            title: Optional article title for context.
+            is_combination: Whether this is a combination of chunk summaries.
+            timeout: Max seconds to wait for rate limit. None = wait forever.
+
+        Returns:
+            The summary text as a string.
         """
+        prompt = self._build_prompt(text=text, style=style, title=title, is_combination=is_combination)
+        estimated_tokens = _estimate_tokens(prompt)
+
+        # Apply rate limiting before the API call
         logger.debug(
-            "Acquiring rate-limit slot (provider=%s, est_tokens=%d)",
-            self.provider,
-            estimated_tokens,
+            "Acquiring rate limit slot for %s (estimated %d tokens)",
+            self.provider, estimated_tokens
         )
-        self._rate_limiter.acquire(estimated_tokens=estimated_tokens)
-        logger.debug("Calling %s/%s", self.provider, self.model)
-        result = self._call_provider(prompt)
-        logger.debug("Provider returned %d chars", len(result))
-        return result
+        acquired = self._rate_limiter.acquire(
+            estimated_tokens=estimated_tokens,
+            timeout=timeout,
+        )
+        if not acquired:
+            raise TimeoutError(
+                f"Rate limit timeout waiting for provider '{self.provider}'"
+            )
+
+        # Make the API call
+        try:
+            response = self._backend.complete(prompt)
+            result_text = self._extract_text(response)
+            actual_tokens = self._extract_tokens(response)
+
+            # Adjust token bucket for actual vs estimated usage
+            self._rate_limiter.record_actual_tokens(
+                actual_tokens=actual_tokens or estimated_tokens,
+                estimated_tokens=estimated_tokens,
+            )
+
+            self.last_tokens_used = actual_tokens
+            logger.debug(
+                "LLM call complete: provider=%s, tokens=%s",
+                self.provider, actual_tokens
+            )
+            return result_text
+
+        except Exception as exc:
+            logger.error("LLM call failed for provider %s: %s", self.provider, exc)
+            raise
+
+    def complete(self, prompt: str, timeout: Optional[float] = None) -> str:
+        """
+        Low-level completion method with rate limiting.
+        Use `summarize()` for higher-level access.
+        """
+        estimated_tokens = _estimate_tokens(prompt)
+
+        acquired = self._rate_limiter.acquire(
+            estimated_tokens=estimated_tokens,
+            timeout=timeout,
+        )
+        if not acquired:
+            raise TimeoutError(
+                f"Rate limit timeout waiting for provider '{self.provider}'"
+            )
+
+        try:
+            response = self._backend.complete(prompt)
+            result_text = self._extract_text(response)
+            actual_tokens = self._extract_tokens(response)
+
+            self._rate_limiter.record_actual_tokens(
+                actual_tokens=actual_tokens or estimated_tokens,
+                estimated_tokens=estimated_tokens,
+            )
+            self.last_tokens_used = actual_tokens
+            return result_text
+        except Exception as exc:
+            logger.error("LLM complete() failed for provider %s: %s", self.provider, exc)
+            raise
+
+    def _build_prompt(
+        self,
+        text: str,
+        style: str,
+        title: Optional[str] = None,
+        is_combination: bool = False,
+    ) -> str:
+        """Build a summarization prompt."""
+        from summarizer.styles import get_style_instruction
+
+        style_instruction = get_style_instruction(style)
+        title_line = f'Title: "{title}"\n\n' if title else ""
+
+        if is_combination:
+            return (
+                f"You have been given several partial summaries of an article. "
+                f"Combine them into a single, coherent summary.\n"
+                f"{title_line}"
+                f"{style_instruction}\n\n"
+                f"Partial summaries:\n{text}"
+            )
+
+        return (
+            f"Please summarize the following article.\n"
+            f"{title_line}"
+            f"{style_instruction}\n\n"
+            f"Article:\n{text}"
+        )
+
+    def _extract_text(self, response) -> str:
+        """Extract the text content from a provider response."""
+        if isinstance(response, str):
+            return response
+        # Handle dict-like response
+        if isinstance(response, dict):
+            # OpenAI-style
+            try:
+                return response["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError):
+                pass
+            # Generic fallback
+            for key in ("text", "content", "output", "result"):
+                if key in response:
+                    return str(response[key])
+        # Fallback: stringify
+        return str(response)
+
+    def _extract_tokens(self, response) -> Optional[int]:
+        """Extract token usage from a provider response."""
+        if isinstance(response, dict):
+            # OpenAI-style
+            usage = response.get("usage", {})
+            if usage:
+                return usage.get("total_tokens") or usage.get("completion_tokens")
+            # Anthropic-style
+            if "input_tokens" in response or "output_tokens" in response:
+                return (response.get("input_tokens", 0) or 0) + (response.get("output_tokens", 0) or 0)
+        return None
