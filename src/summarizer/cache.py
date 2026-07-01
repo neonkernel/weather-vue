@@ -1,12 +1,12 @@
 """
-Persistent disk cache for summaries using diskcache.
+Persistent disk cache for article summaries using diskcache.
 """
+from __future__ import annotations
 
 import hashlib
 import json
 import logging
 import os
-from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
@@ -16,161 +16,128 @@ try:
 except ImportError:
     DISKCACHE_AVAILABLE = False
 
-from summarizer.models import Summary
+from .models import Summary
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "summarizer"
-DEFAULT_TTL_HOURS = 7 * 24  # 7 days in hours
+DEFAULT_TTL_HOURS = 7 * 24  # 7 days
 
 
 def _get_ttl_seconds() -> int:
-    """Get cache TTL in seconds from environment variable or default."""
-    ttl_hours = float(os.environ.get("CACHE_TTL_HOURS", DEFAULT_TTL_HOURS))
-    return int(ttl_hours * 3600)
+    """Read TTL from environment variable, defaulting to 7 days."""
+    hours = float(os.environ.get("CACHE_TTL_HOURS", DEFAULT_TTL_HOURS))
+    return int(hours * 3600)
 
 
 def _make_cache_key(url: str, style: str, provider: str, model: str) -> str:
     """
-    Generate a SHA-256 cache key from the combination of URL, style, provider, and model.
-    URL is normalized (lowercased, stripped, fragment removed).
+    Generate a SHA-256 cache key from the normalized URL, style, provider, and model.
+    URL is normalized by stripping trailing slashes and lowercasing the scheme/host.
     """
-    # Normalize URL
-    normalized_url = url.strip().lower()
-    # Remove fragment
-    if "#" in normalized_url:
-        normalized_url = normalized_url.split("#")[0]
-    # Remove trailing slash for consistency
-    normalized_url = normalized_url.rstrip("/")
-
-    key_material = f"{normalized_url}|{style.strip().lower()}|{provider.strip().lower()}|{model.strip().lower()}"
-    return hashlib.sha256(key_material.encode("utf-8")).hexdigest()
+    normalized = url.strip().rstrip("/").lower()
+    raw = f"{normalized}|{style}|{provider}|{model}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class SummaryCache:
     """
-    A persistent disk cache for Summary objects.
-    Uses diskcache under the hood for safe concurrent access and TTL support.
+    Wraps diskcache.Cache to provide persistent Summary caching with TTL support.
+    Falls back to a no-op in-memory dict when diskcache is not installed.
     """
 
-    def __init__(
-        self,
-        cache_dir: Optional[Path] = None,
-        ttl_seconds: Optional[int] = None,
-        enabled: bool = True,
-    ):
-        self.enabled = enabled and DISKCACHE_AVAILABLE
-        self._cache_dir = Path(cache_dir or DEFAULT_CACHE_DIR)
+    def __init__(self, cache_dir: Optional[Path] = None, ttl_seconds: Optional[int] = None):
         self._ttl = ttl_seconds if ttl_seconds is not None else _get_ttl_seconds()
-        self._cache: Optional["diskcache.Cache"] = None
+        self._dir = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
+        self._cache: Optional[diskcache.Cache] = None  # type: ignore[name-defined]
+        self._memory_fallback: dict[str, str] = {}
 
-        if enabled and not DISKCACHE_AVAILABLE:
+        if DISKCACHE_AVAILABLE:
+            try:
+                self._dir.mkdir(parents=True, exist_ok=True)
+                self._cache = diskcache.Cache(str(self._dir))
+                logger.debug("Disk cache initialised at %s (TTL=%ds)", self._dir, self._ttl)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Failed to initialise disk cache: %s — using in-memory fallback", exc)
+        else:
             logger.warning(
-                "diskcache is not installed. Caching will be disabled. "
+                "diskcache not installed; caching disabled. "
                 "Install it with: pip install diskcache"
             )
 
-        if self.enabled:
-            self._open()
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-    def _open(self) -> None:
-        """Open (or create) the diskcache Cache."""
+    def make_key(self, url: str, style: str, provider: str, model: str) -> str:
+        """Return the cache key for the given parameters."""
+        return _make_cache_key(url, style, provider, model)
+
+    def get(self, key: str) -> Optional[Summary]:
+        """Return a cached Summary or None on cache miss / error."""
         try:
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
-            self._cache = diskcache.Cache(str(self._cache_dir))
-            logger.debug("Cache opened at %s (TTL=%ds)", self._cache_dir, self._ttl)
-        except Exception as exc:
-            logger.error("Failed to open cache at %s: %s", self._cache_dir, exc)
-            self.enabled = False
-            self._cache = None
+            if self._cache is not None:
+                raw = self._cache.get(key)
+            else:
+                raw = self._memory_fallback.get(key)
 
-    def _serialize(self, summary: Summary) -> str:
-        """Serialize a Summary to JSON string."""
-        data = asdict(summary)
-        return json.dumps(data, default=str)
-
-    def _deserialize(self, raw: str) -> Summary:
-        """Deserialize a JSON string back to a Summary."""
-        data = json.loads(raw)
-        return Summary(**data)
-
-    def get(self, url: str, style: str, provider: str, model: str) -> Optional[Summary]:
-        """
-        Look up a cached Summary. Returns None on miss or if cache is disabled.
-        """
-        if not self.enabled or self._cache is None:
-            return None
-
-        key = _make_cache_key(url, style, provider, model)
-        try:
-            raw = self._cache.get(key)
             if raw is None:
-                logger.debug("Cache miss for key %s", key[:12])
                 return None
-            summary = self._deserialize(raw)
-            logger.debug("Cache hit for key %s", key[:12])
+
+            data = json.loads(raw)
+            summary = Summary(**data)
+            logger.debug("Cache HIT for key %s…", key[:12])
             return summary
         except Exception as exc:
-            logger.warning("Cache read error for key %s: %s", key[:12], exc)
+            logger.warning("Cache read error (key=%s…): %s", key[:12], exc)
             return None
 
-    def set(self, url: str, style: str, provider: str, model: str, summary: Summary) -> bool:
-        """
-        Store a Summary in the cache. Returns True on success.
-        """
-        if not self.enabled or self._cache is None:
-            return False
-
-        key = _make_cache_key(url, style, provider, model)
+    def set(self, key: str, summary: Summary) -> None:
+        """Persist a Summary object under the given key with the configured TTL."""
         try:
-            raw = self._serialize(summary)
-            self._cache.set(key, raw, expire=self._ttl)
-            logger.debug("Cached summary for key %s (TTL=%ds)", key[:12], self._ttl)
-            return True
+            raw = json.dumps(summary.__dict__)
+            if self._cache is not None:
+                self._cache.set(key, raw, expire=self._ttl)
+            else:
+                self._memory_fallback[key] = raw
+            logger.debug("Cache SET for key %s… (TTL=%ds)", key[:12], self._ttl)
         except Exception as exc:
-            logger.warning("Cache write error for key %s: %s", key[:12], exc)
-            return False
+            logger.warning("Cache write error (key=%s…): %s", key[:12], exc)
 
     def clear(self) -> int:
         """
-        Clear all entries from the cache. Returns the number of entries removed.
+        Delete all entries from the cache.
+        Returns the number of entries deleted.
         """
-        if not self.enabled or self._cache is None:
-            return 0
-
         try:
-            count = len(self._cache)
-            self._cache.clear()
-            logger.info("Cache cleared (%d entries removed)", count)
-            return count
-        except Exception as exc:
-            logger.error("Cache clear error: %s", exc)
+            if self._cache is not None:
+                count = len(self._cache)
+                self._cache.clear()
+                logger.info("Cleared %d entries from disk cache at %s", count, self._dir)
+                return count
+            else:
+                count = len(self._memory_fallback)
+                self._memory_fallback.clear()
+                return count
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Cache clear error: %s", exc)
             return 0
 
     def close(self) -> None:
-        """Close the underlying cache (flush to disk)."""
+        """Close the underlying diskcache handle."""
         if self._cache is not None:
             try:
                 self._cache.close()
-            except Exception as exc:
-                logger.warning("Cache close error: %s", exc)
+            except Exception:  # pragma: no cover
+                pass
+
+    def __len__(self) -> int:
+        if self._cache is not None:
+            return len(self._cache)
+        return len(self._memory_fallback)
 
     def __enter__(self) -> "SummaryCache":
         return self
 
-    def __exit__(self, *args) -> None:
+    def __exit__(self, *_: object) -> None:
         self.close()
-
-    @property
-    def size(self) -> int:
-        """Return number of entries currently in the cache."""
-        if not self.enabled or self._cache is None:
-            return 0
-        try:
-            return len(self._cache)
-        except Exception:
-            return 0
-
-    @property
-    def cache_dir(self) -> Path:
-        return self._cache_dir

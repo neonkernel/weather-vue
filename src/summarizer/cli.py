@@ -1,229 +1,178 @@
 """
-CLI entry point for the article summarizer.
+Command-line interface for the article summariser.
 """
+from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from pathlib import Path
 from typing import Optional
 
-import click
+from .cache import SummaryCache
+from .config import load_config
+from .exceptions import SummarizerError
+from .styles import STYLES
+from . import ui
 
-from summarizer import __version__
-from summarizer.cache import SummaryCache
-from summarizer.config import get_config
-from summarizer.exceptions import SummarizerError
-from summarizer.summarize import summarize_url
-from summarizer.ui import (
-    display_summary,
-    print_error,
-    print_info,
-    print_success,
-    print_warning,
-    set_quiet,
-    spinner,
-)
 
 logger = logging.getLogger(__name__)
 
 
-def _setup_logging(verbose: bool, quiet: bool) -> None:
-    """Configure root logging based on verbosity flags."""
-    if quiet:
-        level = logging.CRITICAL
-    elif verbose:
-        level = logging.DEBUG
-    else:
-        level = logging.WARNING
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="summarizer",
+        description="Summarise web articles using LLMs.",
+    )
 
+    # Positional
+    parser.add_argument(
+        "url",
+        nargs="?",
+        help="URL of the article to summarise (omit to read from stdin).",
+    )
+
+    # Model / provider selection
+    parser.add_argument(
+        "--provider",
+        default=None,
+        help="LLM provider to use (openai, anthropic, gemini, ollama, …).",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Model name/ID to use.",
+    )
+
+    # Style
+    parser.add_argument(
+        "--style",
+        default="concise",
+        choices=list(STYLES.keys()),
+        help="Summarisation style (default: concise).",
+    )
+
+    # Cache control
+    cache_group = parser.add_mutually_exclusive_group()
+    cache_group.add_argument(
+        "--no-cache",
+        action="store_true",
+        default=False,
+        help="Bypass the cache: always call the LLM and do not store the result.",
+    )
+    cache_group.add_argument(
+        "--clear-cache",
+        action="store_true",
+        default=False,
+        help="Clear the entire cache before running.",
+    )
+
+    # UI control
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        default=False,
+        help="Suppress all UI output; only the summary text is written to stdout.",
+    )
+
+    # Output
+    parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        default=None,
+        help="Write the summary to a file instead of stdout.",
+    )
+
+    # Debug / verbosity
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+
+    return parser
+
+
+def _configure_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.WARNING
     logging.basicConfig(
+        format="%(levelname)s %(name)s: %(message)s",
         level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
+        stream=sys.stderr,
     )
 
 
-@click.group(invoke_without_command=True)
-@click.pass_context
-@click.version_option(version=__version__, prog_name="summarizer")
-def cli(ctx: click.Context) -> None:
-    """Article summarizer powered by LLMs."""
-    if ctx.invoked_subcommand is None:
-        click.echo(ctx.get_help())
+def main(argv: Optional[list[str]] = None) -> int:
+    """Entry point. Returns an exit code."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
+    _configure_logging(args.verbose)
+    ui.set_quiet(args.quiet)
 
-@cli.command("summarize")
-@click.argument("url")
-@click.option(
-    "--style",
-    "-s",
-    default="concise",
-    show_default=True,
-    help="Summary style: concise, detailed, bullet, eli5",
-)
-@click.option(
-    "--provider",
-    "-p",
-    default=None,
-    help="LLM provider to use (overrides config)",
-)
-@click.option(
-    "--model",
-    "-m",
-    default=None,
-    help="Model name to use (overrides config)",
-)
-@click.option(
-    "--no-cache",
-    is_flag=True,
-    default=False,
-    help="Bypass cache for this request (result is still stored)",
-)
-@click.option(
-    "--clear-cache",
-    is_flag=True,
-    default=False,
-    help="Clear the entire cache before running",
-)
-@click.option(
-    "--quiet",
-    "-q",
-    is_flag=True,
-    default=False,
-    help="Suppress all UI output; only print the summary text to stdout",
-)
-@click.option(
-    "--verbose",
-    "-v",
-    is_flag=True,
-    default=False,
-    help="Enable verbose/debug logging",
-)
-@click.option(
-    "--output",
-    "-o",
-    default=None,
-    type=click.Path(dir_okay=False, writable=True),
-    help="Write summary text to this file instead of stdout",
-)
-@click.option(
-    "--no-metadata",
-    is_flag=True,
-    default=False,
-    help="Do not display provider / model / token metadata",
-)
-def summarize_command(
-    url: str,
-    style: str,
-    provider: Optional[str],
-    model: Optional[str],
-    no_cache: bool,
-    clear_cache: bool,
-    quiet: bool,
-    verbose: bool,
-    output: Optional[str],
-    no_metadata: bool,
-) -> None:
-    """Summarize the article at URL."""
-    _setup_logging(verbose=verbose, quiet=quiet)
-    set_quiet(quiet)
-
-    config = get_config()
-    effective_provider = provider or config.provider
-    effective_model = model or config.model
-
-    # Handle cache management
-    cache = SummaryCache(enabled=not no_cache)
-
-    if clear_cache:
-        with SummaryCache() as full_cache:
-            removed = full_cache.clear()
-            print_info(f"Cache cleared ({removed} entries removed)", quiet=quiet)
-
-    try:
-        with spinner("Summarizing article…", quiet=quiet):
-            summary = summarize_url(
-                url=url,
-                style=style,
-                provider=effective_provider,
-                model=effective_model,
-                cache=cache if not no_cache else None,
-            )
-
-        # Output
-        summary_text = getattr(summary, "text", None) or getattr(summary, "summary", None) or str(summary)
-
-        if output:
-            out_path = Path(output)
-            out_path.write_text(summary_text, encoding="utf-8")
-            print_success(f"Summary written to {out_path}", quiet=quiet)
-        else:
-            if quiet:
-                # In quiet mode, only print the raw summary text to stdout
-                click.echo(summary_text)
-            else:
-                display_summary(summary, quiet=quiet, show_metadata=not no_metadata)
-
-        cache.close()
-
-    except SummarizerError as exc:
-        print_error(str(exc), quiet=quiet)
-        cache.close()
-        sys.exit(1)
-    except KeyboardInterrupt:
-        print_warning("\nInterrupted.", quiet=quiet)
-        cache.close()
-        sys.exit(130)
-    except Exception as exc:
-        logger.exception("Unexpected error")
-        print_error(f"Unexpected error: {exc}", quiet=quiet)
-        cache.close()
-        sys.exit(1)
-
-
-@cli.command("cache")
-@click.option(
-    "--clear",
-    is_flag=True,
-    default=False,
-    help="Clear all cached summaries",
-)
-@click.option(
-    "--stats",
-    is_flag=True,
-    default=False,
-    help="Show cache statistics",
-)
-@click.option(
-    "--quiet",
-    "-q",
-    is_flag=True,
-    default=False,
-)
-def cache_command(clear: bool, stats: bool, quiet: bool) -> None:
-    """Manage the summary cache."""
-    _setup_logging(verbose=False, quiet=quiet)
-    set_quiet(quiet)
-
+    # ------------------------------------------------------------------ cache
     cache = SummaryCache()
 
-    if clear:
-        removed = cache.clear()
-        print_success(f"Cache cleared ({removed} entries removed)", quiet=quiet)
+    if args.clear_cache:
+        count = cache.clear()
+        ui.print_status(f"Cleared {count} entries from the summary cache.", style="bold yellow")
+        if args.url is None:
+            return 0
 
-    if stats or not clear:
-        size = cache.size
-        cache_dir = cache.cache_dir
-        print_info(f"Cache directory: {cache_dir}", quiet=quiet)
-        print_info(f"Cached entries:  {size}", quiet=quiet)
+    # ------------------------------------------------------------------ config
+    try:
+        config = load_config()
+    except SummarizerError as exc:
+        ui.print_error(str(exc))
+        return 1
+
+    provider_name: str = args.provider or config.default_provider
+    model_name: str = args.model or config.default_model
+
+    # ------------------------------------------------------------------ input
+    if args.url:
+        url = args.url
+        raw_text: Optional[str] = None
+    else:
+        # Read from stdin
+        ui.print_status("Reading from stdin…", style="dim")
+        raw_text = sys.stdin.read()
+        url = "<stdin>"
+
+    # ------------------------------------------------------------------ summarise
+    from .summarize import summarize
+
+    try:
+        with ui.spinner("Fetching and summarising…"):
+            summary, from_cache = summarize(
+                url=url,
+                raw_text=raw_text,
+                style=args.style,
+                provider=provider_name,
+                model=model_name,
+                cache=cache if not args.no_cache else None,
+            )
+    except SummarizerError as exc:
+        ui.print_error(str(exc))
+        return 1
+    except KeyboardInterrupt:
+        ui.print_error("Interrupted.")
+        return 130
+
+    # ------------------------------------------------------------------ output
+    if args.output:
+        args.output.write_text(summary.text, encoding="utf-8")
+        ui.print_status(f"Summary written to {args.output}", style="bold green")
+    else:
+        ui.print_summary(summary, from_cache=from_cache)
 
     cache.close()
-
-
-def main() -> None:
-    """Entry point for the summarizer CLI."""
-    cli()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

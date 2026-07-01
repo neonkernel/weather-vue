@@ -1,23 +1,42 @@
-"""Data models for the summarizer."""
+"""
+Data models for the summariser.
+"""
+from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field, asdict
 from typing import Optional
+import json
 
 
 @dataclass
 class Summary:
-    """Represents a generated summary with its metadata."""
+    """Represents a completed article summary."""
 
-    content: str
+    text: str
+    style: str
+    provider: str
+    model: str
+    url: Optional[str] = None
     title: Optional[str] = None
-    source_url: Optional[str] = None
-    model: Optional[str] = None
-    word_count: Optional[int] = None
-    style: Optional[str] = None
-    created_at: Optional[datetime] = field(default_factory=datetime.utcnow)
 
-    def __post_init__(self):
-        """Compute word count from content if not provided."""
-        if self.word_count is None and self.content:
-            self.word_count = len(self.content.split())
+    # ------------------------------------------------------------------
+    # Serialisation helpers (used by cache)
+    # ------------------------------------------------------------------
+
+    @property
+    def __dict__(self) -> dict:  # type: ignore[override]
+        return {
+            "text": self.text,
+            "style": self.style,
+            "provider": self.provider,
+            "model": self.model,
+            "url": self.url,
+            "title": self.title,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.__dict__)
+
+    @classmethod
+    def from_json(cls, data: str) -> "Summary":
+        return cls(**json.loads(data))

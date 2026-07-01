@@ -1,197 +1,130 @@
 """
-LLM client that wraps provider-specific completion calls with rate limiting.
+Unified LLM client with integrated rate limiting.
 """
+from __future__ import annotations
 
 import logging
-from typing import Optional
+import os
+from typing import Any, Optional
 
-from summarizer.rate_limiter import RateLimiter, get_rate_limiter
+from ..rate_limiter import RateLimiter, create_rate_limiter
+from ..exceptions import SummarizerError
 
 logger = logging.getLogger(__name__)
 
-# Rough estimate: average tokens per character in English text
-_CHARS_PER_TOKEN = 4
+# Shared rate-limiter instances keyed by provider name so that multiple
+# LLMClient instances targeting the same provider share quota.
+_rate_limiters: dict[str, RateLimiter] = {}
+_RL_ENABLED = os.environ.get("SUMMARIZER_RATE_LIMIT", "1") not in ("0", "false", "no")
 
 
-def _estimate_tokens(text: str) -> int:
-    """Rough token count estimate from character count."""
-    return max(1, len(text) // _CHARS_PER_TOKEN)
+def _get_rate_limiter(provider: str) -> Optional[RateLimiter]:
+    if not _RL_ENABLED:
+        return None
+    if provider not in _rate_limiters:
+        _rate_limiters[provider] = create_rate_limiter(provider)
+    return _rate_limiters[provider]
 
 
 class LLMClient:
     """
-    A unified LLM client that delegates to a provider-specific backend
-    and applies rate limiting around each API call.
+    Provider-agnostic LLM client.
+
+    Wraps the actual provider implementation and gates every API call through
+    the shared :class:`~summarizer.rate_limiter.RateLimiter` for the provider.
     """
 
-    def __init__(
-        self,
-        provider: str = "openai",
-        model: Optional[str] = None,
-        rate_limiter: Optional[RateLimiter] = None,
-    ) -> None:
+    def __init__(self, provider: str, model: str) -> None:
         self.provider = provider
         self.model = model
-        self.last_tokens_used: Optional[int] = None
-        self._rate_limiter = rate_limiter or get_rate_limiter(provider)
+        self._rate_limiter = _get_rate_limiter(provider)
         self._backend = self._load_backend(provider, model)
 
-    def _load_backend(self, provider: str, model: Optional[str]):
-        """Load the provider-specific backend."""
-        try:
-            from summarizer.llm import providers
-            return providers.get_provider(provider, model)
-        except Exception as exc:
-            logger.error("Failed to load backend for provider %s: %s", provider, exc)
-            raise
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-    def summarize(
-        self,
-        text: str,
-        style: str = "concise",
-        title: Optional[str] = None,
-        is_combination: bool = False,
-        timeout: Optional[float] = None,
-    ) -> str:
+    def complete(self, prompt: str, estimated_tokens: Optional[int] = None) -> str:
         """
-        Generate a summary for the given text using the configured LLM.
+        Send *prompt* to the LLM and return the completion text.
+
+        Rate limiting is applied before the API call is made.
 
         Args:
-            text: The text to summarize.
-            style: Summary style (concise, detailed, bullet, eli5).
-            title: Optional article title for context.
-            is_combination: Whether this is a combination of chunk summaries.
-            timeout: Max seconds to wait for rate limit. None = wait forever.
+            prompt:           The prompt string.
+            estimated_tokens: Estimated token count for rate-limit accounting.
+                              Defaults to ``len(prompt) // 4`` (rough approximation).
 
         Returns:
-            The summary text as a string.
+            The completion text.
+
+        Raises:
+            SummarizerError: On API errors or rate-limit timeout.
         """
-        prompt = self._build_prompt(text=text, style=style, title=title, is_combination=is_combination)
-        estimated_tokens = _estimate_tokens(prompt)
+        if estimated_tokens is None:
+            estimated_tokens = max(1, len(prompt) // 4)
 
-        # Apply rate limiting before the API call
-        logger.debug(
-            "Acquiring rate limit slot for %s (estimated %d tokens)",
-            self.provider, estimated_tokens
-        )
-        acquired = self._rate_limiter.acquire(
-            estimated_tokens=estimated_tokens,
-            timeout=timeout,
-        )
-        if not acquired:
-            raise TimeoutError(
-                f"Rate limit timeout waiting for provider '{self.provider}'"
-            )
-
-        # Make the API call
-        try:
-            response = self._backend.complete(prompt)
-            result_text = self._extract_text(response)
-            actual_tokens = self._extract_tokens(response)
-
-            # Adjust token bucket for actual vs estimated usage
-            self._rate_limiter.record_actual_tokens(
-                actual_tokens=actual_tokens or estimated_tokens,
+        if self._rate_limiter is not None:
+            acquired = self._rate_limiter.acquire(
                 estimated_tokens=estimated_tokens,
+                timeout=300,  # 5-minute hard timeout
             )
-
-            self.last_tokens_used = actual_tokens
+            if not acquired:
+                raise SummarizerError(
+                    f"Rate limit timeout: could not acquire quota for provider '{self.provider}' "
+                    "within 5 minutes."
+                )
             logger.debug(
-                "LLM call complete: provider=%s, tokens=%s",
-                self.provider, actual_tokens
+                "Rate limit slot acquired for %s (est. %d tokens)",
+                self.provider,
+                estimated_tokens,
             )
-            return result_text
 
-        except Exception as exc:
-            logger.error("LLM call failed for provider %s: %s", self.provider, exc)
+        return self._call_backend(prompt)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _call_backend(self, prompt: str) -> str:
+        """Delegate to the provider backend."""
+        try:
+            return self._backend.complete(prompt)
+        except SummarizerError:
             raise
+        except Exception as exc:
+            raise SummarizerError(
+                f"LLM backend error ({self.provider}/{self.model}): {exc}"
+            ) from exc
 
-    def complete(self, prompt: str, timeout: Optional[float] = None) -> str:
-        """
-        Low-level completion method with rate limiting.
-        Use `summarize()` for higher-level access.
-        """
-        estimated_tokens = _estimate_tokens(prompt)
-
-        acquired = self._rate_limiter.acquire(
-            estimated_tokens=estimated_tokens,
-            timeout=timeout,
-        )
-        if not acquired:
-            raise TimeoutError(
-                f"Rate limit timeout waiting for provider '{self.provider}'"
-            )
+    def _load_backend(self, provider: str, model: str) -> Any:
+        """Dynamically load the correct provider backend."""
+        provider_lower = provider.lower()
 
         try:
-            response = self._backend.complete(prompt)
-            result_text = self._extract_text(response)
-            actual_tokens = self._extract_tokens(response)
+            if provider_lower == "openai":
+                from .providers.openai import OpenAIBackend
+                return OpenAIBackend(model=model)
 
-            self._rate_limiter.record_actual_tokens(
-                actual_tokens=actual_tokens or estimated_tokens,
-                estimated_tokens=estimated_tokens,
-            )
-            self.last_tokens_used = actual_tokens
-            return result_text
-        except Exception as exc:
-            logger.error("LLM complete() failed for provider %s: %s", self.provider, exc)
-            raise
+            if provider_lower in ("anthropic", "claude"):
+                from .providers.anthropic import AnthropicBackend
+                return AnthropicBackend(model=model)
 
-    def _build_prompt(
-        self,
-        text: str,
-        style: str,
-        title: Optional[str] = None,
-        is_combination: bool = False,
-    ) -> str:
-        """Build a summarization prompt."""
-        from summarizer.styles import get_style_instruction
+            if provider_lower in ("gemini", "google"):
+                from .providers.gemini import GeminiBackend
+                return GeminiBackend(model=model)
 
-        style_instruction = get_style_instruction(style)
-        title_line = f'Title: "{title}"\n\n' if title else ""
+            if provider_lower == "ollama":
+                from .providers.ollama import OllamaBackend
+                return OllamaBackend(model=model)
 
-        if is_combination:
-            return (
-                f"You have been given several partial summaries of an article. "
-                f"Combine them into a single, coherent summary.\n"
-                f"{title_line}"
-                f"{style_instruction}\n\n"
-                f"Partial summaries:\n{text}"
+            raise SummarizerError(
+                f"Unknown provider '{provider}'. "
+                "Supported: openai, anthropic, gemini, ollama."
             )
 
-        return (
-            f"Please summarize the following article.\n"
-            f"{title_line}"
-            f"{style_instruction}\n\n"
-            f"Article:\n{text}"
-        )
-
-    def _extract_text(self, response) -> str:
-        """Extract the text content from a provider response."""
-        if isinstance(response, str):
-            return response
-        # Handle dict-like response
-        if isinstance(response, dict):
-            # OpenAI-style
-            try:
-                return response["choices"][0]["message"]["content"]
-            except (KeyError, IndexError, TypeError):
-                pass
-            # Generic fallback
-            for key in ("text", "content", "output", "result"):
-                if key in response:
-                    return str(response[key])
-        # Fallback: stringify
-        return str(response)
-
-    def _extract_tokens(self, response) -> Optional[int]:
-        """Extract token usage from a provider response."""
-        if isinstance(response, dict):
-            # OpenAI-style
-            usage = response.get("usage", {})
-            if usage:
-                return usage.get("total_tokens") or usage.get("completion_tokens")
-            # Anthropic-style
-            if "input_tokens" in response or "output_tokens" in response:
-                return (response.get("input_tokens", 0) or 0) + (response.get("output_tokens", 0) or 0)
-        return None
+        except ImportError as exc:
+            raise SummarizerError(
+                f"Provider '{provider}' is not available. "
+                f"Check that the required package is installed. Details: {exc}"
+            ) from exc

@@ -1,202 +1,187 @@
 """
-Core summarization logic.
-Orchestrates fetching, chunking, LLM calls, and caching.
+Core summarisation logic: fetch → chunk → LLM → cache.
 """
+from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
-from summarizer.cache import SummaryCache
-from summarizer.models import Summary
+from .cache import SummaryCache
+from .exceptions import SummarizerError
+from .models import Summary
+from . import ui
 
 logger = logging.getLogger(__name__)
 
 
-def summarize_url(
+def summarize(
     url: str,
+    raw_text: Optional[str] = None,
     style: str = "concise",
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
+    provider: str = "openai",
+    model: str = "gpt-4o-mini",
     cache: Optional[SummaryCache] = None,
-) -> Summary:
+) -> Tuple[Summary, bool]:
     """
-    Summarize an article at the given URL.
-
-    Pipeline:
-    1. Check cache (if enabled)
-    2. Fetch and parse the article
-    3. Chunk the content
-    4. Call LLM (with rate limiting)
-    5. Store result in cache
-    6. Return Summary
+    Summarise an article located at *url*.
 
     Args:
-        url: The URL of the article to summarize.
-        style: Summary style (concise, detailed, bullet, eli5).
-        provider: LLM provider override.
-        model: Model override.
-        cache: SummaryCache instance. Pass None to disable caching.
+        url:       Article URL (used for fetching and as cache-key component).
+        raw_text:  Pre-fetched plain text.  When supplied, fetching is skipped.
+        style:     Summarisation style name.
+        provider:  LLM provider identifier.
+        model:     LLM model identifier.
+        cache:     :class:`SummaryCache` instance; pass ``None`` to skip caching.
 
     Returns:
-        A Summary dataclass instance.
+        A tuple ``(Summary, from_cache)`` where *from_cache* is ``True`` when
+        the result was served from the cache.
     """
-    from summarizer.config import get_config
-    from summarizer.ingestion import fetch_and_parse
-    from summarizer.llm.client import LLMClient
-
-    config = get_config()
-    effective_provider = provider or config.provider
-    effective_model = model or config.model
-
-    # --- Step 1: Cache lookup ---
+    # ------------------------------------------------------------------ cache check
+    cache_key: Optional[str] = None
     if cache is not None:
-        cached_summary = cache.get(
-            url=url,
-            style=style,
-            provider=effective_provider,
-            model=effective_model,
-        )
-        if cached_summary is not None:
-            logger.info("Returning cached summary for %s", url)
-            # Mark as cached for display
+        cache_key = cache.make_key(url=url, style=style, provider=provider, model=model)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            logger.info("Cache hit for %s", url)
+            return cached, True
+
+    # ------------------------------------------------------------------ fetch
+    if raw_text is None:
+        with ui.spinner(f"Fetching {url}…"):
+            raw_text = _fetch(url)
+
+    # ------------------------------------------------------------------ chunk & summarise
+    chunks = _split_into_chunks(raw_text)
+    logger.debug("Article split into %d chunk(s)", len(chunks))
+
+    chunk_summaries: list[str] = []
+
+    with ui.chunk_progress(total=len(chunks), description="Summarising chunks") as advance:
+        llm = _get_llm_client(provider, model)
+        for chunk in chunks:
+            prompt = _build_prompt(chunk, style)
             try:
-                object.__setattr__(cached_summary, "cached", True)
-            except (TypeError, AttributeError):
-                pass
-            return cached_summary
+                result = llm.complete(prompt)
+            except Exception as exc:
+                raise SummarizerError(f"LLM completion failed: {exc}") from exc
+            chunk_summaries.append(result)
+            advance()
 
-    # --- Step 2: Fetch and parse ---
-    logger.info("Fetching article: %s", url)
-    article = fetch_and_parse(url)
-    logger.debug("Fetched %d chars from %s", len(article.content), url)
-
-    # --- Step 3: Chunk content ---
-    chunks = _chunk_content(article.content, max_chunk_chars=config.max_chunk_chars)
-    logger.debug("Split into %d chunk(s)", len(chunks))
-
-    # --- Step 4: LLM call(s) ---
-    client = LLMClient(provider=effective_provider, model=effective_model)
-
-    if len(chunks) == 1:
-        summary_text = client.summarize(
-            text=chunks[0],
-            style=style,
-            title=article.title,
-        )
-        tokens_used = getattr(client, "last_tokens_used", None)
+    # ------------------------------------------------------------------ merge
+    if len(chunk_summaries) == 1:
+        final_text = chunk_summaries[0]
     else:
-        summary_text, tokens_used = _summarize_chunks(
-            client=client,
-            chunks=chunks,
-            style=style,
-            title=article.title,
-        )
+        with ui.spinner("Merging chunk summaries…"):
+            final_text = _merge_summaries(chunk_summaries, style, provider, model)
 
-    # --- Step 5: Build Summary object ---
+    # ------------------------------------------------------------------ build Summary
+    title = _extract_title(raw_text)
     summary = Summary(
-        url=url,
-        title=article.title,
-        text=summary_text,
+        url=url if url != "<stdin>" else None,
+        title=title,
+        text=final_text,
         style=style,
-        provider=effective_provider,
-        model=effective_model,
-        tokens_used=tokens_used,
-        cached=False,
+        provider=provider,
+        model=model,
     )
 
-    # --- Step 6: Store in cache ---
-    if cache is not None:
-        stored = cache.set(
-            url=url,
-            style=style,
-            provider=effective_provider,
-            model=effective_model,
-            summary=summary,
-        )
-        if stored:
-            logger.debug("Summary cached for %s", url)
+    # ------------------------------------------------------------------ cache store
+    if cache is not None and cache_key is not None:
+        cache.set(cache_key, summary)
+        logger.info("Stored summary in cache (key=%s…)", cache_key[:12])
 
-    return summary
+    return summary, False
 
 
-def _chunk_content(content: str, max_chunk_chars: int = 12_000) -> list[str]:
-    """
-    Split content into chunks of at most `max_chunk_chars` characters,
-    attempting to break on paragraph boundaries.
-    """
-    if len(content) <= max_chunk_chars:
-        return [content]
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
 
-    chunks = []
-    paragraphs = content.split("\n\n")
-    current_chunk: list[str] = []
-    current_len = 0
-
-    for para in paragraphs:
-        para_len = len(para)
-        if current_len + para_len + 2 > max_chunk_chars and current_chunk:
-            chunks.append("\n\n".join(current_chunk))
-            current_chunk = []
-            current_len = 0
-
-        # If a single paragraph exceeds the limit, hard-split it
-        if para_len > max_chunk_chars:
-            for i in range(0, para_len, max_chunk_chars):
-                chunks.append(para[i : i + max_chunk_chars])
-        else:
-            current_chunk.append(para)
-            current_len += para_len + 2  # +2 for '\n\n'
-
-    if current_chunk:
-        chunks.append("\n\n".join(current_chunk))
-
-    return [c for c in chunks if c.strip()]
+def _fetch(url: str) -> str:
+    """Fetch and extract plain text from *url*."""
+    try:
+        from .ingestion import fetch_article
+        return fetch_article(url)
+    except ImportError:
+        # Minimal fallback using urllib
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310
+            html = resp.read().decode("utf-8", errors="replace")
+        return _strip_html(html)
 
 
-def _summarize_chunks(
-    client,
-    chunks: list[str],
-    style: str,
-    title: Optional[str] = None,
-) -> tuple[str, Optional[int]]:
-    """
-    Summarize multiple chunks individually, then combine into a final summary.
-    Shows a Rich progress bar during processing.
+def _strip_html(html: str) -> str:
+    """Very basic HTML-to-text fallback."""
+    import re
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"&[a-z]+;", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
-    Returns:
-        (final_summary_text, total_tokens_used)
-    """
-    from summarizer.ui import chunked_progress
 
-    chunk_summaries = []
-    total_tokens = 0
+_CHUNK_SIZE = 3_000  # characters
 
-    with chunked_progress(total=len(chunks) + 1, description="Summarizing chunks") as progress:
-        for i, chunk in enumerate(chunks, 1):
-            logger.debug("Summarizing chunk %d/%d", i, len(chunks))
-            partial = client.summarize(
-                text=chunk,
-                style="concise",  # Use concise for intermediate summaries
-                title=title,
-            )
-            chunk_summaries.append(partial)
-            tokens = getattr(client, "last_tokens_used", None)
-            if tokens:
-                total_tokens += tokens
-            progress.advance()
 
-        # Final pass: combine chunk summaries
-        combined = "\n\n".join(chunk_summaries)
-        logger.debug("Combining %d chunk summaries", len(chunk_summaries))
-        final_summary = client.summarize(
-            text=combined,
-            style=style,
-            title=title,
-            is_combination=True,
-        )
-        tokens = getattr(client, "last_tokens_used", None)
-        if tokens:
-            total_tokens += tokens
-        progress.advance()
+def _split_into_chunks(text: str, chunk_size: int = _CHUNK_SIZE) -> list[str]:
+    """Split *text* into roughly equal chunks of *chunk_size* characters."""
+    if len(text) <= chunk_size:
+        return [text]
 
-    return final_summary, total_tokens if total_tokens > 0 else None
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        # Try to break on a sentence boundary
+        if end < len(text):
+            boundary = text.rfind(".", start, end)
+            if boundary > start:
+                end = boundary + 1
+        chunks.append(text[start:end].strip())
+        start = end
+
+    return [c for c in chunks if c]
+
+
+def _build_prompt(text: str, style: str) -> str:
+    from .styles import STYLES
+
+    style_instruction = STYLES.get(style, STYLES["concise"])
+    return (
+        f"Summarise the following article text using the '{style}' style.\n"
+        f"Style instruction: {style_instruction}\n\n"
+        f"Article text:\n{text}\n\n"
+        f"Summary:"
+    )
+
+
+def _merge_summaries(summaries: list[str], style: str, provider: str, model: str) -> str:
+    """Ask the LLM to merge multiple chunk summaries into one coherent summary."""
+    combined = "\n\n---\n\n".join(summaries)
+    prompt = (
+        f"The following are partial summaries of a long article. "
+        f"Merge them into a single coherent summary using the '{style}' style.\n\n"
+        f"{combined}\n\nMerged summary:"
+    )
+    llm = _get_llm_client(provider, model)
+    try:
+        return llm.complete(prompt)
+    except Exception as exc:
+        raise SummarizerError(f"LLM merge failed: {exc}") from exc
+
+
+def _extract_title(text: str) -> Optional[str]:
+    """Best-effort title extraction: first non-empty line."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped[:120]
+    return None
+
+
+def _get_llm_client(provider: str, model: str):  # type: ignore[return]
+    """Return the appropriate LLM client for *provider*."""
+    try:
+        from .llm.client import LLMClient
+        return LLMClient(provider=provider, model=model)
+    except ImportError as exc:  # pragma: no cover
+        raise SummarizerError(f"LLM client not available: {exc}") from exc
