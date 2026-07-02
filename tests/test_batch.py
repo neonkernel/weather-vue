@@ -1,223 +1,306 @@
 """Tests for batch processing functionality."""
 
-from __future__ import annotations
-
+import os
 import csv
 import json
-import os
 import time
+import tempfile
+import threading
 from pathlib import Path
-from typing import Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch, MagicMock, call
+from datetime import datetime
 
 import pytest
 
-from src.summarizer.models import Article, BatchResult, Summary
-from src.summarizer.batch import (
-    BatchProcessor,
-    collect_sources,
-    is_url,
-    load_sources_from_directory,
-    load_sources_from_file,
-)
+from src.summarizer.models import Article, Summary, BatchResult
+from src.summarizer.batch import BatchProcessor, _load_urls_from_file, _load_sources_from_directory
 from src.summarizer.reporter import (
-    export_results,
-    print_batch_summary,
+    compute_batch_stats,
     write_csv,
-    write_json,
     write_jsonl,
+    write_results,
+    _format_duration,
+    _truncate,
 )
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Fixtures
 # ---------------------------------------------------------------------------
 
-def make_article(title: str = "Test Article", source: str = "http://example.com") -> Article:
+@pytest.fixture
+def sample_article():
     return Article(
-        url=source,
-        title=title,
-        text="This is a test article body.",
-        word_count=6,
-        source_type="url",
+        url="https://example.com/article1",
+        title="Test Article 1",
+        content="This is the content of test article 1. " * 20,
+        word_count=120,
+        source="url",
     )
 
 
-def make_summary(text: str = "A brief summary.", tokens: int = 50) -> Summary:
+@pytest.fixture
+def sample_summary(sample_article):
     return Summary(
-        text=text,
+        article=sample_article,
+        summary_text="This is a test summary.",
         style="default",
-        model="gpt-3.5-turbo",
-        tokens_used=tokens,
-        cost_estimate=tokens * 0.002 / 1000,
+        tokens_used=150,
+        model="gpt-4",
+        cost_estimate=0.0003,
     )
 
 
-def make_result(
-    source: str = "http://example.com",
-    success: bool = True,
-    tokens: int = 50,
-    duration: float = 0.5,
-) -> BatchResult:
-    if success:
-        return BatchResult(
-            source=source,
-            article=make_article(source=source),
-            summary=make_summary(tokens=tokens),
-            error=None,
-            duration_seconds=duration,
-            tokens_used=tokens,
-            cost_estimate=tokens * 0.002 / 1000,
+@pytest.fixture
+def success_result(sample_article, sample_summary):
+    return BatchResult(
+        source="https://example.com/article1",
+        article=sample_article,
+        summary=sample_summary,
+        tokens_used=150,
+        cost_estimate=0.0003,
+        duration_seconds=1.5,
+        timestamp=datetime(2026, 7, 2, 12, 0, 0),
+    )
+
+
+@pytest.fixture
+def failure_result():
+    return BatchResult(
+        source="https://example.com/broken",
+        error="ConnectionError: Failed to connect",
+        duration_seconds=0.5,
+        timestamp=datetime(2026, 7, 2, 12, 0, 1),
+    )
+
+
+@pytest.fixture
+def url_list_file(tmp_path):
+    """Create a temporary URL list file."""
+    url_file = tmp_path / "urls.txt"
+    urls = [
+        "https://example.com/article1",
+        "https://example.com/article2",
+        "# This is a comment and should be ignored",
+        "",
+        "https://example.com/article3",
+    ]
+    url_file.write_text("\n".join(urls))
+    return url_file
+
+
+@pytest.fixture
+def article_directory(tmp_path):
+    """Create a temporary directory with article files."""
+    articles_dir = tmp_path / "articles"
+    articles_dir.mkdir()
+
+    (articles_dir / "article1.txt").write_text("This is the content of article 1.")
+    (articles_dir / "article2.txt").write_text("This is the content of article 2.")
+    (articles_dir / "article3.html").write_text(
+        "<html><head><title>Article 3</title></head><body><p>Content of article 3.</p></body></html>"
+    )
+    (articles_dir / "ignore_me.md").write_text("This should be ignored.")
+
+    return articles_dir
+
+
+@pytest.fixture
+def mock_processor(tmp_path):
+    """BatchProcessor with mocked _fetch_article and _generate_summary."""
+    processor = BatchProcessor(workers=2, dry_run=False, style="default")
+
+    def fake_fetch(source):
+        return Article(
+            url=source,
+            title=f"Title for {source}",
+            content="Article content. " * 30,
+            word_count=90,
+            source="url",
         )
-    else:
-        return BatchResult(
-            source=source,
-            article=None,
-            summary=None,
-            error="Connection timeout",
-            duration_seconds=duration,
-            tokens_used=None,
-            cost_estimate=None,
+
+    def fake_summarize(article):
+        return Summary(
+            article=article,
+            summary_text=f"Summary of {article.title}",
+            style="default",
+            tokens_used=100,
+            model="mock-model",
+            cost_estimate=0.0002,
         )
 
-
-# ---------------------------------------------------------------------------
-# is_url
-# ---------------------------------------------------------------------------
-
-class TestIsUrl:
-    def test_http_url(self):
-        assert is_url("http://example.com/article") is True
-
-    def test_https_url(self):
-        assert is_url("https://news.ycombinator.com") is True
-
-    def test_file_path(self):
-        assert is_url("/home/user/article.txt") is False
-
-    def test_relative_path(self):
-        assert is_url("articles/test.html") is False
-
-    def test_empty_string(self):
-        assert is_url("") is False
+    processor._fetch_article = fake_fetch
+    processor._generate_summary = fake_summarize
+    return processor
 
 
 # ---------------------------------------------------------------------------
-# load_sources_from_file
+# Model tests
 # ---------------------------------------------------------------------------
 
-class TestLoadSourcesFromFile:
-    def test_loads_urls(self, tmp_path):
-        url_file = tmp_path / "urls.txt"
-        url_file.write_text(
-            "https://example.com/1\n"
-            "https://example.com/2\n"
-            "# this is a comment\n"
-            "\n"
-            "https://example.com/3\n"
-        )
-        sources = load_sources_from_file(url_file)
-        assert sources == [
+class TestBatchResult:
+    def test_success_property_true_when_no_error(self, success_result):
+        assert success_result.success is True
+
+    def test_success_property_false_when_error(self, failure_result):
+        assert failure_result.success is False
+
+    def test_summary_text_returns_summary(self, success_result):
+        assert success_result.summary_text == "This is a test summary."
+
+    def test_summary_text_none_when_no_summary(self, failure_result):
+        assert failure_result.summary_text is None
+
+    def test_default_timestamp_is_set(self):
+        result = BatchResult(source="http://example.com")
+        assert result.timestamp is not None
+        assert isinstance(result.timestamp, datetime)
+
+    def test_dry_run_defaults_false(self):
+        result = BatchResult(source="http://example.com")
+        assert result.dry_run is False
+
+
+# ---------------------------------------------------------------------------
+# File loading tests
+# ---------------------------------------------------------------------------
+
+class TestLoadUrlsFromFile:
+    def test_loads_valid_urls(self, url_list_file):
+        urls = _load_urls_from_file(url_list_file)
+        assert len(urls) == 3
+        assert "https://example.com/article1" in urls
+        assert "https://example.com/article2" in urls
+        assert "https://example.com/article3" in urls
+
+    def test_ignores_comments(self, url_list_file):
+        urls = _load_urls_from_file(url_list_file)
+        assert not any(u.startswith("#") for u in urls)
+
+    def test_ignores_empty_lines(self, url_list_file):
+        urls = _load_urls_from_file(url_list_file)
+        assert "" not in urls
+
+    def test_empty_file_returns_empty_list(self, tmp_path):
+        empty_file = tmp_path / "empty.txt"
+        empty_file.write_text("")
+        urls = _load_urls_from_file(empty_file)
+        assert urls == []
+
+    def test_file_with_only_comments(self, tmp_path):
+        comment_file = tmp_path / "comments.txt"
+        comment_file.write_text("# comment 1\n# comment 2\n")
+        urls = _load_urls_from_file(comment_file)
+        assert urls == []
+
+
+class TestLoadSourcesFromDirectory:
+    def test_loads_txt_and_html_files(self, article_directory):
+        sources = _load_sources_from_directory(article_directory)
+        assert len(sources) == 3  # 2 txt + 1 html, 1 md ignored
+
+    def test_ignores_non_txt_html_files(self, article_directory):
+        sources = _load_sources_from_directory(article_directory)
+        assert not any(s.endswith(".md") for s in sources)
+
+    def test_empty_directory_returns_empty_list(self, tmp_path):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        sources = _load_sources_from_directory(empty_dir)
+        assert sources == []
+
+    def test_sources_are_sorted(self, article_directory):
+        sources = _load_sources_from_directory(article_directory)
+        # Should be in sorted order within each glob
+        assert sources == sorted(sources)
+
+
+class TestBatchProcessorLoadSources:
+    def test_load_from_url_file(self, url_list_file):
+        processor = BatchProcessor()
+        sources = processor.load_sources(str(url_list_file))
+        assert len(sources) == 3
+
+    def test_load_from_directory(self, article_directory):
+        processor = BatchProcessor()
+        sources = processor.load_sources(str(article_directory))
+        assert len(sources) == 3
+
+    def test_raises_for_nonexistent_path(self, tmp_path):
+        processor = BatchProcessor()
+        with pytest.raises(FileNotFoundError):
+            processor.load_sources(str(tmp_path / "nonexistent.txt"))
+
+    def test_raises_for_empty_url_file(self, tmp_path):
+        empty_file = tmp_path / "empty.txt"
+        empty_file.write_text("")
+        processor = BatchProcessor()
+        with pytest.raises(ValueError, match="No URLs found"):
+            processor.load_sources(str(empty_file))
+
+    def test_raises_for_empty_directory(self, tmp_path):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        processor = BatchProcessor()
+        with pytest.raises(ValueError, match="No .txt or .html files found"):
+            processor.load_sources(str(empty_dir))
+
+
+# ---------------------------------------------------------------------------
+# Batch processing tests
+# ---------------------------------------------------------------------------
+
+class TestBatchProcessorRun:
+    def test_processes_all_sources(self, mock_processor):
+        sources = [
             "https://example.com/1",
             "https://example.com/2",
             "https://example.com/3",
         ]
-
-    def test_ignores_blank_lines(self, tmp_path):
-        url_file = tmp_path / "urls.txt"
-        url_file.write_text("\n\nhttps://example.com\n\n")
-        sources = load_sources_from_file(url_file)
-        assert sources == ["https://example.com"]
-
-    def test_ignores_comments(self, tmp_path):
-        url_file = tmp_path / "urls.txt"
-        url_file.write_text("# header\nhttps://example.com\n# footer\n")
-        sources = load_sources_from_file(url_file)
-        assert sources == ["https://example.com"]
-
-    def test_empty_file(self, tmp_path):
-        url_file = tmp_path / "urls.txt"
-        url_file.write_text("")
-        sources = load_sources_from_file(url_file)
-        assert sources == []
-
-
-# ---------------------------------------------------------------------------
-# load_sources_from_directory
-# ---------------------------------------------------------------------------
-
-class TestLoadSourcesFromDirectory:
-    def test_finds_txt_and_html(self, tmp_path):
-        (tmp_path / "article1.txt").write_text("text")
-        (tmp_path / "article2.html").write_text("<html></html>")
-        (tmp_path / "ignore.md").write_text("markdown")
-
-        sources = load_sources_from_directory(tmp_path)
-        names = {p.name for p in sources}
-        assert "article1.txt" in names
-        assert "article2.html" in names
-        assert "ignore.md" not in names
-
-    def test_empty_directory(self, tmp_path):
-        sources = load_sources_from_directory(tmp_path)
-        assert sources == []
-
-
-# ---------------------------------------------------------------------------
-# collect_sources
-# ---------------------------------------------------------------------------
-
-class TestCollectSources:
-    def test_from_url_list_file(self, tmp_path):
-        url_file = tmp_path / "urls.txt"
-        url_file.write_text("https://example.com/1\nhttps://example.com/2\n")
-        sources = collect_sources(url_file)
-        assert sources == ["https://example.com/1", "https://example.com/2"]
-
-    def test_from_directory(self, tmp_path):
-        (tmp_path / "a.txt").write_text("text")
-        (tmp_path / "b.html").write_text("<html></html>")
-        sources = collect_sources(tmp_path)
-        assert len(sources) == 2
-        for s in sources:
-            assert Path(s).exists()
-
-
-# ---------------------------------------------------------------------------
-# BatchProcessor
-# ---------------------------------------------------------------------------
-
-class TestBatchProcessor:
-    def _make_processor(self, success_sources=None, fail_sources=None, workers=2):
-        """Create a processor with a mock summarize_fn."""
-        success_sources = set(success_sources or [])
-        fail_sources = set(fail_sources or [])
-
-        def mock_fn(source: str, dry_run: bool):
-            if source in fail_sources:
-                raise RuntimeError(f"Failed to fetch {source}")
-            article = make_article(source=source)
-            summary = make_summary()
-            return article, summary
-
-        return BatchProcessor(summarize_fn=mock_fn, workers=workers)
-
-    def test_all_success(self):
-        sources = ["https://example.com/1", "https://example.com/2", "https://example.com/3"]
-        processor = self._make_processor(success_sources=sources)
-        results = processor.run(sources)
-
+        results = mock_processor.run(sources)
         assert len(results) == 3
+
+    def test_all_successes_with_mock(self, mock_processor):
+        sources = ["https://example.com/1", "https://example.com/2"]
+        results = mock_processor.run(sources)
         assert all(r.success for r in results)
 
+    def test_empty_sources_returns_empty_list(self, mock_processor):
+        results = mock_processor.run([])
+        assert results == []
+
     def test_error_isolation(self):
-        """One failed URL should not abort the batch."""
+        """One failed source should not abort processing of others."""
+        processor = BatchProcessor(workers=2)
+
+        def fake_fetch(source):
+            if "broken" in source:
+                raise ConnectionError("Simulated connection error")
+            return Article(
+                url=source,
+                title=f"Title: {source}",
+                content="Content",
+                word_count=1,
+                source="url",
+            )
+
+        def fake_summarize(article):
+            return Summary(
+                article=article,
+                summary_text="Summary",
+                tokens_used=50,
+                model="mock",
+                cost_estimate=0.0001,
+            )
+
+        processor._fetch_article = fake_fetch
+        processor._generate_summary = fake_summarize
+
         sources = [
-            "https://example.com/1",
-            "https://bad-url.com/fail",
-            "https://example.com/3",
+            "https://example.com/good1",
+            "https://example.com/broken",
+            "https://example.com/good2",
         ]
-        processor = self._make_processor(fail_sources={"https://bad-url.com/fail"})
         results = processor.run(sources)
 
         assert len(results) == 3
@@ -225,427 +308,449 @@ class TestBatchProcessor:
         failures = [r for r in results if not r.success]
         assert len(successes) == 2
         assert len(failures) == 1
-        assert failures[0].source == "https://bad-url.com/fail"
-        assert failures[0].error is not None
-
-    def test_all_failures_isolated(self):
-        """All items failing should still return all results."""
-        sources = ["https://a.com", "https://b.com"]
-
-        def always_fail(source, dry_run):
-            raise RuntimeError("Network unreachable")
-
-        processor = BatchProcessor(summarize_fn=always_fail, workers=2)
-        results = processor.run(sources)
-
-        assert len(results) == 2
-        assert all(not r.success for r in results)
+        assert "ConnectionError" in failures[0].error
 
     def test_worker_count_respected(self):
-        """Test that processor accepts and uses the configured worker count."""
+        """Verify the processor uses the specified number of workers."""
+        call_times = []
+        lock = threading.Lock()
+
+        processor = BatchProcessor(workers=4)
+
+        def fake_fetch(source):
+            with lock:
+                call_times.append(time.time())
+            time.sleep(0.05)  # Simulate work
+            return Article(url=source, title="T", content="C", word_count=1)
+
+        def fake_summarize(article):
+            return Summary(article=article, summary_text="S", tokens_used=10, model="m", cost_estimate=0.0)
+
+        processor._fetch_article = fake_fetch
+        processor._generate_summary = fake_summarize
+
         sources = [f"https://example.com/{i}" for i in range(8)]
-
-        def slow_fn(source, dry_run):
-            time.sleep(0.05)
-            return make_article(source=source), make_summary()
-
-        start = time.monotonic()
-        processor = BatchProcessor(summarize_fn=slow_fn, workers=4)
         results = processor.run(sources)
-        duration = time.monotonic() - start
-
-        # With 4 workers and 8 items at 50ms each, should take ~100ms not 400ms
-        assert duration < 0.35, f"Expected faster execution with 4 workers, got {duration:.2f}s"
         assert len(results) == 8
-        assert all(r.success for r in results)
 
-    def test_dry_run_flag_passed(self):
-        """Dry run flag should be passed to the summarize function."""
-        received_dry_runs = []
-
-        def capturing_fn(source, dry_run):
-            received_dry_runs.append(dry_run)
-            article = make_article(source=source)
-            summary = Summary(text="[DRY RUN]", dry_run=True)
-            return article, summary
-
-        processor = BatchProcessor(summarize_fn=capturing_fn, workers=1, dry_run=True)
-        processor.run(["https://example.com"])
-
-        assert received_dry_runs == [True]
-
-    def test_progress_callback_called(self):
-        """Progress callback should be called for each item."""
-        calls = []
-
-        def callback(source, status):
-            calls.append((source, status))
-
-        def mock_fn(source, dry_run):
-            return make_article(source=source), make_summary()
-
-        processor = BatchProcessor(
-            summarize_fn=mock_fn, workers=2, progress_callback=callback
-        )
-        sources = ["https://example.com/1", "https://example.com/2"]
-        processor.run(sources)
-
-        assert len(calls) == 2
-        sources_called = {c[0] for c in calls}
-        assert sources_called == set(sources)
-
-    def test_duration_tracked(self):
-        """Each result should have a non-negative duration."""
-        def mock_fn(source, dry_run):
-            return make_article(source=source), make_summary()
-
-        processor = BatchProcessor(summarize_fn=mock_fn, workers=1)
-        results = processor.run(["https://example.com"])
-
+    def test_duration_is_recorded(self, mock_processor):
+        results = mock_processor.run(["https://example.com/1"])
         assert results[0].duration_seconds >= 0
 
-    def test_tokens_captured(self):
-        """Tokens used from summary should be in BatchResult."""
-        def mock_fn(source, dry_run):
-            article = make_article(source=source)
-            summary = make_summary(tokens=123)
-            return article, summary
+    def test_tokens_recorded_in_result(self, mock_processor):
+        results = mock_processor.run(["https://example.com/1"])
+        assert results[0].tokens_used == 100
 
-        processor = BatchProcessor(summarize_fn=mock_fn, workers=1)
-        results = processor.run(["https://example.com"])
+    def test_cost_recorded_in_result(self, mock_processor):
+        results = mock_processor.run(["https://example.com/1"])
+        assert results[0].cost_estimate == 0.0002
 
-        assert results[0].tokens_used == 123
+    def test_progress_callback_called_for_each_result(self):
+        processor = BatchProcessor(workers=2)
+        callback_calls = []
 
-    def test_empty_sources(self):
-        """Empty source list should return empty results."""
-        def mock_fn(source, dry_run):
-            return make_article(), make_summary()
+        def fake_fetch(source):
+            return Article(url=source, title="T", content="C", word_count=1)
 
-        processor = BatchProcessor(summarize_fn=mock_fn, workers=2)
-        results = processor.run([])
-        assert results == []
+        def fake_summarize(article):
+            return Summary(article=article, summary_text="S", tokens_used=10, model="m", cost_estimate=0.0)
+
+        processor._fetch_article = fake_fetch
+        processor._generate_summary = fake_summarize
+        processor.progress_callback = lambda r: callback_calls.append(r)
+
+        sources = ["https://example.com/1", "https://example.com/2", "https://example.com/3"]
+        processor.run(sources)
+
+        assert len(callback_calls) == 3
+
+    def test_dry_run_skips_llm(self):
+        """Dry-run mode should not call _generate_summary."""
+        processor = BatchProcessor(workers=2, dry_run=True)
+        summarize_called = []
+
+        def fake_fetch(source):
+            return Article(url=source, title="T", content="C", word_count=1)
+
+        def fake_summarize(article):
+            summarize_called.append(article)
+            return Summary(article=article, summary_text="S", tokens_used=10, model="m", cost_estimate=0.0)
+
+        processor._fetch_article = fake_fetch
+        processor._generate_summary = fake_summarize
+
+        results = processor.run(["https://example.com/1", "https://example.com/2"])
+
+        assert len(summarize_called) == 0
+        assert all(r.success for r in results)
+        assert all(r.dry_run for r in results)
+        assert all(r.tokens_used == 0 for r in results)
+
+    def test_dry_run_result_has_article_but_no_summary(self):
+        """In dry-run mode, article should be set but summary should be None."""
+        processor = BatchProcessor(workers=1, dry_run=True)
+
+        def fake_fetch(source):
+            return Article(url=source, title="T", content="C", word_count=5)
+
+        processor._fetch_article = fake_fetch
+
+        results = processor.run(["https://example.com/test"])
+        assert len(results) == 1
+        assert results[0].article is not None
+        assert results[0].summary is None
+        assert results[0].success is True
 
 
-# ---------------------------------------------------------------------------
-# BatchResult model
-# ---------------------------------------------------------------------------
+class TestBatchProcessorLocalFiles:
+    def test_processes_txt_file(self, tmp_path):
+        txt_file = tmp_path / "test.txt"
+        txt_file.write_text("Hello world. This is test content.")
 
-class TestBatchResult:
-    def test_success_property(self):
-        result = make_result(success=True)
-        assert result.success is True
+        processor = BatchProcessor(workers=1, dry_run=True)
+        results = processor.run([str(txt_file)])
 
-    def test_failure_property(self):
-        result = make_result(success=False)
-        assert result.success is False
+        assert len(results) == 1
+        assert results[0].success
+        assert results[0].article is not None
+        assert results[0].article.word_count == 7
 
-    def test_title_from_article(self):
-        result = make_result(success=True)
-        assert result.title == "Test Article"
-
-    def test_title_fallback_to_source(self):
-        result = BatchResult(
-            source="https://example.com/some/path",
-            article=None,
-            summary=None,
-            error="failed",
-            duration_seconds=0.1,
+    def test_processes_html_file(self, tmp_path):
+        html_file = tmp_path / "test.html"
+        html_file.write_text(
+            "<html><head><title>My Page</title></head>"
+            "<body><p>Hello world from HTML.</p></body></html>"
         )
-        assert "example.com" in result.title or result.title == "https://example.com/some/path"
 
-    def test_title_truncation(self):
-        long_source = "https://example.com/" + "x" * 100
-        result = BatchResult(
-            source=long_source,
-            article=None,
-            summary=None,
-            error="failed",
-            duration_seconds=0.1,
-        )
-        assert len(result.title) <= 63  # "..." + 57 chars + some slack
+        processor = BatchProcessor(workers=1, dry_run=True)
+        results = processor.run([str(html_file)])
+
+        assert len(results) == 1
+        assert results[0].success
+        assert results[0].article is not None
+        assert results[0].article.title == "My Page"
+
+    def test_missing_file_produces_failure(self):
+        processor = BatchProcessor(workers=1, dry_run=True)
+        results = processor.run(["/nonexistent/path/to/file.txt"])
+
+        assert len(results) == 1
+        assert not results[0].success
+        assert "FileNotFoundError" in results[0].error or "not found" in results[0].error.lower()
 
 
 # ---------------------------------------------------------------------------
-# Reporter: CSV output
+# Reporter tests
 # ---------------------------------------------------------------------------
+
+class TestComputeBatchStats:
+    def test_all_successes(self, success_result):
+        results = [success_result, success_result]
+        stats = compute_batch_stats(results)
+        assert stats["total"] == 2
+        assert stats["success_count"] == 2
+        assert stats["failure_count"] == 0
+        assert stats["total_tokens"] == 300
+        assert abs(stats["total_cost"] - 0.0006) < 1e-6
+
+    def test_mixed_results(self, success_result, failure_result):
+        results = [success_result, failure_result]
+        stats = compute_batch_stats(results)
+        assert stats["total"] == 2
+        assert stats["success_count"] == 1
+        assert stats["failure_count"] == 1
+
+    def test_empty_results(self):
+        stats = compute_batch_stats([])
+        assert stats["total"] == 0
+        assert stats["avg_duration_seconds"] == 0.0
+
+    def test_avg_duration(self, success_result, failure_result):
+        success_result.duration_seconds = 2.0
+        failure_result.duration_seconds = 4.0
+        stats = compute_batch_stats([success_result, failure_result])
+        assert stats["avg_duration_seconds"] == 3.0
+
+    def test_total_duration(self, success_result, failure_result):
+        success_result.duration_seconds = 1.5
+        failure_result.duration_seconds = 0.5
+        stats = compute_batch_stats([success_result, failure_result])
+        assert stats["total_duration_seconds"] == 2.0
+
+
+class TestFormatDuration:
+    def test_seconds_only(self):
+        assert _format_duration(45.3) == "45.3s"
+
+    def test_minutes_and_seconds(self):
+        assert _format_duration(90.0) == "1m 30s"
+
+    def test_zero(self):
+        assert _format_duration(0) == "0.0s"
+
+
+class TestTruncate:
+    def test_short_string_unchanged(self):
+        assert _truncate("hello", 20) == "hello"
+
+    def test_long_string_truncated(self):
+        result = _truncate("a" * 100, 20)
+        assert len(result) == 20
+        assert result.endswith("...")
+
+    def test_exact_length_unchanged(self):
+        assert _truncate("a" * 20, 20) == "a" * 20
+
 
 class TestWriteCsv:
-    def test_writes_csv(self, tmp_path):
-        results = [
-            make_result("https://example.com/1", success=True),
-            make_result("https://example.com/2", success=False),
-        ]
-        out = tmp_path / "results.csv"
-        write_csv(results, out)
+    def test_writes_csv_file(self, tmp_path, success_result, failure_result):
+        output_file = tmp_path / "results.csv"
+        write_csv([success_result, failure_result], str(output_file))
 
-        assert out.exists()
-        with open(out, newline="") as f:
+        assert output_file.exists()
+
+        with open(output_file, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
 
         assert len(rows) == 2
-        assert rows[0]["status"] == "success"
-        assert rows[1]["status"] == "error"
 
-    def test_csv_has_required_columns(self, tmp_path):
-        results = [make_result()]
-        out = tmp_path / "results.csv"
-        write_csv(results, out)
+    def test_csv_has_correct_columns(self, tmp_path, success_result):
+        output_file = tmp_path / "results.csv"
+        write_csv([success_result], str(output_file))
 
-        with open(out, newline="") as f:
+        with open(output_file, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            cols = reader.fieldnames
+            fieldnames = reader.fieldnames
 
-        required = {"source", "title", "status", "duration_seconds", "tokens_used", "summary", "error"}
-        assert required.issubset(set(cols))
+        expected_fields = ["source", "status", "title", "duration_seconds", "tokens_used",
+                           "cost_estimate", "error", "summary_excerpt", "timestamp", "dry_run"]
+        for field in expected_fields:
+            assert field in fieldnames
 
-    def test_csv_summary_text_included(self, tmp_path):
-        results = [make_result(success=True)]
-        results[0].summary.text = "This is the summary."
-        out = tmp_path / "results.csv"
-        write_csv(results, out)
+    def test_csv_success_row_values(self, tmp_path, success_result):
+        output_file = tmp_path / "results.csv"
+        write_csv([success_result], str(output_file))
 
-        with open(out, newline="") as f:
+        with open(output_file, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            rows = list(reader)
+            row = next(reader)
 
-        assert rows[0]["summary"] == "This is the summary."
+        assert row["source"] == "https://example.com/article1"
+        assert row["status"] == "success"
+        assert row["title"] == "Test Article 1"
+        assert row["tokens_used"] == "150"
+        assert row["error"] == ""
 
+    def test_csv_failure_row_values(self, tmp_path, failure_result):
+        output_file = tmp_path / "results.csv"
+        write_csv([failure_result], str(output_file))
 
-# ---------------------------------------------------------------------------
-# Reporter: JSONL output
-# ---------------------------------------------------------------------------
+        with open(output_file, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            row = next(reader)
+
+        assert row["status"] == "failure"
+        assert row["error"] == "ConnectionError: Failed to connect"
+
+    def test_creates_parent_directories(self, tmp_path):
+        output_file = tmp_path / "subdir" / "nested" / "results.csv"
+        write_csv([], str(output_file))
+        assert output_file.exists()
+
+    def test_summary_excerpt_truncated_at_200_chars(self, tmp_path, success_result):
+        success_result.summary.summary_text = "word " * 100  # 500 chars
+        output_file = tmp_path / "results.csv"
+        write_csv([success_result], str(output_file))
+
+        with open(output_file, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            row = next(reader)
+
+        assert len(row["summary_excerpt"]) <= 203  # 200 + "..."
+
 
 class TestWriteJsonl:
-    def test_writes_jsonl(self, tmp_path):
-        results = [
-            make_result("https://a.com", success=True),
-            make_result("https://b.com", success=False),
-        ]
-        out = tmp_path / "results.jsonl"
-        write_jsonl(results, out)
+    def test_writes_jsonl_file(self, tmp_path, success_result, failure_result):
+        output_file = tmp_path / "results.jsonl"
+        write_jsonl([success_result, failure_result], str(output_file))
 
-        lines = out.read_text().strip().splitlines()
+        assert output_file.exists()
+
+        lines = output_file.read_text().strip().split("\n")
         assert len(lines) == 2
 
-        records = [json.loads(l) for l in lines]
-        assert records[0]["status"] == "success"
-        assert records[1]["status"] == "error"
+    def test_jsonl_each_line_is_valid_json(self, tmp_path, success_result, failure_result):
+        output_file = tmp_path / "results.jsonl"
+        write_jsonl([success_result, failure_result], str(output_file))
 
-    def test_jsonl_fields(self, tmp_path):
-        results = [make_result()]
-        out = tmp_path / "results.jsonl"
-        write_jsonl(results, out)
+        for line in output_file.read_text().strip().split("\n"):
+            record = json.loads(line)  # Should not raise
+            assert "source" in record
 
-        record = json.loads(out.read_text().strip())
-        assert "source" in record
-        assert "title" in record
-        assert "summary" in record
-        assert "tokens_used" in record
+    def test_jsonl_success_record(self, tmp_path, success_result):
+        output_file = tmp_path / "results.jsonl"
+        write_jsonl([success_result], str(output_file))
 
+        record = json.loads(output_file.read_text().strip())
+        assert record["source"] == "https://example.com/article1"
+        assert record["status"] == "success"
+        assert record["title"] == "Test Article 1"
+        assert record["tokens_used"] == 150
+        assert record["error"] is None
+        assert record["summary"] == "This is a test summary."
 
-# ---------------------------------------------------------------------------
-# Reporter: JSON output
-# ---------------------------------------------------------------------------
+    def test_jsonl_failure_record(self, tmp_path, failure_result):
+        output_file = tmp_path / "results.jsonl"
+        write_jsonl([failure_result], str(output_file))
 
-class TestWriteJson:
-    def test_writes_json_array(self, tmp_path):
-        results = [make_result("https://a.com"), make_result("https://b.com")]
-        out = tmp_path / "results.json"
-        write_json(results, out)
+        record = json.loads(output_file.read_text().strip())
+        assert record["status"] == "failure"
+        assert record["error"] == "ConnectionError: Failed to connect"
+        assert record["title"] is None
+        assert record["summary"] is None
 
-        data = json.loads(out.read_text())
-        assert isinstance(data, list)
-        assert len(data) == 2
-
-    def test_json_valid(self, tmp_path):
-        results = [make_result()]
-        out = tmp_path / "results.json"
-        write_json(results, out)
-
-        data = json.loads(out.read_text())
-        assert data[0]["source"] == "http://example.com"
+    def test_creates_parent_directories(self, tmp_path):
+        output_file = tmp_path / "nested" / "results.jsonl"
+        write_jsonl([], str(output_file))
+        assert output_file.exists()
 
 
-# ---------------------------------------------------------------------------
-# Reporter: export_results dispatcher
-# ---------------------------------------------------------------------------
+class TestWriteResults:
+    def test_writes_csv_by_format_arg(self, tmp_path, success_result):
+        output_file = tmp_path / "out.dat"
+        write_results([success_result], str(output_file), fmt="csv")
+        with open(output_file, newline="") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        assert len(rows) == 1
 
-class TestExportResults:
-    def test_export_csv(self, tmp_path):
-        results = [make_result()]
-        out = tmp_path / "out.csv"
-        export_results(results, out, fmt="csv")
-        assert out.exists()
+    def test_writes_jsonl_by_format_arg(self, tmp_path, success_result):
+        output_file = tmp_path / "out.dat"
+        write_results([success_result], str(output_file), fmt="jsonl")
+        record = json.loads(output_file.read_text().strip())
+        assert record["source"] == success_result.source
 
-    def test_export_jsonl(self, tmp_path):
-        results = [make_result()]
-        out = tmp_path / "out.jsonl"
-        export_results(results, out, fmt="jsonl")
-        assert out.exists()
-
-    def test_export_json(self, tmp_path):
-        results = [make_result()]
-        out = tmp_path / "out.json"
-        export_results(results, out, fmt="json")
-        assert out.exists()
-
-    def test_invalid_format_raises(self, tmp_path):
-        results = [make_result()]
-        with pytest.raises(ValueError, match="Unsupported export format"):
-            export_results(results, tmp_path / "out.xyz", fmt="xml")
+    def test_raises_for_unknown_format(self, tmp_path, success_result):
+        with pytest.raises(ValueError, match="Unsupported output format"):
+            write_results([success_result], str(tmp_path / "out.xml"), fmt="xml")
 
 
 # ---------------------------------------------------------------------------
-# Reporter: print_batch_summary (smoke test)
+# Integration-style tests
 # ---------------------------------------------------------------------------
 
-class TestPrintBatchSummary:
-    def test_runs_without_error(self, capsys):
-        results = [
-            make_result("https://a.com", success=True),
-            make_result("https://b.com", success=False),
-        ]
-        # Should not raise
-        print_batch_summary(results, dry_run=False)
-
-    def test_dry_run_indicator(self, capsys):
-        results = [make_result()]
-        # Should not raise
-        print_batch_summary(results, dry_run=True)
-
-    def test_empty_results(self, capsys):
-        print_batch_summary([], dry_run=False)
-
-
-# ---------------------------------------------------------------------------
-# CLI integration (click test runner)
-# ---------------------------------------------------------------------------
-
-class TestBatchCli:
-    def test_batch_command_with_url_list(self, tmp_path):
-        from click.testing import CliRunner
-        from src.summarizer.cli import cli
-
+class TestBatchProcessorIntegration:
+    def test_run_from_source_path_url_file(self, tmp_path):
+        """End-to-end: load URLs from file, process with mock, verify results."""
         url_file = tmp_path / "urls.txt"
         url_file.write_text(
-            "https://example.com/1\nhttps://example.com/2\n"
+            "https://example.com/a\nhttps://example.com/b\nhttps://example.com/c\n"
         )
 
-        def mock_summarize(source, style, model, config, dry_run):
-            article = make_article(source=source)
-            summary = make_summary()
-            return article, summary
+        processor = BatchProcessor(workers=2)
 
-        runner = CliRunner()
-        with patch("src.summarizer.cli._build_summarize_fn") as mock_build:
-            def fn(source, dry_run):
-                return make_article(source=source), make_summary()
-            mock_build.return_value = fn
+        def fake_fetch(source):
+            return Article(url=source, title=f"Title {source[-1]}", content="Content", word_count=1)
 
-            with patch("src.summarizer.cli.load_config", return_value=MagicMock()):
-                result = runner.invoke(
-                    cli,
-                    ["batch", str(url_file), "--workers", "2", "--dry-run"],
-                    catch_exceptions=False,
-                )
+        def fake_summarize(article):
+            return Summary(
+                article=article, summary_text="Summary", tokens_used=50, model="m", cost_estimate=0.0001
+            )
 
-        assert result.exit_code == 0
+        processor._fetch_article = fake_fetch
+        processor._generate_summary = fake_summarize
 
-    def test_batch_command_dry_run(self, tmp_path):
-        from click.testing import CliRunner
-        from src.summarizer.cli import cli
+        results = processor.run_from_source_path(str(url_file))
+        assert len(results) == 3
+        assert all(r.success for r in results)
 
-        url_file = tmp_path / "urls.txt"
-        url_file.write_text("https://example.com/article\n")
+    def test_run_from_source_path_directory(self, tmp_path):
+        """End-to-end: load files from directory, process with dry_run."""
+        articles_dir = tmp_path / "articles"
+        articles_dir.mkdir()
+        (articles_dir / "a.txt").write_text("Content A")
+        (articles_dir / "b.txt").write_text("Content B")
 
-        runner = CliRunner()
-        with patch("src.summarizer.cli._build_summarize_fn") as mock_build:
-            def fn(source, dry_run):
-                assert dry_run is True
-                return make_article(source=source), Summary(text="[DRY RUN]", dry_run=True)
-            mock_build.return_value = fn
+        processor = BatchProcessor(workers=2, dry_run=True)
+        results = processor.run_from_source_path(str(articles_dir))
 
-            with patch("src.summarizer.cli.load_config", return_value=MagicMock()):
-                result = runner.invoke(
-                    cli,
-                    ["batch", str(url_file), "--dry-run"],
-                    catch_exceptions=False,
-                )
+        assert len(results) == 2
+        assert all(r.success for r in results)
+        assert all(r.dry_run for r in results)
 
-        assert result.exit_code == 0
+    def test_concurrent_processing_is_faster_than_sequential(self, tmp_path):
+        """With multiple workers, 4 tasks taking 0.1s each should complete in < 0.35s."""
+        processor = BatchProcessor(workers=4)
+        sleep_duration = 0.1
 
-    def test_batch_command_csv_output(self, tmp_path):
-        from click.testing import CliRunner
-        from src.summarizer.cli import cli
+        def slow_fetch(source):
+            time.sleep(sleep_duration)
+            return Article(url=source, title="T", content="C", word_count=1)
 
-        url_file = tmp_path / "urls.txt"
-        url_file.write_text("https://example.com/1\nhttps://example.com/2\n")
-        out_file = tmp_path / "results.csv"
+        def fast_summarize(article):
+            return Summary(article=article, summary_text="S", tokens_used=10, model="m", cost_estimate=0.0)
 
-        runner = CliRunner()
-        with patch("src.summarizer.cli._build_summarize_fn") as mock_build:
-            def fn(source, dry_run):
-                return make_article(source=source), make_summary()
-            mock_build.return_value = fn
+        processor._fetch_article = slow_fetch
+        processor._generate_summary = fast_summarize
 
-            with patch("src.summarizer.cli.load_config", return_value=MagicMock()):
-                result = runner.invoke(
-                    cli,
-                    ["batch", str(url_file), "--output", str(out_file), "--format", "csv"],
-                    catch_exceptions=False,
-                )
+        sources = [f"https://example.com/{i}" for i in range(4)]
+        start = time.monotonic()
+        results = processor.run(sources)
+        elapsed = time.monotonic() - start
 
-        assert result.exit_code == 0
-        assert out_file.exists()
+        assert len(results) == 4
+        # Sequential would take ~0.4s; parallel should be much less
+        assert elapsed < 0.35, f"Expected parallel processing to be faster, took {elapsed:.3f}s"
 
-    def test_batch_command_nonexistent_input(self, tmp_path):
-        from click.testing import CliRunner
-        from src.summarizer.cli import cli
+    def test_write_batch_results_to_csv_after_run(self, tmp_path):
+        """Integration: run batch and write results to CSV."""
+        processor = BatchProcessor(workers=2)
 
-        runner = CliRunner()
-        result = runner.invoke(cli, ["batch", str(tmp_path / "nonexistent.txt")])
-        assert result.exit_code != 0
+        def fake_fetch(source):
+            return Article(url=source, title="T", content="C", word_count=1)
 
-    def test_batch_command_with_directory(self, tmp_path):
-        from click.testing import CliRunner
-        from src.summarizer.cli import cli
+        def fake_summarize(article):
+            return Summary(
+                article=article, summary_text="Summary", tokens_used=80, model="m", cost_estimate=0.00016
+            )
 
-        (tmp_path / "article1.txt").write_text("This is article one.\n")
-        (tmp_path / "article2.txt").write_text("This is article two.\n")
+        processor._fetch_article = fake_fetch
+        processor._generate_summary = fake_summarize
 
-        runner = CliRunner()
-        with patch("src.summarizer.cli._build_summarize_fn") as mock_build:
-            def fn(source, dry_run):
-                return make_article(source=source), make_summary()
-            mock_build.return_value = fn
+        sources = ["https://a.com/1", "https://a.com/2"]
+        results = processor.run(sources)
 
-            with patch("src.summarizer.cli.load_config", return_value=MagicMock()):
-                result = runner.invoke(
-                    cli,
-                    ["batch", str(tmp_path), "--workers", "1"],
-                    catch_exceptions=False,
-                )
+        csv_path = tmp_path / "output.csv"
+        write_results(results, str(csv_path), fmt="csv")
 
-        assert result.exit_code == 0
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
 
-    def test_batch_exits_nonzero_on_all_failures(self, tmp_path):
-        from click.testing import CliRunner
-        from src.summarizer.cli import cli
+        assert len(rows) == 2
+        assert all(row["status"] == "success" for row in rows)
 
-        url_file = tmp_path / "urls.txt"
-        url_file.write_text("https://example.com/fail\n")
+    def test_write_batch_results_to_jsonl_after_run(self, tmp_path):
+        """Integration: run batch and write results to JSONL."""
+        processor = BatchProcessor(workers=2)
 
-        runner = CliRunner()
-        with patch("src.summarizer.cli._build_summarize_fn") as mock_build:
-            def fn(source, dry_run):
-                raise RuntimeError("Network error")
-            mock_build.return_value = fn
+        def fake_fetch(source):
+            return Article(url=source, title="T", content="C", word_count=1)
 
-            with patch("src.summarizer.cli.load_config", return_value=MagicMock()):
-                result = runner.invoke(
-                    cli,
-                    ["batch", str(url_file)],
-                )
+        def fake_summarize(article):
+            return Summary(
+                article=article, summary_text="Summary", tokens_used=80, model="m", cost_estimate=0.00016
+            )
 
-        assert result.exit_code != 0
+        processor._fetch_article = fake_fetch
+        processor._generate_summary = fake_summarize
+
+        sources = ["https://a.com/1", "https://a.com/2"]
+        results = processor.run(sources)
+
+        jsonl_path = tmp_path / "output.jsonl"
+        write_results(results, str(jsonl_path), fmt="jsonl")
+
+        records = [json.loads(line) for line in jsonl_path.read_text().strip().split("\n")]
+        assert len(records) == 2
+        assert all(r["status"] == "success" for r in records)

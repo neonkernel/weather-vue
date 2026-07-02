@@ -1,205 +1,264 @@
-"""CLI entry point for the summarizer tool."""
-
-from __future__ import annotations
+"""Command-line interface for the summarizer."""
 
 import sys
+import logging
 from pathlib import Path
 from typing import Optional
 
 import click
-from rich.console import Console
 
-from .logger import get_logger
-from .config import load_config
-from .summarize import summarize_source
-
-console = Console()
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
-def _build_summarize_fn(style: str, model: Optional[str], config):
-    """Build a summarize function that captures style/model context."""
-    from .summarize import summarize_source
-
-    def fn(source: str, dry_run: bool) -> tuple:
-        return summarize_source(
-            source=source,
-            style=style,
-            model=model,
-            config=config,
-            dry_run=dry_run,
-        )
-
-    return fn
+def _setup_logging(verbose: bool = False) -> None:
+    """Configure logging based on verbosity."""
+    level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 @click.group()
-@click.version_option()
-def cli():
-    """Article summarizer powered by LLMs."""
-    pass
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Enable verbose logging.")
+@click.pass_context
+def cli(ctx: click.Context, verbose: bool) -> None:
+    """
+    Summarizer — AI-powered article summarization tool.
 
+    Use one of the subcommands below to get started.
+    """
+    ctx.ensure_object(dict)
+    ctx.obj["verbose"] = verbose
+    _setup_logging(verbose)
+
+
+# ---------------------------------------------------------------------------
+# summarize subcommand
+# ---------------------------------------------------------------------------
 
 @cli.command("summarize")
 @click.argument("source")
-@click.option("--style", default="default", show_default=True, help="Summary style.")
-@click.option("--model", default=None, help="LLM model override.")
-@click.option("--output", default=None, type=click.Path(), help="Save summary to file.")
-@click.option("--dry-run", is_flag=True, default=False, help="Fetch only, skip LLM call.")
-def summarize_cmd(source: str, style: str, model: Optional[str], output: Optional[str], dry_run: bool):
-    """Summarize a single article from a URL or file path."""
-    try:
-        config = load_config()
-        article, summary = summarize_source(
-            source=source,
-            style=style,
-            model=model,
-            config=config,
-            dry_run=dry_run,
-        )
-        if dry_run:
-            console.print(f"[yellow]DRY RUN:[/yellow] Fetched [bold]{article.title!r}[/bold] ({article.word_count} words). LLM not called.")
-            return
+@click.option(
+    "--style",
+    "-s",
+    default="default",
+    show_default=True,
+    help="Summary style (default, brief, detailed, bullet).",
+)
+@click.option("--model", "-m", default=None, help="LLM model to use.")
+@click.option("--output", "-o", default=None, help="Save summary to this file.")
+@click.pass_context
+def summarize_cmd(
+    ctx: click.Context,
+    source: str,
+    style: str,
+    model: Optional[str],
+    output: Optional[str],
+) -> None:
+    """
+    Summarize a single article from a URL or local file.
 
-        console.print(f"\n[bold cyan]{article.title}[/bold cyan]")
-        console.print(f"[dim]{article.url}[/dim]\n")
-        console.print(summary.text)
+    SOURCE can be a URL (http/https) or a path to a .txt or .html file.
+    """
+    from .batch import BatchProcessor
+    from .reporter import print_rich_table
 
-        if summary.tokens_used:
-            console.print(f"\n[dim]Tokens used: {summary.tokens_used}[/dim]")
+    processor = BatchProcessor(workers=1, dry_run=False, style=style, model=model)
+    results = processor.run([source])
+    result = results[0]
+
+    if result.success:
+        summary_text = result.summary_text or ""
+        click.echo("\n" + "=" * 60)
+        if result.article:
+            click.echo(f"Title: {result.article.title}")
+            click.echo(f"Words: {result.article.word_count:,}")
+        click.echo("=" * 60)
+        click.echo(summary_text)
+        click.echo("=" * 60)
+
+        if result.tokens_used:
+            click.echo(f"\nTokens used: {result.tokens_used:,} | Est. cost: ${result.cost_estimate:.4f}")
 
         if output:
             out_path = Path(output)
-            out_path.write_text(summary.text, encoding="utf-8")
-            console.print(f"\n[green]Summary saved to:[/green] {out_path}")
-
-    except Exception as exc:
-        console.print(f"[red]Error:[/red] {exc}", err=True)
-        logger.exception("summarize command failed")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(summary_text, encoding="utf-8")
+            click.echo(f"\nSummary saved to: {output}")
+    else:
+        click.echo(f"\n[ERROR] Failed to summarize '{source}':", err=True)
+        click.echo(f"  {result.error}", err=True)
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# batch subcommand
+# ---------------------------------------------------------------------------
+
 @cli.command("batch")
-@click.argument("input_path", type=click.Path(exists=True))
+@click.argument("source_path")
 @click.option(
     "--workers",
+    "-w",
     default=4,
     show_default=True,
-    type=int,
-    help="Number of concurrent worker threads.",
+    type=click.IntRange(1, 32),
+    help="Number of parallel worker threads.",
 )
 @click.option(
     "--output",
+    "-o",
     default=None,
-    type=click.Path(),
-    help="Output file path for results (CSV, JSON, or JSONL).",
+    help="Output file path for results (e.g. results.csv or results.jsonl).",
 )
 @click.option(
     "--format",
+    "-f",
     "output_format",
-    default="csv",
-    show_default=True,
-    type=click.Choice(["csv", "json", "jsonl"], case_sensitive=False),
-    help="Output file format when --output is specified.",
+    default=None,
+    type=click.Choice(["csv", "jsonl"], case_sensitive=False),
+    help="Output format: csv or jsonl. Inferred from --output extension if not set.",
 )
-@click.option("--style", default="default", show_default=True, help="Summary style for all items.")
-@click.option("--model", default=None, help="LLM model override for all items.")
+@click.option(
+    "--style",
+    "-s",
+    default="default",
+    show_default=True,
+    help="Summary style (default, brief, detailed, bullet).",
+)
+@click.option("--model", "-m", default=None, help="LLM model to use.")
 @click.option(
     "--dry-run",
     is_flag=True,
     default=False,
-    help="Fetch and validate sources without calling the LLM.",
+    help="Fetch and validate all sources without calling the LLM.",
 )
+@click.pass_context
 def batch_cmd(
-    input_path: str,
+    ctx: click.Context,
+    source_path: str,
     workers: int,
     output: Optional[str],
-    output_format: str,
+    output_format: Optional[str],
     style: str,
     model: Optional[str],
     dry_run: bool,
-):
+) -> None:
     """
     Summarize multiple articles from a URL list file or directory.
 
-    INPUT_PATH can be:
+    SOURCE_PATH can be:
+
     \b
-      - A .txt file with one URL or file path per line
-      - A directory containing .txt or .html files
+    - A .txt file with one URL per line (lines starting with # are ignored)
+    - A directory containing .txt or .html article files
 
     Examples:
+
     \b
-      summarizer batch urls.txt --workers 8 --output results.csv
-      summarizer batch articles/ --dry-run
+      summarizer batch urls.txt --workers 8
+      summarizer batch ./articles/ --dry-run
+      summarizer batch urls.txt --output results.csv
       summarizer batch urls.txt --output results.jsonl --format jsonl
     """
-    from .batch import BatchProcessor, collect_sources
-    from .reporter import print_batch_summary, export_results
+    from .batch import BatchProcessor
+    from .reporter import print_rich_table, write_results
 
-    input_path_obj = Path(input_path)
+    # Determine output format
+    fmt = output_format
+    if fmt is None and output:
+        ext = Path(output).suffix.lower()
+        if ext in (".jsonl", ".json"):
+            fmt = "jsonl"
+        else:
+            fmt = "csv"
 
+    # Progress callback using Rich if available
     try:
-        config = load_config()
-    except Exception as exc:
-        console.print(f"[red]Failed to load config:[/red] {exc}", err=True)
-        sys.exit(1)
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+        from rich.console import Console
 
-    # Collect sources
-    try:
-        sources = collect_sources(input_path_obj)
-    except Exception as exc:
-        console.print(f"[red]Failed to collect sources:[/red] {exc}", err=True)
-        sys.exit(1)
+        console = Console()
 
-    if not sources:
-        console.print("[yellow]No sources found. Nothing to process.[/yellow]")
-        sys.exit(0)
+        def make_progress_display(total: int):
+            progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=console,
+            )
+            return progress
 
-    console.print(
-        f"\n[bold cyan]Batch Processing[/bold cyan] — "
-        f"{len(sources)} source(s), {workers} worker(s)"
-        + (" [yellow][DRY RUN][/yellow]" if dry_run else "")
-    )
+        use_rich_progress = True
+    except ImportError:
+        use_rich_progress = False
 
-    summarize_fn = _build_summarize_fn(style=style, model=model, config=config)
+    completed_count = [0]
+    total_sources = [0]  # will be set after loading
 
-    def progress_callback(source: str, status: str) -> None:
-        icon = "[green]✓[/green]" if status == "success" else "[red]✗[/red]"
-        short = source if len(source) <= 60 else "..." + source[-57:]
-        console.print(f"  {icon} {short} [dim]({status})[/dim]")
+    def _simple_progress_callback(result):
+        completed_count[0] += 1
+        status = "✓" if result.success else "✗"
+        source_label = result.source[:60] + "..." if len(result.source) > 60 else result.source
+        click.echo(f"  [{completed_count[0]}/{total_sources[0]}] {status} {source_label}")
 
     processor = BatchProcessor(
-        summarize_fn=summarize_fn,
         workers=workers,
         dry_run=dry_run,
-        progress_callback=progress_callback,
+        style=style,
+        model=model,
     )
 
     try:
-        results = processor.run(sources)
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Batch interrupted by user.[/yellow]")
-        sys.exit(130)
-
-    # Print Rich table summary
-    print_batch_summary(results, dry_run=dry_run)
-
-    # Export to file if requested
-    if output:
-        try:
-            export_results(results, Path(output), fmt=output_format)
-        except Exception as exc:
-            console.print(f"[red]Failed to write output:[/red] {exc}", err=True)
-            sys.exit(1)
-
-    # Exit with non-zero if any failures
-    failures = [r for r in results if not r.success]
-    if failures:
+        sources = processor.load_sources(source_path)
+    except (FileNotFoundError, ValueError) as exc:
+        click.echo(f"\n[ERROR] {exc}", err=True)
         sys.exit(1)
 
+    total_sources[0] = len(sources)
 
-def main():
-    cli()
+    mode_str = " [DRY RUN]" if dry_run else ""
+    click.echo(
+        f"\nProcessing {len(sources)} source(s){mode_str} with {workers} worker(s)...\n"
+    )
+
+    processor.progress_callback = _simple_progress_callback
+
+    results = processor.run(sources)
+
+    # Display Rich table
+    print_rich_table(results, dry_run=dry_run)
+
+    # Write output file if requested
+    if output and fmt:
+        try:
+            write_results(results, output, fmt=fmt)
+            click.echo(f"Results written to: {output} (format: {fmt})\n")
+        except Exception as exc:
+            click.echo(f"\n[ERROR] Failed to write output: {exc}", err=True)
+            sys.exit(1)
+
+    # Exit with non-zero code if any failures occurred
+    failure_count = sum(1 for r in results if not r.success)
+    if failure_count > 0:
+        click.echo(
+            f"Warning: {failure_count} of {len(results)} sources failed.",
+            err=True,
+        )
+        # Non-zero exit but don't abort — partial success
+        sys.exit(2)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    """Main entry point."""
+    cli(obj={})
 
 
 if __name__ == "__main__":

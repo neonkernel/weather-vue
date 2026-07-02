@@ -1,8 +1,9 @@
 # Sample batch input file for integration tests
-# One URL per line; lines starting with # are ignored
+# Lines starting with # are treated as comments and ignored.
+# Empty lines are also ignored.
 
-https://example.com/article-one
-https://example.com/article-two
-https://example.com/article-three
-https://news.ycombinator.com
+https://example.com/article-1
+https://example.com/article-2
+https://example.com/article-3
 https://httpbin.org/html
+https://www.iana.org/domains/reserved

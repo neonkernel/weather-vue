@@ -1,57 +1,52 @@
 """Data models for the summarizer."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import Optional
+from datetime import datetime
 
 
 @dataclass
 class Article:
-    """Represents a fetched and parsed article."""
-
+    """Represents a fetched article."""
     url: str
     title: str
-    text: str
+    content: str
     word_count: int = 0
-    source_type: str = "url"  # "url" | "file" | "html"
+    source: str = ""
 
 
 @dataclass
 class Summary:
-    """Represents an AI-generated summary of an article."""
-
-    text: str
+    """Represents a generated summary."""
+    article: Article
+    summary_text: str
     style: str = "default"
+    tokens_used: int = 0
     model: str = ""
-    tokens_used: Optional[int] = None
-    cost_estimate: Optional[float] = None
-    dry_run: bool = False
+    cost_estimate: float = 0.0
 
 
 @dataclass
 class BatchResult:
-    """Result of processing a single source in a batch operation."""
-
+    """Result of processing a single item in a batch."""
     source: str
-    article: Optional[Article]
-    summary: Optional[Summary]
-    error: Optional[str]
-    duration_seconds: float
-    tokens_used: Optional[int] = None
-    cost_estimate: Optional[float] = None
+    article: Optional[Article] = None
+    summary: Optional[Summary] = None
+    error: Optional[str] = None
+    duration_seconds: float = 0.0
+    tokens_used: int = 0
+    cost_estimate: float = 0.0
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    dry_run: bool = False
 
     @property
     def success(self) -> bool:
-        """Return True if the batch item was processed successfully."""
+        """Whether the item was processed successfully."""
         return self.error is None
 
     @property
-    def title(self) -> str:
-        """Return article title or a truncated source identifier."""
-        if self.article and self.article.title:
-            return self.article.title
-        # Truncate long URLs/paths for display
-        if len(self.source) > 60:
-            return "..." + self.source[-57:]
-        return self.source
+    def summary_text(self) -> Optional[str]:
+        """Convenience accessor for summary text."""
+        if self.summary:
+            return self.summary.summary_text
+        return None
