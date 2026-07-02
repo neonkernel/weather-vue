@@ -1,187 +1,126 @@
-"""
-Core summarisation logic: fetch → chunk → LLM → cache.
-"""
+"""Core summarization logic."""
+
 from __future__ import annotations
 
-import logging
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Optional, TYPE_CHECKING
 
-from .cache import SummaryCache
-from .exceptions import SummarizerError
-from .models import Summary
-from . import ui
+from .models import Article, Summary
+from .logger import get_logger
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from .config import Config
+
+logger = get_logger(__name__)
 
 
-def summarize(
-    url: str,
-    raw_text: Optional[str] = None,
-    style: str = "concise",
-    provider: str = "openai",
-    model: str = "gpt-4o-mini",
-    cache: Optional[SummaryCache] = None,
-) -> Tuple[Summary, bool]:
-    """
-    Summarise an article located at *url*.
+def _fetch_url(url: str) -> Article:
+    """Fetch and parse an article from a URL."""
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+    except ImportError as e:
+        raise ImportError(f"Missing dependency for URL fetching: {e}. Install requests and beautifulsoup4.") from e
 
-    Args:
-        url:       Article URL (used for fetching and as cache-key component).
-        raw_text:  Pre-fetched plain text.  When supplied, fetching is skipped.
-        style:     Summarisation style name.
-        provider:  LLM provider identifier.
-        model:     LLM model identifier.
-        cache:     :class:`SummaryCache` instance; pass ``None`` to skip caching.
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; ArticleSummarizer/1.0)"}
+    response = requests.get(url, headers=headers, timeout=30)
+    response.raise_for_status()
 
-    Returns:
-        A tuple ``(Summary, from_cache)`` where *from_cache* is ``True`` when
-        the result was served from the cache.
-    """
-    # ------------------------------------------------------------------ cache check
-    cache_key: Optional[str] = None
-    if cache is not None:
-        cache_key = cache.make_key(url=url, style=style, provider=provider, model=model)
-        cached = cache.get(cache_key)
-        if cached is not None:
-            logger.info("Cache hit for %s", url)
-            return cached, True
+    soup = BeautifulSoup(response.text, "html.parser")
 
-    # ------------------------------------------------------------------ fetch
-    if raw_text is None:
-        with ui.spinner(f"Fetching {url}…"):
-            raw_text = _fetch(url)
+    # Extract title
+    title_tag = soup.find("title")
+    title = title_tag.get_text(strip=True) if title_tag else url
 
-    # ------------------------------------------------------------------ chunk & summarise
-    chunks = _split_into_chunks(raw_text)
-    logger.debug("Article split into %d chunk(s)", len(chunks))
+    # Extract body text
+    for tag in soup(["script", "style", "nav", "footer", "header"]):
+        tag.decompose()
 
-    chunk_summaries: list[str] = []
+    text = soup.get_text(separator="\n", strip=True)
+    word_count = len(text.split())
 
-    with ui.chunk_progress(total=len(chunks), description="Summarising chunks") as advance:
-        llm = _get_llm_client(provider, model)
-        for chunk in chunks:
-            prompt = _build_prompt(chunk, style)
-            try:
-                result = llm.complete(prompt)
-            except Exception as exc:
-                raise SummarizerError(f"LLM completion failed: {exc}") from exc
-            chunk_summaries.append(result)
-            advance()
+    return Article(url=url, title=title, text=text, word_count=word_count, source_type="url")
 
-    # ------------------------------------------------------------------ merge
-    if len(chunk_summaries) == 1:
-        final_text = chunk_summaries[0]
+
+def _read_file(path: Path) -> Article:
+    """Read an article from a local file (.txt or .html)."""
+    content = path.read_text(encoding="utf-8")
+
+    if path.suffix.lower() == ".html":
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(content, "html.parser")
+            title_tag = soup.find("title")
+            title = title_tag.get_text(strip=True) if title_tag else path.stem
+            for tag in soup(["script", "style"]):
+                tag.decompose()
+            text = soup.get_text(separator="\n", strip=True)
+            source_type = "html"
+        except ImportError:
+            title = path.stem
+            text = content
+            source_type = "html"
     else:
-        with ui.spinner("Merging chunk summaries…"):
-            final_text = _merge_summaries(chunk_summaries, style, provider, model)
+        lines = content.splitlines()
+        title = lines[0].strip() if lines else path.stem
+        text = content
+        source_type = "file"
 
-    # ------------------------------------------------------------------ build Summary
-    title = _extract_title(raw_text)
-    summary = Summary(
-        url=url if url != "<stdin>" else None,
+    word_count = len(text.split())
+    return Article(
+        url=str(path),
         title=title,
-        text=final_text,
-        style=style,
-        provider=provider,
-        model=model,
-    )
-
-    # ------------------------------------------------------------------ cache store
-    if cache is not None and cache_key is not None:
-        cache.set(cache_key, summary)
-        logger.info("Stored summary in cache (key=%s…)", cache_key[:12])
-
-    return summary, False
-
-
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
-
-def _fetch(url: str) -> str:
-    """Fetch and extract plain text from *url*."""
-    try:
-        from .ingestion import fetch_article
-        return fetch_article(url)
-    except ImportError:
-        # Minimal fallback using urllib
-        import urllib.request
-        with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310
-            html = resp.read().decode("utf-8", errors="replace")
-        return _strip_html(html)
-
-
-def _strip_html(html: str) -> str:
-    """Very basic HTML-to-text fallback."""
-    import re
-    text = re.sub(r"<[^>]+>", " ", html)
-    text = re.sub(r"&[a-z]+;", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-_CHUNK_SIZE = 3_000  # characters
-
-
-def _split_into_chunks(text: str, chunk_size: int = _CHUNK_SIZE) -> list[str]:
-    """Split *text* into roughly equal chunks of *chunk_size* characters."""
-    if len(text) <= chunk_size:
-        return [text]
-
-    chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
-        # Try to break on a sentence boundary
-        if end < len(text):
-            boundary = text.rfind(".", start, end)
-            if boundary > start:
-                end = boundary + 1
-        chunks.append(text[start:end].strip())
-        start = end
-
-    return [c for c in chunks if c]
-
-
-def _build_prompt(text: str, style: str) -> str:
-    from .styles import STYLES
-
-    style_instruction = STYLES.get(style, STYLES["concise"])
-    return (
-        f"Summarise the following article text using the '{style}' style.\n"
-        f"Style instruction: {style_instruction}\n\n"
-        f"Article text:\n{text}\n\n"
-        f"Summary:"
+        text=text,
+        word_count=word_count,
+        source_type=source_type,
     )
 
 
-def _merge_summaries(summaries: list[str], style: str, provider: str, model: str) -> str:
-    """Ask the LLM to merge multiple chunk summaries into one coherent summary."""
-    combined = "\n\n---\n\n".join(summaries)
-    prompt = (
-        f"The following are partial summaries of a long article. "
-        f"Merge them into a single coherent summary using the '{style}' style.\n\n"
-        f"{combined}\n\nMerged summary:"
-    )
-    llm = _get_llm_client(provider, model)
-    try:
-        return llm.complete(prompt)
-    except Exception as exc:
-        raise SummarizerError(f"LLM merge failed: {exc}") from exc
+def _call_llm(article: Article, style: str, model: Optional[str], config) -> Summary:
+    """Call the configured LLM to summarize the article."""
+    from .llm import get_llm_client
+
+    client = get_llm_client(config, model=model)
+    result = client.summarize(article=article, style=style)
+    return result
 
 
-def _extract_title(text: str) -> Optional[str]:
-    """Best-effort title extraction: first non-empty line."""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped:
-            return stripped[:120]
-    return None
+def summarize_source(
+    source: str,
+    style: str = "default",
+    model: Optional[str] = None,
+    config=None,
+    dry_run: bool = False,
+) -> tuple[Article, Summary]:
+    """
+    Fetch and summarize a source (URL or file path).
+    Returns (Article, Summary).
+    """
+    from urllib.parse import urlparse
 
+    parsed = urlparse(source)
+    if parsed.scheme in ("http", "https"):
+        article = _fetch_url(source)
+    else:
+        path = Path(source)
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {source}")
+        article = _read_file(path)
 
-def _get_llm_client(provider: str, model: str):  # type: ignore[return]
-    """Return the appropriate LLM client for *provider*."""
-    try:
-        from .llm.client import LLMClient
-        return LLMClient(provider=provider, model=model)
-    except ImportError as exc:  # pragma: no cover
-        raise SummarizerError(f"LLM client not available: {exc}") from exc
+    if dry_run:
+        summary = Summary(
+            text="[DRY RUN - LLM not called]",
+            style=style,
+            model=model or "dry-run",
+            tokens_used=None,
+            cost_estimate=None,
+            dry_run=True,
+        )
+        return article, summary
+
+    if config is None:
+        from .config import load_config
+        config = load_config()
+
+    summary = _call_llm(article=article, style=style, model=model, config=config)
+    return article, summary

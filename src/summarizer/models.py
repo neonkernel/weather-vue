@@ -1,42 +1,57 @@
-"""
-Data models for the summariser.
-"""
+"""Data models for the summarizer."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Optional
-import json
+
+
+@dataclass
+class Article:
+    """Represents a fetched and parsed article."""
+
+    url: str
+    title: str
+    text: str
+    word_count: int = 0
+    source_type: str = "url"  # "url" | "file" | "html"
 
 
 @dataclass
 class Summary:
-    """Represents a completed article summary."""
+    """Represents an AI-generated summary of an article."""
 
     text: str
-    style: str
-    provider: str
-    model: str
-    url: Optional[str] = None
-    title: Optional[str] = None
+    style: str = "default"
+    model: str = ""
+    tokens_used: Optional[int] = None
+    cost_estimate: Optional[float] = None
+    dry_run: bool = False
 
-    # ------------------------------------------------------------------
-    # Serialisation helpers (used by cache)
-    # ------------------------------------------------------------------
+
+@dataclass
+class BatchResult:
+    """Result of processing a single source in a batch operation."""
+
+    source: str
+    article: Optional[Article]
+    summary: Optional[Summary]
+    error: Optional[str]
+    duration_seconds: float
+    tokens_used: Optional[int] = None
+    cost_estimate: Optional[float] = None
 
     @property
-    def __dict__(self) -> dict:  # type: ignore[override]
-        return {
-            "text": self.text,
-            "style": self.style,
-            "provider": self.provider,
-            "model": self.model,
-            "url": self.url,
-            "title": self.title,
-        }
+    def success(self) -> bool:
+        """Return True if the batch item was processed successfully."""
+        return self.error is None
 
-    def to_json(self) -> str:
-        return json.dumps(self.__dict__)
-
-    @classmethod
-    def from_json(cls, data: str) -> "Summary":
-        return cls(**json.loads(data))
+    @property
+    def title(self) -> str:
+        """Return article title or a truncated source identifier."""
+        if self.article and self.article.title:
+            return self.article.title
+        # Truncate long URLs/paths for display
+        if len(self.source) > 60:
+            return "..." + self.source[-57:]
+        return self.source

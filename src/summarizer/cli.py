@@ -1,178 +1,206 @@
-"""
-Command-line interface for the article summariser.
-"""
+"""CLI entry point for the summarizer tool."""
+
 from __future__ import annotations
 
-import argparse
-import logging
 import sys
 from pathlib import Path
 from typing import Optional
 
-from .cache import SummaryCache
+import click
+from rich.console import Console
+
+from .logger import get_logger
 from .config import load_config
-from .exceptions import SummarizerError
-from .styles import STYLES
-from . import ui
+from .summarize import summarize_source
+
+console = Console()
+logger = get_logger(__name__)
 
 
-logger = logging.getLogger(__name__)
+def _build_summarize_fn(style: str, model: Optional[str], config):
+    """Build a summarize function that captures style/model context."""
+    from .summarize import summarize_source
+
+    def fn(source: str, dry_run: bool) -> tuple:
+        return summarize_source(
+            source=source,
+            style=style,
+            model=model,
+            config=config,
+            dry_run=dry_run,
+        )
+
+    return fn
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="summarizer",
-        description="Summarise web articles using LLMs.",
-    )
-
-    # Positional
-    parser.add_argument(
-        "url",
-        nargs="?",
-        help="URL of the article to summarise (omit to read from stdin).",
-    )
-
-    # Model / provider selection
-    parser.add_argument(
-        "--provider",
-        default=None,
-        help="LLM provider to use (openai, anthropic, gemini, ollama, …).",
-    )
-    parser.add_argument(
-        "--model",
-        default=None,
-        help="Model name/ID to use.",
-    )
-
-    # Style
-    parser.add_argument(
-        "--style",
-        default="concise",
-        choices=list(STYLES.keys()),
-        help="Summarisation style (default: concise).",
-    )
-
-    # Cache control
-    cache_group = parser.add_mutually_exclusive_group()
-    cache_group.add_argument(
-        "--no-cache",
-        action="store_true",
-        default=False,
-        help="Bypass the cache: always call the LLM and do not store the result.",
-    )
-    cache_group.add_argument(
-        "--clear-cache",
-        action="store_true",
-        default=False,
-        help="Clear the entire cache before running.",
-    )
-
-    # UI control
-    parser.add_argument(
-        "--quiet",
-        "-q",
-        action="store_true",
-        default=False,
-        help="Suppress all UI output; only the summary text is written to stdout.",
-    )
-
-    # Output
-    parser.add_argument(
-        "--output",
-        "-o",
-        type=Path,
-        default=None,
-        help="Write the summary to a file instead of stdout.",
-    )
-
-    # Debug / verbosity
-    parser.add_argument(
-        "--verbose",
-        "-v",
-        action="store_true",
-        default=False,
-        help="Enable verbose logging.",
-    )
-
-    return parser
+@click.group()
+@click.version_option()
+def cli():
+    """Article summarizer powered by LLMs."""
+    pass
 
 
-def _configure_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.WARNING
-    logging.basicConfig(
-        format="%(levelname)s %(name)s: %(message)s",
-        level=level,
-        stream=sys.stderr,
-    )
-
-
-def main(argv: Optional[list[str]] = None) -> int:
-    """Entry point. Returns an exit code."""
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    _configure_logging(args.verbose)
-    ui.set_quiet(args.quiet)
-
-    # ------------------------------------------------------------------ cache
-    cache = SummaryCache()
-
-    if args.clear_cache:
-        count = cache.clear()
-        ui.print_status(f"Cleared {count} entries from the summary cache.", style="bold yellow")
-        if args.url is None:
-            return 0
-
-    # ------------------------------------------------------------------ config
+@cli.command("summarize")
+@click.argument("source")
+@click.option("--style", default="default", show_default=True, help="Summary style.")
+@click.option("--model", default=None, help="LLM model override.")
+@click.option("--output", default=None, type=click.Path(), help="Save summary to file.")
+@click.option("--dry-run", is_flag=True, default=False, help="Fetch only, skip LLM call.")
+def summarize_cmd(source: str, style: str, model: Optional[str], output: Optional[str], dry_run: bool):
+    """Summarize a single article from a URL or file path."""
     try:
         config = load_config()
-    except SummarizerError as exc:
-        ui.print_error(str(exc))
-        return 1
+        article, summary = summarize_source(
+            source=source,
+            style=style,
+            model=model,
+            config=config,
+            dry_run=dry_run,
+        )
+        if dry_run:
+            console.print(f"[yellow]DRY RUN:[/yellow] Fetched [bold]{article.title!r}[/bold] ({article.word_count} words). LLM not called.")
+            return
 
-    provider_name: str = args.provider or config.default_provider
-    model_name: str = args.model or config.default_model
+        console.print(f"\n[bold cyan]{article.title}[/bold cyan]")
+        console.print(f"[dim]{article.url}[/dim]\n")
+        console.print(summary.text)
 
-    # ------------------------------------------------------------------ input
-    if args.url:
-        url = args.url
-        raw_text: Optional[str] = None
-    else:
-        # Read from stdin
-        ui.print_status("Reading from stdin…", style="dim")
-        raw_text = sys.stdin.read()
-        url = "<stdin>"
+        if summary.tokens_used:
+            console.print(f"\n[dim]Tokens used: {summary.tokens_used}[/dim]")
 
-    # ------------------------------------------------------------------ summarise
-    from .summarize import summarize
+        if output:
+            out_path = Path(output)
+            out_path.write_text(summary.text, encoding="utf-8")
+            console.print(f"\n[green]Summary saved to:[/green] {out_path}")
+
+    except Exception as exc:
+        console.print(f"[red]Error:[/red] {exc}", err=True)
+        logger.exception("summarize command failed")
+        sys.exit(1)
+
+
+@cli.command("batch")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.option(
+    "--workers",
+    default=4,
+    show_default=True,
+    type=int,
+    help="Number of concurrent worker threads.",
+)
+@click.option(
+    "--output",
+    default=None,
+    type=click.Path(),
+    help="Output file path for results (CSV, JSON, or JSONL).",
+)
+@click.option(
+    "--format",
+    "output_format",
+    default="csv",
+    show_default=True,
+    type=click.Choice(["csv", "json", "jsonl"], case_sensitive=False),
+    help="Output file format when --output is specified.",
+)
+@click.option("--style", default="default", show_default=True, help="Summary style for all items.")
+@click.option("--model", default=None, help="LLM model override for all items.")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Fetch and validate sources without calling the LLM.",
+)
+def batch_cmd(
+    input_path: str,
+    workers: int,
+    output: Optional[str],
+    output_format: str,
+    style: str,
+    model: Optional[str],
+    dry_run: bool,
+):
+    """
+    Summarize multiple articles from a URL list file or directory.
+
+    INPUT_PATH can be:
+    \b
+      - A .txt file with one URL or file path per line
+      - A directory containing .txt or .html files
+
+    Examples:
+    \b
+      summarizer batch urls.txt --workers 8 --output results.csv
+      summarizer batch articles/ --dry-run
+      summarizer batch urls.txt --output results.jsonl --format jsonl
+    """
+    from .batch import BatchProcessor, collect_sources
+    from .reporter import print_batch_summary, export_results
+
+    input_path_obj = Path(input_path)
 
     try:
-        with ui.spinner("Fetching and summarising…"):
-            summary, from_cache = summarize(
-                url=url,
-                raw_text=raw_text,
-                style=args.style,
-                provider=provider_name,
-                model=model_name,
-                cache=cache if not args.no_cache else None,
-            )
-    except SummarizerError as exc:
-        ui.print_error(str(exc))
-        return 1
+        config = load_config()
+    except Exception as exc:
+        console.print(f"[red]Failed to load config:[/red] {exc}", err=True)
+        sys.exit(1)
+
+    # Collect sources
+    try:
+        sources = collect_sources(input_path_obj)
+    except Exception as exc:
+        console.print(f"[red]Failed to collect sources:[/red] {exc}", err=True)
+        sys.exit(1)
+
+    if not sources:
+        console.print("[yellow]No sources found. Nothing to process.[/yellow]")
+        sys.exit(0)
+
+    console.print(
+        f"\n[bold cyan]Batch Processing[/bold cyan] — "
+        f"{len(sources)} source(s), {workers} worker(s)"
+        + (" [yellow][DRY RUN][/yellow]" if dry_run else "")
+    )
+
+    summarize_fn = _build_summarize_fn(style=style, model=model, config=config)
+
+    def progress_callback(source: str, status: str) -> None:
+        icon = "[green]✓[/green]" if status == "success" else "[red]✗[/red]"
+        short = source if len(source) <= 60 else "..." + source[-57:]
+        console.print(f"  {icon} {short} [dim]({status})[/dim]")
+
+    processor = BatchProcessor(
+        summarize_fn=summarize_fn,
+        workers=workers,
+        dry_run=dry_run,
+        progress_callback=progress_callback,
+    )
+
+    try:
+        results = processor.run(sources)
     except KeyboardInterrupt:
-        ui.print_error("Interrupted.")
-        return 130
+        console.print("\n[yellow]Batch interrupted by user.[/yellow]")
+        sys.exit(130)
 
-    # ------------------------------------------------------------------ output
-    if args.output:
-        args.output.write_text(summary.text, encoding="utf-8")
-        ui.print_status(f"Summary written to {args.output}", style="bold green")
-    else:
-        ui.print_summary(summary, from_cache=from_cache)
+    # Print Rich table summary
+    print_batch_summary(results, dry_run=dry_run)
 
-    cache.close()
-    return 0
+    # Export to file if requested
+    if output:
+        try:
+            export_results(results, Path(output), fmt=output_format)
+        except Exception as exc:
+            console.print(f"[red]Failed to write output:[/red] {exc}", err=True)
+            sys.exit(1)
+
+    # Exit with non-zero if any failures
+    failures = [r for r in results if not r.success]
+    if failures:
+        sys.exit(1)
+
+
+def main():
+    cli()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

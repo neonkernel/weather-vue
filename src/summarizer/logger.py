@@ -1,16 +1,18 @@
 """Logging utilities for the summarizer package."""
 
+from __future__ import annotations
+
 import logging
 import sys
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Return a logger for *name*, configuring a default handler if needed."""
+    """Get a configured logger for the given module name."""
     logger = logging.getLogger(name)
-    if not logger.handlers and not logging.getLogger().handlers:
+    if not logger.handlers:
         handler = logging.StreamHandler(sys.stderr)
         handler.setFormatter(
-            logging.Formatter("%(levelname)s %(name)s: %(message)s")
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         )
         logger.addHandler(handler)
     return logger

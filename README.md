@@ -1,17 +1,16 @@
 # Article Summarizer
 
-A command-line tool that fetches an article from a URL and produces an AI-powered summary in a variety of styles and output formats.
-
----
+A CLI tool for summarizing articles using Large Language Models (LLMs).
 
 ## Features
 
-- **Five summary styles** — bullets, brief, detailed, ELI5, and TL;DR
-- **Three output formats** — plain text, Markdown, and JSON
-- **File output** — write directly to a file instead of stdout
-- Configurable LLM model via `--model` or a config file
-
----
+- Summarize articles from URLs or local files
+- Multiple summary styles (default, bullet, tldr, academic)
+- Batch processing of multiple articles concurrently
+- CSV, JSON, and JSONL export of batch results
+- Dry-run mode for validation without LLM calls
+- Token usage and cost estimation
+- Rich terminal output
 
 ## Installation
 
@@ -19,150 +18,114 @@ A command-line tool that fetches an article from a URL and produces an AI-powere
 pip install -e .
 ```
 
----
+## Usage
 
-## Quick Start
-
-```bash
-# Brief summary (default) printed as plain text
-summarizer https://example.com/article
-```
-
----
-
-## CLI Reference
-
-```
-Usage: summarizer [OPTIONS] URL
-
-  Summarize the article at URL and print the result.
-
-Options:
-  --style    [bullets|brief|detailed|eli5|tldr]
-                  Summary style. Default: brief
-  --format   [text|markdown|json]
-                  Output format. Default: text
-  --output   PATH
-                  Write output to this file instead of stdout.
-  --model    TEXT
-                  Override the LLM model from config.
-  --config   PATH
-                  Path to a custom configuration file.
-  --verbose       Enable verbose/debug logging.
-  --version       Show the version and exit.
-  --help          Show this message and exit.
-```
-
----
-
-## Summary Styles
-
-| Style      | Flag value  | Description                                      |
-|------------|-------------|--------------------------------------------------|
-| Brief      | `brief`     | Short executive brief (2–3 paragraphs). Default. |
-| Bullets    | `bullets`   | Key takeaways as a bullet-point list             |
-| Detailed   | `detailed`  | Comprehensive analysis with labelled sections    |
-| ELI5       | `eli5`      | Explain Like I'm 5 — simple language, analogies  |
-| TL;DR      | `tldr`      | Single sentence capturing the essence            |
-
----
-
-## Output Formats
-
-| Format     | Flag value  | Description                                           |
-|------------|-------------|-------------------------------------------------------|
-| Plain text | `text`      | Clean readable text. Default.                         |
-| Markdown   | `markdown`  | Title header, metadata section, and formatted body    |
-| JSON       | `json`      | Full JSON object including all metadata fields        |
-
-### Markdown output structure
-
-```markdown
-# Article Title
-
-## Metadata
-
-- **Source:** https://example.com/article
-- **Model:** gpt-4o
-- **Word count:** 312
-- **Style:** brief
-- **Generated:** 2026-06-26 12:00:00 UTC
-
-## Summary
-
-The summary body text appears here …
-```
-
-### JSON output structure
-
-```json
-{
-  "content": "The summary body text …",
-  "title": "Article Title",
-  "source_url": "https://example.com/article",
-  "model": "gpt-4o",
-  "word_count": 312,
-  "style": "brief",
-  "created_at": "2026-06-26T12:00:00"
-}
-```
-
----
-
-## Examples
+### Single Article
 
 ```bash
-# 1. Default: brief summary, plain text
-summarizer https://example.com/article
+# Summarize a URL
+summarizer summarize https://example.com/article
 
-# 2. Bullet-point summary in Markdown
-summarizer https://example.com/article --style bullets --format markdown
+# Summarize a local file
+summarizer summarize article.txt
 
-# 3. Detailed summary saved to a Markdown file
-summarizer https://example.com/article --style detailed --format markdown --output summary.md
+# Choose a style
+summarizer summarize https://example.com/article --style bullet
 
-# 4. ELI5 explanation as plain text
-summarizer https://example.com/article --style eli5
+# Save output
+summarizer summarize https://example.com/article --output summary.txt
 
-# 5. One-sentence TL;DR in Markdown
-summarizer https://example.com/article --style tldr --format markdown
-
-# 6. Full JSON summary (all metadata included)
-summarizer https://example.com/article --style brief --format json
-
-# 7. JSON summary written to a file
-summarizer https://example.com/article --style detailed --format json --output summary.json
-
-# 8. Use a specific model
-summarizer https://example.com/article --model gpt-4o-mini
-
-# 9. Combine a custom model with a custom style and Markdown output
-summarizer https://example.com/article --style bullets --format markdown --model claude-3-5-sonnet-20241022
+# Dry run (fetch without calling LLM)
+summarizer summarize https://example.com/article --dry-run
 ```
 
----
+### Batch Processing
+
+The `batch` subcommand lets you summarize multiple articles concurrently from a URL list file or a directory of text/HTML files.
+
+```bash
+# Summarize URLs from a list file (one URL per line)
+summarizer batch urls.txt
+
+# Process a directory of .txt and .html files
+summarizer batch articles/
+
+# Use 8 concurrent workers
+summarizer batch urls.txt --workers 8
+
+# Export results to CSV
+summarizer batch urls.txt --output results.csv --format csv
+
+# Export results to JSON Lines
+summarizer batch urls.txt --output results.jsonl --format jsonl
+
+# Export results to JSON
+summarizer batch urls.txt --output results.json --format json
+
+# Dry run: fetch and validate all sources without calling LLM
+summarizer batch urls.txt --dry-run
+
+# Combine options
+summarizer batch articles/ --workers 4 --output report.csv --format csv --style bullet
+```
+
+#### URL List File Format
+
+Create a plain text file with one URL or file path per line. Lines starting with `#` are treated as comments and ignored.
+
+```text
+# My article list
+https://example.com/article-one
+https://example.com/article-two
+/path/to/local/article.txt
+```
+
+#### Batch Output
+
+After processing, a Rich table is displayed showing:
+
+- Status (success/failure) for each item
+- Processing duration per item
+- Token usage per item
+- Error messages for failed items
+
+Aggregate statistics shown at the end:
+
+- Total items processed
+- Successes and failures
+- Total processing time
+- Total token usage
+- Estimated cost
+
+#### Exit Codes
+
+- `0` — All items processed successfully
+- `1` — One or more items failed (other items still processed)
+- `130` — Batch interrupted by Ctrl+C
 
 ## Configuration
 
-Create a `config.toml` (or pass `--config /path/to/config.toml`) to set defaults:
+Set the following environment variables:
 
-```toml
-model = "gpt-4o"
-verbose = false
-```
-
----
+| Variable | Description | Default |
+|---|---|---|
+| `OPENAI_API_KEY` | OpenAI API key | — |
+| `ANTHROPIC_API_KEY` | Anthropic API key | — |
+| `SUMMARIZER_MODEL` | Default LLM model | `gpt-3.5-turbo` |
+| `SUMMARIZER_STYLE` | Default summary style | `default` |
+| `SUMMARIZER_MAX_TOKENS` | Max tokens per summary | `1024` |
+| `SUMMARIZER_TEMPERATURE` | LLM temperature | `0.3` |
+| `SUMMARIZER_CACHE_DIR` | Cache directory | — |
 
 ## Development
 
 ```bash
-# Install dev dependencies
+# Install development dependencies
 pip install -e ".[dev]"
 
 # Run tests
-pytest
+pytest tests/
 
-# Run a specific test file
-pytest tests/test_formatter.py -v
-pytest tests/test_styles.py -v
+# Run batch tests only
+pytest tests/test_batch.py -v
 ```
