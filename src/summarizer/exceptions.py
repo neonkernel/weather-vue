@@ -1,29 +1,25 @@
-"""Custom exceptions for the summarizer package."""
+"""Custom exceptions for the summarizer."""
 
 
 class SummarizerError(Exception):
-    """Base exception for summarizer errors."""
+    """Base exception for all summarizer errors."""
 
 
-class FetchError(SummarizerError):
-    """Raised when fetching an article fails."""
-
-
-class ParseError(SummarizerError):
-    """Raised when parsing article content fails."""
+class IngestionError(SummarizerError):
+    """Raised when article ingestion fails."""
 
 
 class LLMError(SummarizerError):
-    """Raised when the LLM API call fails."""
+    """Raised when the LLM call fails."""
 
 
 class ConfigError(SummarizerError):
-    """Raised for configuration errors."""
+    """Raised for configuration problems."""
 
 
-class RateLimitError(LLMError):
-    """Raised when the LLM rate limit is exceeded."""
+class RateLimitError(SummarizerError):
+    """Raised when a rate limit is exceeded."""
 
 
-class BatchError(SummarizerError):
-    """Raised for batch processing errors."""
+class CacheError(SummarizerError):
+    """Raised for cache-related errors."""

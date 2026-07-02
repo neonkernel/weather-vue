@@ -1,283 +1,248 @@
-"""Batch summary reporting: Rich tables, CSV, and JSON Lines output."""
+"""Generate batch summary reports as Rich table, CSV, or JSON Lines."""
 
 import csv
 import json
 import sys
-import logging
 from pathlib import Path
 from typing import List, Optional
-from datetime import datetime, timezone
 
 from .models import BatchResult
 
-logger = logging.getLogger(__name__)
-
-# Cost per 1K tokens (approximate defaults — override via config if needed)
-DEFAULT_COST_PER_1K_TOKENS = 0.002
-
-
-def _format_duration(seconds: float) -> str:
-    """Format duration in human-readable form."""
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    minutes = int(seconds // 60)
-    secs = seconds % 60
-    return f"{minutes}m {secs:.0f}s"
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich import box
+    _RICH_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _RICH_AVAILABLE = False
 
 
-def _truncate(text: str, max_len: int = 60) -> str:
-    """Truncate text to max_len characters."""
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 3] + "..."
+# Cost per 1 000 tokens (rough defaults; override via config if needed)
+_COST_PER_1K_TOKENS = 0.002
 
 
-def compute_batch_stats(results: List[BatchResult]) -> dict:
+def _estimate_cost(tokens: int) -> float:
+    return round(tokens / 1000 * _COST_PER_1K_TOKENS, 6)
+
+
+class BatchReporter:
     """
-    Compute aggregate statistics from a list of BatchResults.
+    Produces human-readable and machine-readable summaries of batch runs.
 
-    Returns:
-        Dictionary with keys: total, success_count, failure_count,
-        total_duration_seconds, total_tokens, total_cost, avg_duration_seconds.
+    Parameters
+    ----------
+    results:
+        The list of :class:`BatchResult` objects from a batch run.
+    console:
+        Optional Rich Console instance (created automatically if not given).
     """
-    total = len(results)
-    successes = [r for r in results if r.success]
-    failures = [r for r in results if not r.success]
-    total_tokens = sum(r.tokens_used for r in results)
-    total_cost = sum(r.cost_estimate for r in results)
-    total_duration = sum(r.duration_seconds for r in results)
-    avg_duration = total_duration / total if total > 0 else 0.0
 
-    return {
-        "total": total,
-        "success_count": len(successes),
-        "failure_count": len(failures),
-        "total_duration_seconds": total_duration,
-        "avg_duration_seconds": avg_duration,
-        "total_tokens": total_tokens,
-        "total_cost": total_cost,
-    }
+    def __init__(
+        self,
+        results: List[BatchResult],
+        console: Optional["Console"] = None,
+    ):
+        self.results = results
+        self._console = console
 
+    @property
+    def console(self) -> "Console":
+        if self._console is None:
+            if _RICH_AVAILABLE:
+                from rich.console import Console as _Console
+                self._console = _Console()
+            else:
+                raise RuntimeError("rich is not installed")
+        return self._console
 
-def print_rich_table(results: List[BatchResult], dry_run: bool = False) -> None:
-    """
-    Print a Rich-formatted table summarizing batch results.
+    # ------------------------------------------------------------------
+    # Aggregate stats
+    # ------------------------------------------------------------------
 
-    Args:
-        results: List of BatchResult objects.
-        dry_run: Whether this was a dry-run batch.
-    """
-    try:
-        from rich.console import Console
-        from rich.table import Table
-        from rich import box
-        from rich.text import Text
+    @property
+    def total(self) -> int:
+        return len(self.results)
 
-        console = Console()
-        stats = compute_batch_stats(results)
+    @property
+    def successes(self) -> int:
+        return sum(1 for r in self.results if r.success)
 
-        mode_label = "[DRY RUN] " if dry_run else ""
-        console.print(
-            f"\n[bold cyan]{mode_label}Batch Processing Results[/bold cyan]",
-            justify="center",
-        )
+    @property
+    def failures(self) -> int:
+        return sum(1 for r in self.results if not r.success)
+
+    @property
+    def total_tokens(self) -> int:
+        return sum(r.tokens_used for r in self.results)
+
+    @property
+    def total_cost(self) -> float:
+        total = sum(r.cost_estimate for r in self.results)
+        if total == 0 and self.total_tokens:
+            total = _estimate_cost(self.total_tokens)
+        return round(total, 6)
+
+    @property
+    def total_duration(self) -> float:
+        return round(sum(r.duration_seconds for r in self.results), 2)
+
+    # ------------------------------------------------------------------
+    # Rich table
+    # ------------------------------------------------------------------
+
+    def print_table(self) -> None:
+        """Print a Rich table to stdout."""
+        if not _RICH_AVAILABLE:
+            self._print_plain()
+            return
 
         table = Table(
+            title="Batch Processing Results",
             box=box.ROUNDED,
-            show_header=True,
-            header_style="bold magenta",
-            expand=True,
+            show_lines=True,
         )
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Source", style="cyan", no_wrap=False, max_width=60)
+        table.add_column("Status", width=9)
+        table.add_column("Tokens", justify="right", width=8)
+        table.add_column("Cost ($)", justify="right", width=10)
+        table.add_column("Duration (s)", justify="right", width=12)
+        table.add_column("Error", style="red", no_wrap=False, max_width=40)
 
-        table.add_column("#", style="dim", width=4, justify="right")
-        table.add_column("Source", min_width=30)
-        table.add_column("Status", width=10, justify="center")
-        table.add_column("Duration", width=10, justify="right")
-        table.add_column("Tokens", width=8, justify="right")
-        table.add_column("Cost", width=10, justify="right")
-        table.add_column("Title / Error", min_width=30)
-
-        # Sort results: successes first, then failures
-        sorted_results = sorted(results, key=lambda r: (not r.success, r.source))
-
-        for idx, result in enumerate(sorted_results, start=1):
-            status_text = (
-                Text("✓ OK", style="green bold")
-                if result.success
-                else Text("✗ FAIL", style="red bold")
+        for idx, result in enumerate(self.results, start=1):
+            status = "[green]✓ OK[/green]" if result.success else "[red]✗ FAIL[/red]"
+            cost = (
+                f"{result.cost_estimate:.6f}"
+                if result.cost_estimate
+                else f"{_estimate_cost(result.tokens_used):.6f}"
             )
-
-            duration_str = _format_duration(result.duration_seconds)
-            tokens_str = str(result.tokens_used) if result.tokens_used else "-"
-            cost_str = f"${result.cost_estimate:.4f}" if result.cost_estimate else "-"
-
-            if result.success:
-                title_or_error = _truncate(
-                    result.article.title if result.article else result.source
-                )
-                title_cell = Text(title_or_error, style="white")
-            else:
-                title_cell = Text(_truncate(result.error or "Unknown error"), style="red")
-
-            source_display = _truncate(result.source, 55)
-
             table.add_row(
                 str(idx),
-                source_display,
-                status_text,
-                duration_str,
-                tokens_str,
-                cost_str,
-                title_cell,
+                result.source,
+                status,
+                str(result.tokens_used) if result.tokens_used else "-",
+                cost if result.tokens_used else "-",
+                f"{result.duration_seconds:.2f}",
+                result.error or "",
             )
 
-        console.print(table)
-
-        # Summary stats footer
-        console.print()
-        console.print(
-            f"[bold]Summary:[/bold] "
-            f"[green]{stats['success_count']} succeeded[/green] | "
-            f"[red]{stats['failure_count']} failed[/red] | "
-            f"[cyan]{stats['total']} total[/cyan]"
+        self.console.print(table)
+        self.console.print(
+            f"\n[bold]Summary:[/bold] {self.total} items | "
+            f"[green]{self.successes} succeeded[/green] | "
+            f"[red]{self.failures} failed[/red] | "
+            f"Total tokens: {self.total_tokens} | "
+            f"Est. cost: ${self.total_cost:.6f} | "
+            f"Wall time: {self.total_duration}s"
         )
-        console.print(
-            f"[bold]Tokens:[/bold] {stats['total_tokens']:,} total | "
-            f"[bold]Est. Cost:[/bold] ${stats['total_cost']:.4f} | "
-            f"[bold]Avg Duration:[/bold] {_format_duration(stats['avg_duration_seconds'])}"
-        )
-        console.print()
 
-    except ImportError:
-        # Fallback to plain-text output if Rich is not available
-        _print_plain_table(results, dry_run)
-
-
-def _print_plain_table(results: List[BatchResult], dry_run: bool = False) -> None:
-    """Plain-text fallback for environments without Rich."""
-    stats = compute_batch_stats(results)
-    mode = "[DRY RUN] " if dry_run else ""
-    print(f"\n{mode}Batch Processing Results")
-    print("=" * 80)
-    print(f"{'#':<4} {'Status':<8} {'Duration':<10} {'Tokens':<8} {'Source'}")
-    print("-" * 80)
-
-    for idx, result in enumerate(results, start=1):
-        status = "OK" if result.success else "FAIL"
+    def _print_plain(self) -> None:
+        """Fallback plain-text summary when Rich is not available."""
+        print("=" * 60)
+        print("Batch Processing Results")
+        print("=" * 60)
+        for idx, r in enumerate(self.results, start=1):
+            status = "OK" if r.success else "FAIL"
+            print(
+                f"{idx:3}. [{status}] {r.source} "
+                f"| {r.duration_seconds:.2f}s "
+                f"| tokens={r.tokens_used}"
+            )
+            if r.error:
+                print(f"     Error: {r.error}")
+        print("-" * 60)
         print(
-            f"{idx:<4} {status:<8} {_format_duration(result.duration_seconds):<10} "
-            f"{result.tokens_used:<8} {_truncate(result.source, 50)}"
+            f"Total: {self.total} | Succeeded: {self.successes} | "
+            f"Failed: {self.failures} | Tokens: {self.total_tokens} | "
+            f"Cost: ${self.total_cost:.6f} | Duration: {self.total_duration}s"
         )
-        if not result.success:
-            print(f"     ERROR: {result.error}")
 
-    print("=" * 80)
-    print(
-        f"Total: {stats['total']} | "
-        f"Success: {stats['success_count']} | "
-        f"Failed: {stats['failure_count']}"
-    )
-    print(
-        f"Tokens: {stats['total_tokens']:,} | "
-        f"Est. Cost: ${stats['total_cost']:.4f} | "
-        f"Avg Duration: {_format_duration(stats['avg_duration_seconds'])}"
-    )
-    print()
+    # ------------------------------------------------------------------
+    # CSV export
+    # ------------------------------------------------------------------
 
+    def write_csv(self, output_path: str) -> None:
+        """Write results to a CSV file."""
+        fieldnames = [
+            "source",
+            "success",
+            "tokens_used",
+            "cost_estimate",
+            "duration_seconds",
+            "error",
+            "summary_text",
+        ]
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-def write_csv(results: List[BatchResult], output_path: str) -> None:
-    """
-    Write batch results to a CSV file.
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for r in self.results:
+                writer.writerow(
+                    {
+                        "source": r.source,
+                        "success": r.success,
+                        "tokens_used": r.tokens_used,
+                        "cost_estimate": r.cost_estimate or _estimate_cost(r.tokens_used),
+                        "duration_seconds": round(r.duration_seconds, 4),
+                        "error": r.error or "",
+                        "summary_text": r.summary.text if r.summary else "",
+                    }
+                )
 
-    Args:
-        results: List of BatchResult objects.
-        output_path: Path to write the CSV file.
-    """
-    fieldnames = [
-        "source",
-        "status",
-        "title",
-        "duration_seconds",
-        "tokens_used",
-        "cost_estimate",
-        "error",
-        "summary_excerpt",
-        "timestamp",
-        "dry_run",
-    ]
+    # ------------------------------------------------------------------
+    # JSON Lines export
+    # ------------------------------------------------------------------
 
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    def write_jsonl(self, output_path: str) -> None:
+        """Write results to a JSON Lines file."""
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+        with open(path, "w", encoding="utf-8") as f:
+            for r in self.results:
+                record = {
+                    "source": r.source,
+                    "success": r.success,
+                    "tokens_used": r.tokens_used,
+                    "cost_estimate": r.cost_estimate or _estimate_cost(r.tokens_used),
+                    "duration_seconds": round(r.duration_seconds, 4),
+                    "error": r.error,
+                    "summary_text": r.summary.text if r.summary else None,
+                    "article_title": r.article.title if r.article else None,
+                    "article_word_count": r.article.word_count if r.article else None,
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-        for result in results:
-            summary_text = result.summary_text or ""
-            summary_excerpt = summary_text[:200] + "..." if len(summary_text) > 200 else summary_text
+    # ------------------------------------------------------------------
+    # Convenience dispatcher
+    # ------------------------------------------------------------------
 
-            writer.writerow({
-                "source": result.source,
-                "status": "success" if result.success else "failure",
-                "title": result.article.title if result.article else "",
-                "duration_seconds": round(result.duration_seconds, 3),
-                "tokens_used": result.tokens_used,
-                "cost_estimate": round(result.cost_estimate, 6),
-                "error": result.error or "",
-                "summary_excerpt": summary_excerpt,
-                "timestamp": result.timestamp.isoformat(),
-                "dry_run": result.dry_run,
-            })
+    def write_output(self, output_path: str, fmt: str = "auto") -> None:
+        """
+        Write results to *output_path* in the given format.
 
-    logger.info(f"CSV results written to: {output_path}")
+        Parameters
+        ----------
+        output_path:
+            Destination file path.
+        fmt:
+            One of ``"csv"``, ``"jsonl"``, or ``"auto"`` (inferred from
+            the file extension).
+        """
+        if fmt == "auto":
+            ext = Path(output_path).suffix.lower()
+            if ext == ".csv":
+                fmt = "csv"
+            elif ext in (".jsonl", ".json"):
+                fmt = "jsonl"
+            else:
+                fmt = "jsonl"  # safe default
 
-
-def write_jsonl(results: List[BatchResult], output_path: str) -> None:
-    """
-    Write batch results to a JSON Lines file.
-
-    Args:
-        results: List of BatchResult objects.
-        output_path: Path to write the JSONL file.
-    """
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(path, "w", encoding="utf-8") as f:
-        for result in results:
-            record = {
-                "source": result.source,
-                "status": "success" if result.success else "failure",
-                "title": result.article.title if result.article else None,
-                "word_count": result.article.word_count if result.article else None,
-                "duration_seconds": round(result.duration_seconds, 3),
-                "tokens_used": result.tokens_used,
-                "cost_estimate": round(result.cost_estimate, 6),
-                "error": result.error,
-                "summary": result.summary_text,
-                "timestamp": result.timestamp.isoformat(),
-                "dry_run": result.dry_run,
-            }
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-    logger.info(f"JSON Lines results written to: {output_path}")
-
-
-def write_results(results: List[BatchResult], output_path: str, fmt: str = "csv") -> None:
-    """
-    Write batch results to a file in the specified format.
-
-    Args:
-        results: List of BatchResult objects.
-        output_path: Destination file path.
-        fmt: Output format — "csv" or "jsonl" / "json".
-    """
-    fmt = fmt.lower().strip()
-
-    if fmt == "csv":
-        write_csv(results, output_path)
-    elif fmt in ("jsonl", "json", "json-lines"):
-        write_jsonl(results, output_path)
-    else:
-        raise ValueError(f"Unsupported output format: '{fmt}'. Choose 'csv' or 'jsonl'.")
+        if fmt == "csv":
+            self.write_csv(output_path)
+        elif fmt in ("jsonl", "json"):
+            self.write_jsonl(output_path)
+        else:
+            raise ValueError(f"Unknown output format: {fmt!r}")

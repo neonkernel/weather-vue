@@ -1,54 +1,64 @@
 """Command-line interface for the summarizer."""
 
-import sys
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
 import click
 
+from .config import Config
+from .exceptions import SummarizerError
+from .logger import setup_logging
+
 logger = logging.getLogger(__name__)
 
 
-def _setup_logging(verbose: bool = False) -> None:
-    """Configure logging based on verbosity."""
-    level = logging.DEBUG if verbose else logging.WARNING
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_ingest_fn(cfg: Config):
+    """Return a callable that ingests a single source into an Article."""
+    from .ingestion import ingest  # local import to keep startup fast
+    return lambda source: ingest(source, cfg)
 
 
-@click.group()
-@click.option("--verbose", "-v", is_flag=True, default=False, help="Enable verbose logging.")
-@click.pass_context
-def cli(ctx: click.Context, verbose: bool) -> None:
-    """
-    Summarizer — AI-powered article summarization tool.
-
-    Use one of the subcommands below to get started.
-    """
-    ctx.ensure_object(dict)
-    ctx.obj["verbose"] = verbose
-    _setup_logging(verbose)
+def _get_summarize_fn(cfg: Config, style: str, model: Optional[str]):
+    """Return a callable that summarises an Article into a Summary."""
+    from .summarize import summarize_article  # local import
+    return lambda article: summarize_article(article, cfg, style=style, model=model)
 
 
 # ---------------------------------------------------------------------------
-# summarize subcommand
+# Root group
+# ---------------------------------------------------------------------------
+
+@click.group()
+@click.option("--debug/--no-debug", default=False, help="Enable debug logging.")
+@click.pass_context
+def cli(ctx: click.Context, debug: bool):
+    """Article summarizer CLI."""
+    ctx.ensure_object(dict)
+    setup_logging(level=logging.DEBUG if debug else logging.INFO)
+    ctx.obj["debug"] = debug
+    ctx.obj["config"] = Config()
+
+
+# ---------------------------------------------------------------------------
+# summarize (single-article) subcommand
 # ---------------------------------------------------------------------------
 
 @cli.command("summarize")
 @click.argument("source")
 @click.option(
     "--style",
-    "-s",
-    default="default",
+    default="concise",
     show_default=True,
-    help="Summary style (default, brief, detailed, bullet).",
+    help="Summary style (e.g. concise, detailed, bullets).",
 )
-@click.option("--model", "-m", default=None, help="LLM model to use.")
-@click.option("--output", "-o", default=None, help="Save summary to this file.")
+@click.option("--model", default=None, help="LLM model override.")
+@click.option("--output", "-o", default=None, help="Write summary to file.")
 @click.pass_context
 def summarize_cmd(
     ctx: click.Context,
@@ -56,40 +66,30 @@ def summarize_cmd(
     style: str,
     model: Optional[str],
     output: Optional[str],
-) -> None:
-    """
-    Summarize a single article from a URL or local file.
+):
+    """Summarize a single article from URL or file."""
+    cfg: Config = ctx.obj["config"]
 
-    SOURCE can be a URL (http/https) or a path to a .txt or .html file.
-    """
-    from .batch import BatchProcessor
-    from .reporter import print_rich_table
+    try:
+        ingest = _get_ingest_fn(cfg)
+        summarize = _get_summarize_fn(cfg, style, model)
 
-    processor = BatchProcessor(workers=1, dry_run=False, style=style, model=model)
-    results = processor.run([source])
-    result = results[0]
+        article = ingest(source)
+        summary = summarize(article)
 
-    if result.success:
-        summary_text = result.summary_text or ""
-        click.echo("\n" + "=" * 60)
-        if result.article:
-            click.echo(f"Title: {result.article.title}")
-            click.echo(f"Words: {result.article.word_count:,}")
-        click.echo("=" * 60)
-        click.echo(summary_text)
-        click.echo("=" * 60)
-
-        if result.tokens_used:
-            click.echo(f"\nTokens used: {result.tokens_used:,} | Est. cost: ${result.cost_estimate:.4f}")
-
+        text = summary.text
         if output:
-            out_path = Path(output)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(summary_text, encoding="utf-8")
-            click.echo(f"\nSummary saved to: {output}")
-    else:
-        click.echo(f"\n[ERROR] Failed to summarize '{source}':", err=True)
-        click.echo(f"  {result.error}", err=True)
+            Path(output).write_text(text, encoding="utf-8")
+            click.echo(f"Summary written to {output}")
+        else:
+            click.echo(text)
+
+        click.echo(
+            f"\n[tokens: {summary.tokens_used} | cost: ${summary.cost_estimate:.6f}]",
+            err=True,
+        )
+    except SummarizerError as exc:
+        click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
 
@@ -98,166 +98,160 @@ def summarize_cmd(
 # ---------------------------------------------------------------------------
 
 @cli.command("batch")
-@click.argument("source_path")
+@click.argument("input_path")
 @click.option(
     "--workers",
     "-w",
     default=4,
     show_default=True,
-    type=click.IntRange(1, 32),
-    help="Number of parallel worker threads.",
+    type=click.IntRange(1, 64),
+    help="Number of concurrent worker threads.",
 )
 @click.option(
     "--output",
     "-o",
     default=None,
-    help="Output file path for results (e.g. results.csv or results.jsonl).",
+    help="Output file for results (CSV or JSON Lines, inferred from extension).",
 )
 @click.option(
     "--format",
-    "-f",
-    "output_format",
-    default=None,
-    type=click.Choice(["csv", "jsonl"], case_sensitive=False),
-    help="Output format: csv or jsonl. Inferred from --output extension if not set.",
+    "fmt",
+    default="auto",
+    type=click.Choice(["auto", "csv", "jsonl"], case_sensitive=False),
+    show_default=True,
+    help="Output format when --output is specified.",
 )
 @click.option(
     "--style",
-    "-s",
-    default="default",
+    default="concise",
     show_default=True,
-    help="Summary style (default, brief, detailed, bullet).",
+    help="Summary style applied to every article.",
 )
-@click.option("--model", "-m", default=None, help="LLM model to use.")
+@click.option("--model", default=None, help="LLM model override.")
 @click.option(
     "--dry-run",
     is_flag=True,
     default=False,
-    help="Fetch and validate all sources without calling the LLM.",
+    help="Fetch and validate sources without calling the LLM.",
 )
 @click.pass_context
 def batch_cmd(
     ctx: click.Context,
-    source_path: str,
+    input_path: str,
     workers: int,
     output: Optional[str],
-    output_format: Optional[str],
+    fmt: str,
     style: str,
     model: Optional[str],
     dry_run: bool,
-) -> None:
+):
     """
     Summarize multiple articles from a URL list file or directory.
 
-    SOURCE_PATH can be:
+    INPUT_PATH can be:
 
     \b
-    - A .txt file with one URL per line (lines starting with # are ignored)
-    - A directory containing .txt or .html article files
+      - A .txt file with one URL per line
+      - A directory containing .txt / .html article files
+      - A single URL or file path
 
     Examples:
 
     \b
-      summarizer batch urls.txt --workers 8
-      summarizer batch ./articles/ --dry-run
-      summarizer batch urls.txt --output results.csv
+      summarizer batch urls.txt --workers 8 --output results.csv
+      summarizer batch articles/ --dry-run
       summarizer batch urls.txt --output results.jsonl --format jsonl
     """
-    from .batch import BatchProcessor
-    from .reporter import print_rich_table, write_results
+    cfg: Config = ctx.obj["config"]
 
-    # Determine output format
-    fmt = output_format
-    if fmt is None and output:
-        ext = Path(output).suffix.lower()
-        if ext in (".jsonl", ".json"):
-            fmt = "jsonl"
-        else:
-            fmt = "csv"
-
-    # Progress callback using Rich if available
     try:
-        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-        from rich.console import Console
+        from .batch import BatchProcessor
+        from .reporter import BatchReporter
 
-        console = Console()
+        ingest_fn = _get_ingest_fn(cfg)
+        summarize_fn = _get_summarize_fn(cfg, style, model)
 
-        def make_progress_display(total: int):
-            progress = Progress(
+        # Rich progress indicator (best-effort)
+        try:
+            from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+            from rich.console import Console
+
+            console = Console()
+            progress_ctx = Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
                 TaskProgressColumn(),
                 console=console,
+                transient=True,
             )
-            return progress
 
-        use_rich_progress = True
-    except ImportError:
-        use_rich_progress = False
+            with progress_ctx as progress:
+                # We don't know the total until BatchProcessor loads sources, so
+                # we start the task lazily.
+                task_id = None
+                completed = [0]
 
-    completed_count = [0]
-    total_sources = [0]  # will be set after loading
+                def _progress_callback(result):
+                    nonlocal task_id
+                    if task_id is None:
+                        return
+                    completed[0] += 1
+                    status = "✓" if result.success else "✗"
+                    short_src = result.source[-50:] if len(result.source) > 50 else result.source
+                    progress.update(task_id, advance=1, description=f"{status} {short_src}")
 
-    def _simple_progress_callback(result):
-        completed_count[0] += 1
-        status = "✓" if result.success else "✗"
-        source_label = result.source[:60] + "..." if len(result.source) > 60 else result.source
-        click.echo(f"  [{completed_count[0]}/{total_sources[0]}] {status} {source_label}")
+                processor = BatchProcessor(
+                    ingest_fn=ingest_fn,
+                    summarize_fn=summarize_fn,
+                    workers=workers,
+                    dry_run=dry_run,
+                    progress_callback=_progress_callback,
+                )
 
-    processor = BatchProcessor(
-        workers=workers,
-        dry_run=dry_run,
-        style=style,
-        model=model,
-    )
+                # Load sources first so we can set the total
+                sources = processor._load_sources(input_path)
+                task_id = progress.add_task("Processing...", total=len(sources))
 
-    try:
-        sources = processor.load_sources(source_path)
-    except (FileNotFoundError, ValueError) as exc:
-        click.echo(f"\n[ERROR] {exc}", err=True)
-        sys.exit(1)
+                results = processor.run(input_path)
 
-    total_sources[0] = len(sources)
+        except ImportError:
+            # Fallback without Rich progress
+            def _plain_callback(result):
+                status = "OK" if result.success else "FAIL"
+                click.echo(f"[{status}] {result.source} ({result.duration_seconds:.2f}s)")
 
-    mode_str = " [DRY RUN]" if dry_run else ""
-    click.echo(
-        f"\nProcessing {len(sources)} source(s){mode_str} with {workers} worker(s)...\n"
-    )
+            processor = BatchProcessor(
+                ingest_fn=ingest_fn,
+                summarize_fn=summarize_fn,
+                workers=workers,
+                dry_run=dry_run,
+                progress_callback=_plain_callback,
+            )
+            results = processor.run(input_path)
+            console = None
 
-    processor.progress_callback = _simple_progress_callback
+        reporter = BatchReporter(results, console=console if "console" in dir() else None)
+        reporter.print_table()
 
-    results = processor.run(sources)
+        if output:
+            reporter.write_output(output, fmt=fmt)
+            click.echo(f"\nResults written to {output}", err=True)
 
-    # Display Rich table
-    print_rich_table(results, dry_run=dry_run)
-
-    # Write output file if requested
-    if output and fmt:
-        try:
-            write_results(results, output, fmt=fmt)
-            click.echo(f"Results written to: {output} (format: {fmt})\n")
-        except Exception as exc:
-            click.echo(f"\n[ERROR] Failed to write output: {exc}", err=True)
+        # Exit with non-zero if any failures
+        if reporter.failures:
             sys.exit(1)
 
-    # Exit with non-zero code if any failures occurred
-    failure_count = sum(1 for r in results if not r.success)
-    if failure_count > 0:
-        click.echo(
-            f"Warning: {failure_count} of {len(results)} sources failed.",
-            err=True,
-        )
-        # Non-zero exit but don't abort — partial success
-        sys.exit(2)
+    except SummarizerError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    """Main entry point."""
+def main():
     cli(obj={})
 
 

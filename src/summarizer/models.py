@@ -19,16 +19,17 @@ class Article:
 class Summary:
     """Represents a generated summary."""
     article: Article
-    summary_text: str
-    style: str = "default"
+    text: str
+    style: str
+    model: str
     tokens_used: int = 0
-    model: str = ""
     cost_estimate: float = 0.0
+    created_at: datetime = field(default_factory=datetime.now)
 
 
 @dataclass
 class BatchResult:
-    """Result of processing a single item in a batch."""
+    """Represents the result of processing a single item in a batch."""
     source: str
     article: Optional[Article] = None
     summary: Optional[Summary] = None
@@ -36,17 +37,11 @@ class BatchResult:
     duration_seconds: float = 0.0
     tokens_used: int = 0
     cost_estimate: float = 0.0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    success: bool = False
     dry_run: bool = False
 
-    @property
-    def success(self) -> bool:
-        """Whether the item was processed successfully."""
-        return self.error is None
-
-    @property
-    def summary_text(self) -> Optional[str]:
-        """Convenience accessor for summary text."""
-        if self.summary:
-            return self.summary.summary_text
-        return None
+    def __post_init__(self):
+        if self.summary is not None and not self.error:
+            self.success = True
+        if self.dry_run and self.article is not None and not self.error:
+            self.success = True
