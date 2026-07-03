@@ -1,207 +1,267 @@
-"""Command-line interface for the summarizer package."""
-
+"""Command-line interface for the article summarizer."""
 from __future__ import annotations
 
 import sys
-import time
+import logging
 from pathlib import Path
 from typing import Optional
 
-import typer
-from rich.console import Console
+import click
 
 from .config import Config
 from .exceptions import SummarizerError
+from .logger import setup_logging
 
-app = typer.Typer(
-    name="summarize",
-    help="AI-powered article summarizer.",
-    add_completion=False,
-)
-console = Console()
+logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _get_config() -> Config:
-    """Load configuration from environment / config file."""
-    return Config.load()
+def _get_config(ctx: click.Context) -> Config:
+    """Retrieve config from Click context."""
+    return ctx.ensure_object(Config)
 
 
-def _build_process_fn(cfg: Config):
-    """Return a callable that fetches & ingests a single source."""
-
-    def process_fn(source: str):
-        from urllib.parse import urlparse
-        from .ingestion import ingest_url, ingest_file
-        from .models import ArticleContent
-
-        try:
-            parsed = urlparse(source)
-            if parsed.scheme in ("http", "https"):
-                article = ingest_url(source, cfg)
-            else:
-                article = ingest_file(Path(source), cfg)
-            return article, None
-        except Exception as exc:  # noqa: BLE001
-            return None, str(exc)
-
-    return process_fn
+@click.group()
+@click.option("--verbose", "-v", is_flag=True, help="Enable verbose/debug logging.")
+@click.option("--quiet", "-q", is_flag=True, help="Suppress non-essential output.")
+@click.pass_context
+def cli(ctx: click.Context, verbose: bool, quiet: bool) -> None:
+    """Article summarizer — fetch and summarize articles from URLs or files."""
+    ctx.ensure_object(Config)
+    cfg: Config = ctx.obj
+    cfg.verbose = verbose
+    cfg.quiet = quiet
+    level = logging.DEBUG if verbose else (logging.WARNING if quiet else logging.INFO)
+    setup_logging(level)
 
 
-def _build_summarize_fn(cfg: Config, style: str, model: Optional[str]):
-    """Return a callable that summarises an ArticleContent."""
-
-    def summarize_fn(article):
-        from .summarize import summarize_article
-
-        result = summarize_article(article, cfg, style=style, model=model)
-        return result.summary, result.tokens_used
-
-    return summarize_fn
-
-
-# ---------------------------------------------------------------------------
-# `summarize run` — single article
-# ---------------------------------------------------------------------------
-
-@app.command("run")
-def run_cmd(
-    source: str = typer.Argument(..., help="URL or path to an article file."),
-    style: str = typer.Option("default", "--style", "-s", help="Summary style."),
-    model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM model override."),
-    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Save summary to file."),
+@cli.command("summarize")
+@click.argument("source")
+@click.option("--style", "-s", default="concise", show_default=True,
+              help="Summary style: concise, detailed, bullet.")
+@click.option("--model", "-m", default=None, help="LLM model to use.")
+@click.option("--format", "output_format", default="text", show_default=True,
+              help="Output format: text, markdown, json.")
+@click.pass_context
+def summarize_cmd(
+    ctx: click.Context,
+    source: str,
+    style: str,
+    model: Optional[str],
+    output_format: str,
 ) -> None:
-    """Summarise a single article from a URL or file."""
-    cfg = _get_config()
-
-    process_fn = _build_process_fn(cfg)
-    article, error = process_fn(source)
-
-    if error or article is None:
-        console.print(f"[red]Error fetching source:[/red] {error}")
-        raise typer.Exit(code=1)
-
-    summarize_fn = _build_summarize_fn(cfg, style, model)
+    """Summarize a single article from a URL or file path."""
+    cfg = _get_config(ctx)
     try:
-        summary_text, tokens = summarize_fn(article)
+        from .ingestion import fetch_article
+        from .summarize import summarize_article
+        from .formatter import format_output
+
+        article = fetch_article(source)
+        summary = summarize_article(article, style=style, model=model or cfg.default_model)
+        output = format_output(summary, article, fmt=output_format)
+        click.echo(output)
     except SummarizerError as exc:
-        console.print(f"[red]Summarisation failed:[/red] {exc}")
-        raise typer.Exit(code=1)
-
-    console.print()
-    console.rule(f"[bold]{article.title or source}")
-    console.print(summary_text)
-    console.print()
-    console.print(f"[dim]Tokens used: {tokens}[/dim]")
-
-    if output:
-        output.write_text(summary_text, encoding="utf-8")
-        console.print(f"[green]Summary written to:[/green] {output}")
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    except Exception as exc:
+        logger.debug("Unexpected error", exc_info=True)
+        click.echo(f"Unexpected error: {exc}", err=True)
+        sys.exit(1)
 
 
-# ---------------------------------------------------------------------------
-# `summarize batch` — multiple articles
-# ---------------------------------------------------------------------------
-
-@app.command("batch")
+@cli.command("batch")
+@click.argument("input_path", metavar="INPUT")
+@click.option(
+    "--workers", "-w",
+    default=4,
+    show_default=True,
+    type=click.IntRange(1, 32),
+    help="Number of concurrent worker threads.",
+)
+@click.option(
+    "--output", "-o",
+    default=None,
+    help="Output file path for results (CSV or JSON Lines).",
+)
+@click.option(
+    "--format", "output_format",
+    default="csv",
+    show_default=True,
+    type=click.Choice(["csv", "jsonl"], case_sensitive=False),
+    help="Output file format when --output is specified.",
+)
+@click.option(
+    "--style", "-s",
+    default="concise",
+    show_default=True,
+    help="Summary style: concise, detailed, bullet.",
+)
+@click.option(
+    "--model", "-m",
+    default=None,
+    help="LLM model to use for summarization.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Fetch and validate sources without calling the LLM.",
+)
+@click.pass_context
 def batch_cmd(
-    source_path: Path = typer.Argument(
-        ...,
-        help=(
-            "Path to a .txt file containing one URL per line, "
-            "or a directory of .txt/.html article files."
-        ),
-    ),
-    workers: int = typer.Option(
-        4, "--workers", "-w", min=1, max=32, help="Number of concurrent worker threads."
-    ),
-    output: Optional[Path] = typer.Option(
-        None,
-        "--output",
-        "-o",
-        help="Write results to this file (format determined by --format).",
-    ),
-    fmt: str = typer.Option(
-        "csv",
-        "--format",
-        "-f",
-        help="Output format when --output is specified: csv | jsonl.",
-    ),
-    style: str = typer.Option("default", "--style", "-s", help="Summary style for all articles."),
-    model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM model override."),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        help="Fetch and validate all sources without calling the LLM.",
-    ),
+    ctx: click.Context,
+    input_path: str,
+    workers: int,
+    output: Optional[str],
+    output_format: str,
+    style: str,
+    model: Optional[str],
+    dry_run: bool,
 ) -> None:
     """
-    Summarise multiple articles concurrently from a URL list file or directory.
+    Summarize multiple articles from a URL list file or directory.
+
+    INPUT can be:
 
     \b
+      - A .txt file with one URL per line
+      - A directory of .txt or .html article files
+
     Examples:
-        summarize batch urls.txt --workers 8 --output results.csv
-        summarize batch articles/ --format jsonl --output results.jsonl
-        summarize batch urls.txt --dry-run
+
+    \b
+      summarizer batch urls.txt --workers 8 --output results.csv
+      summarizer batch articles/ --dry-run
+      summarizer batch urls.txt --output results.jsonl --format jsonl
     """
-    from .batch import BatchProcessor, load_sources
-    from .reporter import build_report, print_summary_table, write_output
+    cfg = _get_config(ctx)
 
-    cfg = _get_config()
-
-    # Load sources ────────────────────────────────────────────────────────────
     try:
-        sources = load_sources(source_path)
-    except ValueError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(code=1)
+        from .batch import BatchProcessor
+        from .reporter import generate_rich_table, write_output
+    except ImportError as exc:
+        click.echo(f"Import error: {exc}", err=True)
+        sys.exit(1)
 
-    console.print(
-        f"[bold cyan]Batch mode:[/bold cyan] {len(sources)} source(s) | "
-        f"{workers} worker(s) | dry_run={dry_run}"
-    )
+    # Try to import ingestion and summarize; provide helpful errors if missing
+    try:
+        from .ingestion import fetch_article
+    except ImportError:
+        click.echo(
+            "Error: ingestion module not found. Ensure the package is installed correctly.",
+            err=True,
+        )
+        sys.exit(1)
 
-    if dry_run:
-        console.print("[yellow]Dry-run enabled — LLM calls will be skipped.[/yellow]")
+    summarize_fn = None
+    if not dry_run:
+        try:
+            from .summarize import summarize_article
+            summarize_fn = summarize_article
+        except ImportError:
+            click.echo(
+                "Error: summarize module not found. Use --dry-run to skip LLM calls.",
+                err=True,
+            )
+            sys.exit(1)
 
-    # Build processor ─────────────────────────────────────────────────────────
-    process_fn = _build_process_fn(cfg)
-    summarize_fn = None if dry_run else _build_summarize_fn(cfg, style, model)
+    # Set up progress display
+    try:
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+        from rich.console import Console
+
+        console = Console(stderr=True)
+        use_rich = True
+    except ImportError:
+        use_rich = False
+        console = None
+
+    if use_rich:
+        progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+            transient=True,
+        )
+    else:
+        progress = None
+
+    def _progress_callback(result, completed, total):
+        status = "✓" if (result.dry_run_success if dry_run else result.success) else "✗"
+        source_short = result.source[-50:] if len(result.source) > 50 else result.source
+        if use_rich and progress and task_id is not None:
+            progress.update(
+                task_id,
+                completed=completed,
+                description=f"[{status}] {source_short}",
+            )
+        else:
+            symbol = "OK" if (result.dry_run_success if dry_run else result.success) else "FAIL"
+            click.echo(f"  [{completed}/{total}] {symbol}: {source_short}", err=True)
+
+    task_id = None
 
     processor = BatchProcessor(
-        workers=workers,
+        max_workers=workers,
         dry_run=dry_run,
-        process_fn=process_fn,
-        summarize_fn=summarize_fn,
+        progress_callback=_progress_callback,
     )
 
-    # Run ─────────────────────────────────────────────────────────────────────
-    wall_start = time.monotonic()
-    results = processor.run(sources)
-    wall_duration = time.monotonic() - wall_start
+    # Load sources
+    try:
+        sources = processor.load_sources(input_path)
+    except (FileNotFoundError, ValueError) as exc:
+        click.echo(f"Error loading sources: {exc}", err=True)
+        sys.exit(1)
 
-    # Report ──────────────────────────────────────────────────────────────────
-    report = build_report(results, wall_duration)
-    print_summary_table(report)
+    mode_label = "[DRY RUN] " if dry_run else ""
+    click.echo(
+        f"{mode_label}Processing {len(sources)} source(s) with {workers} worker(s)...",
+        err=True,
+    )
 
+    # Run batch with optional progress bar
+    effective_model = model or cfg.default_model if hasattr(cfg, "default_model") else model
+
+    try:
+        if use_rich and progress is not None:
+            with progress:
+                task_id = progress.add_task("Starting...", total=len(sources))
+                results = processor.run(
+                    sources,
+                    fetch_fn=fetch_article,
+                    summarize_fn=summarize_fn,
+                    style=style,
+                    model=effective_model,
+                )
+        else:
+            results = processor.run(
+                sources,
+                fetch_fn=fetch_article,
+                summarize_fn=summarize_fn,
+                style=style,
+                model=effective_model,
+            )
+    except Exception as exc:
+        logger.debug("Batch processing error", exc_info=True)
+        click.echo(f"Batch processing error: {exc}", err=True)
+        sys.exit(1)
+
+    # Display results table
+    generate_rich_table(results, dry_run=dry_run)
+
+    # Write output file if requested
     if output:
-        write_output(report, output, fmt=fmt)
+        try:
+            write_output(results, output, fmt=output_format)
+            click.echo(f"Results written to: {output}", err=True)
+        except Exception as exc:
+            click.echo(f"Failed to write output file: {exc}", err=True)
+            sys.exit(1)
 
-    # Exit with non-zero code if any item failed
-    if report.failures:
-        raise typer.Exit(code=1)
-
-
-# ---------------------------------------------------------------------------
-# Entry-point
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    app()
-
-
-if __name__ == "__main__":
-    main()
+    # Exit with non-zero code if any failures occurred
+    failures = [r for r in results if r.error]
+    if failures:
+        sys.exit(1)

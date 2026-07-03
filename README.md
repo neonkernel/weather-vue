@@ -1,20 +1,17 @@
 # Article Summarizer
 
-An AI-powered command-line tool for summarising web articles and local text files, with support for batch processing, concurrent execution, and multiple output formats.
-
----
+A command-line tool for fetching and summarizing articles from URLs or local files using LLMs.
 
 ## Features
 
-- Summarise single articles from URLs or local `.txt`/`.html` files
-- **Batch processing** of multiple sources concurrently
-- Multiple summary styles
-- Rich terminal output with progress tracking
+- Summarize individual articles from URLs or local files
+- **Batch processing** of multiple articles with concurrent workers
+- Multiple summary styles: concise, detailed, bullet points
+- Rich terminal output with progress indicators
 - Export results to CSV or JSON Lines
-- Dry-run mode for source validation without LLM calls
+- Dry-run mode for validating sources without LLM calls
+- Per-item error isolation — one failure never aborts the batch
 - Token usage tracking and cost estimation
-
----
 
 ## Installation
 
@@ -22,166 +19,127 @@ An AI-powered command-line tool for summarising web articles and local text file
 pip install -e .
 ```
 
----
+## Usage
 
-## Quick Start
-
-### Summarise a single article
+### Summarize a single article
 
 ```bash
-summarize run https://example.com/some-article
-summarize run path/to/article.txt --style bullet
-summarize run https://example.com/article --output summary.txt
+summarizer summarize https://example.com/article --style concise
+summarizer summarize path/to/article.txt --style bullet --format markdown
 ```
 
 ### Batch processing
 
-Summarise multiple articles concurrently from a URL list file or a directory of article files.
-
-#### URL list file
-
-Create a plain-text file with one URL (or file path) per line. Lines starting with `#` are treated as comments and ignored.
-
-```text
-# urls.txt
-https://example.com/article-1
-https://example.com/article-2
-https://example.com/article-3
-```
+The `batch` subcommand accepts a `.txt` file of URLs (one per line) or a directory
+of `.txt`/`.html` files.
 
 ```bash
-summarize batch urls.txt
+# Process a list of URLs from a file
+summarizer batch urls.txt
+
+# Use 8 concurrent workers
+summarizer batch urls.txt --workers 8
+
+# Save results to CSV
+summarizer batch urls.txt --output results.csv
+
+# Save results as JSON Lines
+summarizer batch urls.txt --output results.jsonl --format jsonl
+
+# Process a directory of article files
+summarizer batch articles/
+
+# Dry-run: fetch and validate without calling the LLM
+summarizer batch urls.txt --dry-run
+
+# Full example: 8 workers, bullet style, CSV output
+summarizer batch urls.txt --workers 8 --style bullet --output results.csv
 ```
 
-#### Directory of files
+#### Batch options
 
-```bash
-summarize batch articles/
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--workers` / `-w` | `4` | Number of concurrent worker threads (1–32) |
+| `--output` / `-o` | — | Output file path for results |
+| `--format` | `csv` | Output format: `csv` or `jsonl` |
+| `--style` / `-s` | `concise` | Summary style: `concise`, `detailed`, `bullet` |
+| `--model` / `-m` | default | LLM model override |
+| `--dry-run` | — | Fetch sources without calling the LLM |
+
+#### URL list file format
+
+```
+# Lines starting with '#' are comments and are ignored
+# Blank lines are also ignored
+
+https://example.com/article/1
+https://example.com/article/2
+https://example.com/article/3
 ```
 
----
+#### Batch output
 
-## Batch Subcommand Reference
+After processing, a summary table is printed to the terminal:
 
 ```
-Usage: summarize batch [OPTIONS] SOURCE_PATH
+╭────────────────────────────────────────────────────────────────────────╮
+│                    Batch Processing Summary                            │
+├────┬──────────────────────────────────────┬──────────┬──────────┬──────┤
+│  # │ Source                               │ Status   │ Duration │Tokens│
+├────┼──────────────────────────────────────┼──────────┼──────────┼──────┤
+│  1 │ https://example.com/article/1        │ ✓ OK     │    1.23s │  342 │
+│  2 │ https://example.com/article/2        │ ✗ FAILED │    0.10s │    - │
+│  3 │ https://example.com/article/3        │ ✓ OK     │    0.98s │  289 │
+╰────┴──────────────────────────────────────┴──────────┴──────────┴──────╯
 
-  Summarise multiple articles concurrently from a URL list file or directory.
-
-Arguments:
-  SOURCE_PATH  Path to a .txt file containing one URL per line, or a
-               directory of .txt/.html article files.  [required]
-
-Options:
-  -w, --workers INTEGER RANGE  Number of concurrent worker threads.
-                               [default: 4; 1<=x<=32]
-  -o, --output PATH            Write results to this file (format determined
-                               by --format).
-  -f, --format TEXT            Output format when --output is specified:
-                               csv | jsonl.  [default: csv]
-  -s, --style TEXT             Summary style for all articles.
-                               [default: default]
-  -m, --model TEXT             LLM model override.
-  --dry-run                    Fetch and validate all sources without calling
-                               the LLM.
-  --help                       Show this message and exit.
+  Total items:    3
+  Successful:     2
+  Failed:         1
+  Total duration: 2.31s
+  Total tokens:   631
+  Model:          gpt-4o-mini
+  Est. cost:      $0.0001 USD
 ```
 
-### Examples
-
-```bash
-# Summarise 10 URLs using 8 worker threads and save results to CSV
-summarize batch urls.txt --workers 8 --output results.csv
-
-# Export results as JSON Lines
-summarize batch urls.txt --output results.jsonl --format jsonl
-
-# Summarise all .txt and .html files in a directory
-summarize batch articles/ --workers 4 --output report.csv
-
-# Validate all sources without calling the LLM (dry run)
-summarize batch urls.txt --dry-run
-
-# Use a specific summary style and model
-summarize batch urls.txt --style bullet --model gpt-4o --output results.csv
-```
-
----
-
-## Output Formats
-
-### Terminal (always shown)
-
-After a batch run, a Rich table is printed to the terminal showing:
-
-| Column    | Description                        |
-|-----------|------------------------------------|
-| #         | Item index                         |
-| Source    | URL or file path                   |
-| Title     | Article title (if available)       |
-| Status    | ✓ OK or ✗ FAIL                     |
-| Tokens    | Tokens consumed by the LLM         |
-| Duration  | Time taken for this item           |
-
-Aggregate statistics are shown below the table:
-
-- Total / succeeded / failed item counts
-- Success rate
-- Total tokens used
-- Estimated cost (USD)
-- Wall-clock time
+## Output formats
 
 ### CSV
 
-```bash
-summarize batch urls.txt --output results.csv --format csv
+Each row corresponds to one source:
+
+```
+source,status,duration_seconds,tokens_used,title,word_count,model,summary_preview,error,timestamp
+https://example.com/1,success,1.234,342,Article Title,...
 ```
 
-Columns: `source, title, status, error, tokens_used, duration_seconds, summary`
+### JSON Lines (JSONL)
 
-### JSON Lines
+One JSON object per line:
 
-```bash
-summarize batch urls.txt --output results.jsonl --format jsonl
+```json
+{"source": "https://example.com/1", "status": "success", "tokens_used": 342, ...}
+{"source": "https://example.com/2", "status": "failed", "error": "Connection refused", ...}
 ```
 
-Each line is a JSON object with the same fields as the CSV output.
+## Configuration
 
----
+Set your API key via environment variable:
 
-## Error Handling
-
-Each item in a batch is processed independently. A failed URL or file does not abort the remaining items. Failed items appear in the results table with `✗ FAIL` status and an error message.
-
-The command exits with code `1` if **any** item failed, and `0` if all items succeeded. This makes it straightforward to use in CI pipelines.
-
----
+```bash
+export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
+```
 
 ## Development
 
 ```bash
-# Install development dependencies
+# Install dev dependencies
 pip install -e ".[dev]"
 
 # Run tests
 pytest tests/
 
-# Run only batch tests
+# Run batch tests only
 pytest tests/test_batch.py -v
-```
-
----
-
-## Project Structure
-
-```
-src/summarizer/
-├── cli.py          # Typer CLI (run + batch subcommands)
-├── batch.py        # BatchProcessor — concurrent execution
-├── reporter.py     # Rich table, CSV, and JSON Lines output
-├── models.py       # Data models (ArticleContent, BatchResult, …)
-├── summarize.py    # Core summarisation logic
-├── ingestion/      # URL fetching and file parsing
-├── config.py       # Configuration loading
-└── exceptions.py   # Custom exception hierarchy
 ```

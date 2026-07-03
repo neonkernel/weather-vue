@@ -1,8 +1,8 @@
 # Sample batch input file for integration tests
-# Lines starting with # are ignored; blank lines are skipped.
+# Lines starting with '#' and blank lines are ignored
 
-https://example.com/article-1
-https://example.com/article-2
-https://example.com/article-3
-https://example.com/article-4
-https://example.com/article-5
+https://example.com/article/1
+https://example.com/article/2
+https://example.com/article/3
+https://example.com/article/4
+https://example.com/article/5

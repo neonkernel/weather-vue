@@ -1,199 +1,193 @@
 """Batch processing for multiple articles."""
-
 from __future__ import annotations
 
+import os
 import time
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable, Optional
-from urllib.parse import urlparse
+from typing import List, Optional, Callable
+from datetime import datetime
 
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from .models import BatchResult, Article, Summary
 
-from .models import BatchResult, ArticleContent
-from .exceptions import SummarizerError
-
-console = Console()
+logger = logging.getLogger(__name__)
 
 
-def _is_url(source: str) -> bool:
-    """Check if a string looks like a URL."""
-    try:
-        result = urlparse(source)
-        return result.scheme in ("http", "https")
-    except Exception:
-        return False
+def _load_urls_from_file(path: Path) -> List[str]:
+    """Load URLs from a text file (one per line), skipping blanks and comments."""
+    urls = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                urls.append(line)
+    return urls
 
 
-def load_sources(source_path: Path) -> list[str]:
-    """
-    Load sources from a .txt file of URLs or a directory of .txt/.html files.
-
-    Args:
-        source_path: Path to a URL list file or directory of article files.
-
-    Returns:
-        List of source identifiers (URLs or file paths as strings).
-
-    Raises:
-        ValueError: If the path doesn't exist or no sources are found.
-    """
-    if not source_path.exists():
-        raise ValueError(f"Source path does not exist: {source_path}")
-
-    sources: list[str] = []
-
-    if source_path.is_file():
-        # Treat as a list of URLs / file paths, one per line
-        lines = source_path.read_text(encoding="utf-8").splitlines()
-        for line in lines:
-            stripped = line.strip()
-            if stripped and not stripped.startswith("#"):
-                sources.append(stripped)
-    elif source_path.is_dir():
-        # Collect all .txt and .html files in the directory
-        for ext in ("*.txt", "*.html"):
-            for file_path in sorted(source_path.glob(ext)):
-                sources.append(str(file_path))
-    else:
-        raise ValueError(f"Source path must be a file or directory: {source_path}")
-
-    if not sources:
-        raise ValueError(f"No sources found in: {source_path}")
-
+def _load_sources_from_directory(directory: Path) -> List[str]:
+    """Load all .txt and .html file paths from a directory."""
+    sources = []
+    for ext in ("*.txt", "*.html"):
+        for file_path in sorted(directory.glob(ext)):
+            sources.append(str(file_path))
     return sources
+
+
+def _detect_source_type(source: str) -> str:
+    """Detect whether a source is a URL or a file path."""
+    if source.startswith("http://") or source.startswith("https://"):
+        return "url"
+    return "file"
 
 
 class BatchProcessor:
     """
-    Processes multiple article sources concurrently and collects results.
+    Processes multiple articles concurrently.
+
+    Supports loading sources from:
+    - A .txt file containing URLs (one per line)
+    - A directory of .txt or .html files
+    - A list of URLs/file paths passed directly
     """
 
     def __init__(
         self,
-        workers: int = 4,
+        max_workers: int = 4,
         dry_run: bool = False,
-        process_fn: Optional[Callable[[str], tuple[Optional[ArticleContent], Optional[str]]]] = None,
-        summarize_fn: Optional[Callable[[ArticleContent], tuple[str, int]]] = None,
+        progress_callback: Optional[Callable[[BatchResult, int, int], None]] = None,
     ):
-        """
-        Initialize the BatchProcessor.
-
-        Args:
-            workers: Number of concurrent worker threads.
-            dry_run: If True, fetch/validate sources without calling the LLM.
-            process_fn: Function that takes a source string and returns
-                        (ArticleContent | None, error_message | None).
-            summarize_fn: Function that takes an ArticleContent and returns
-                          (summary_text, tokens_used).
-        """
-        self.workers = workers
+        self.max_workers = max_workers
         self.dry_run = dry_run
-        self.process_fn = process_fn
-        self.summarize_fn = summarize_fn
+        self.progress_callback = progress_callback
 
-    def _process_single(self, source: str) -> BatchResult:
+    def load_sources(self, input_path: str) -> List[str]:
         """
-        Process a single source, returning a BatchResult.
-        Errors are isolated — exceptions do not propagate.
+        Load sources from a file or directory.
+
+        If input_path is a .txt file, read URLs from it.
+        If input_path is a directory, load .txt and .html files from it.
         """
+        path = Path(input_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Input path does not exist: {input_path}")
+
+        if path.is_dir():
+            sources = _load_sources_from_directory(path)
+            if not sources:
+                raise ValueError(f"No .txt or .html files found in directory: {input_path}")
+            return sources
+        elif path.is_file():
+            if path.suffix.lower() == ".txt":
+                urls = _load_urls_from_file(path)
+                if not urls:
+                    raise ValueError(f"No URLs found in file: {input_path}")
+                return urls
+            else:
+                raise ValueError(
+                    f"Input file must be a .txt file containing URLs, got: {path.suffix}"
+                )
+        else:
+            raise ValueError(f"Input path is neither a file nor a directory: {input_path}")
+
+    def _process_single(
+        self,
+        source: str,
+        fetch_fn: Callable,
+        summarize_fn: Optional[Callable] = None,
+        **summarize_kwargs,
+    ) -> BatchResult:
+        """Process a single source, isolating errors."""
         start_time = time.monotonic()
+        result = BatchResult(source=source, timestamp=datetime.utcnow())
 
         try:
-            # --- Fetch / ingest phase ---
-            if self.process_fn is None:
-                raise SummarizerError("No process_fn provided to BatchProcessor.")
+            # Fetch the article
+            source_type = _detect_source_type(source)
+            if source_type == "url":
+                article = fetch_fn(source)
+            else:
+                article = fetch_fn(source)
 
-            article, fetch_error = self.process_fn(source)
+            result.article = article
 
-            if fetch_error or article is None:
-                duration = time.monotonic() - start_time
-                return BatchResult(
-                    source=source,
-                    article=None,
-                    summary=None,
-                    error=fetch_error or "Failed to load article (unknown reason).",
-                    duration_seconds=duration,
-                    tokens_used=0,
-                )
-
-            # --- Dry-run: skip LLM ---
             if self.dry_run:
-                duration = time.monotonic() - start_time
-                return BatchResult(
-                    source=source,
-                    article=article,
-                    summary="[dry-run: LLM skipped]",
-                    error=None,
-                    duration_seconds=duration,
-                    tokens_used=0,
-                )
+                # Dry-run: validate fetch only, no LLM call
+                result.duration_seconds = time.monotonic() - start_time
+                logger.debug(f"[dry-run] Fetched '{source}' successfully.")
+                return result
 
-            # --- Summarise phase ---
-            if self.summarize_fn is None:
-                raise SummarizerError("No summarize_fn provided to BatchProcessor.")
+            # Summarize the article
+            if summarize_fn is None:
+                raise ValueError("summarize_fn is required when not in dry-run mode")
 
-            summary_text, tokens = self.summarize_fn(article)
-            duration = time.monotonic() - start_time
+            summary = summarize_fn(article, **summarize_kwargs)
+            result.summary = summary
+            result.tokens_used = summary.tokens_used if summary else 0
 
-            return BatchResult(
-                source=source,
-                article=article,
-                summary=summary_text,
-                error=None,
-                duration_seconds=duration,
-                tokens_used=tokens,
-            )
+        except Exception as exc:
+            result.error = str(exc)
+            logger.warning(f"Failed to process '{source}': {exc}")
+        finally:
+            result.duration_seconds = time.monotonic() - start_time
 
-        except Exception as exc:  # noqa: BLE001
-            duration = time.monotonic() - start_time
-            return BatchResult(
-                source=source,
-                article=None,
-                summary=None,
-                error=str(exc),
-                duration_seconds=duration,
-                tokens_used=0,
-            )
+        return result
 
-    def run(self, sources: list[str]) -> list[BatchResult]:
+    def run(
+        self,
+        sources: List[str],
+        fetch_fn: Callable,
+        summarize_fn: Optional[Callable] = None,
+        **summarize_kwargs,
+    ) -> List[BatchResult]:
         """
         Run batch processing over a list of sources.
 
         Args:
-            sources: List of source identifiers (URLs or file paths).
+            sources: List of URLs or file paths.
+            fetch_fn: Callable that takes a source string and returns an Article.
+            summarize_fn: Callable that takes an Article and returns a Summary.
+                          Not required in dry-run mode.
+            **summarize_kwargs: Additional keyword arguments passed to summarize_fn.
 
         Returns:
-            List of BatchResult objects (one per source, in completion order).
+            List of BatchResult objects (one per source).
         """
-        results: list[BatchResult] = []
+        if not sources:
+            return []
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task(
-                f"[cyan]Processing {len(sources)} source(s) with {self.workers} worker(s)…",
-                total=len(sources),
-            )
+        results: List[BatchResult] = [None] * len(sources)  # type: ignore
+        total = len(sources)
 
-            with ThreadPoolExecutor(max_workers=self.workers) as executor:
-                future_to_source = {
-                    executor.submit(self._process_single, src): src for src in sources
-                }
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_index = {
+                executor.submit(
+                    self._process_single,
+                    source,
+                    fetch_fn,
+                    summarize_fn,
+                    **summarize_kwargs,
+                ): idx
+                for idx, source in enumerate(sources)
+            }
 
-                for future in as_completed(future_to_source):
+            completed = 0
+            for future in as_completed(future_to_index):
+                idx = future_to_index[future]
+                completed += 1
+                try:
                     result = future.result()
-                    results.append(result)
-                    status = "✓" if result.error is None else "✗"
-                    progress.advance(task)
-                    progress.console.log(
-                        f"[{'green' if result.error is None else 'red'}]{status}[/] {result.source[:80]}"
+                except Exception as exc:
+                    # Catch any unexpected exception from the future itself
+                    result = BatchResult(
+                        source=sources[idx],
+                        error=f"Unexpected error: {exc}",
+                        duration_seconds=0.0,
                     )
+
+                results[idx] = result
+
+                if self.progress_callback:
+                    self.progress_callback(result, completed, total)
 
         return results
