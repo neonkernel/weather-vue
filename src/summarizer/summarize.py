@@ -1,126 +1,151 @@
 """Core summarization logic."""
-
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+import time
+import logging
+from typing import Optional
 
+from .config import Config
 from .models import Article, Summary
-from .logger import get_logger
+from .exceptions import SummarizerError
 
-if TYPE_CHECKING:
-    from .config import Config
+logger = logging.getLogger(__name__)
 
-logger = get_logger(__name__)
+
+def fetch_article(source: str, config: Optional[Config] = None) -> Article:
+    """
+    Fetch and parse an article from a URL or file path.
+
+    Args:
+        source: URL or local file path.
+        config: Optional configuration object.
+
+    Returns:
+        Article object with content.
+    """
+    if config is None:
+        config = Config()
+
+    try:
+        from .ingestion import load_article
+        return load_article(source, config=config)
+    except ImportError:
+        logger.debug("Ingestion module not available, using fallback")
+
+    # Fallback: basic file/URL loading
+    if source.startswith("http://") or source.startswith("https://"):
+        return _fetch_url(source)
+    else:
+        return _fetch_file(source)
 
 
 def _fetch_url(url: str) -> Article:
-    """Fetch and parse an article from a URL."""
+    """Basic URL fetching fallback."""
     try:
-        import requests
-        from bs4 import BeautifulSoup
-    except ImportError as e:
-        raise ImportError(f"Missing dependency for URL fetching: {e}. Install requests and beautifulsoup4.") from e
+        import urllib.request
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; ArticleSummarizer/1.0)"}
-    response = requests.get(url, headers=headers, timeout=30)
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    # Extract title
-    title_tag = soup.find("title")
-    title = title_tag.get_text(strip=True) if title_tag else url
-
-    # Extract body text
-    for tag in soup(["script", "style", "nav", "footer", "header"]):
-        tag.decompose()
-
-    text = soup.get_text(separator="\n", strip=True)
-    word_count = len(text.split())
-
-    return Article(url=url, title=title, text=text, word_count=word_count, source_type="url")
+        with urllib.request.urlopen(url, timeout=30) as response:
+            content = response.read().decode("utf-8", errors="replace")
+            # Strip basic HTML tags for content preview
+            import re
+            text = re.sub(r"<[^>]+>", " ", content)
+            text = re.sub(r"\s+", " ", text).strip()
+            return Article(
+                url=url,
+                title=_extract_title(content),
+                content=text[:10000],
+                source=url,
+            )
+    except Exception as exc:
+        raise SummarizerError(f"Failed to fetch URL '{url}': {exc}") from exc
 
 
-def _read_file(path: Path) -> Article:
-    """Read an article from a local file (.txt or .html)."""
-    content = path.read_text(encoding="utf-8")
+def _fetch_file(path: str) -> Article:
+    """Basic local file loading fallback."""
+    from pathlib import Path
 
-    if path.suffix.lower() == ".html":
-        try:
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(content, "html.parser")
-            title_tag = soup.find("title")
-            title = title_tag.get_text(strip=True) if title_tag else path.stem
-            for tag in soup(["script", "style"]):
-                tag.decompose()
-            text = soup.get_text(separator="\n", strip=True)
-            source_type = "html"
-        except ImportError:
-            title = path.stem
-            text = content
-            source_type = "html"
+    file_path = Path(path)
+    if not file_path.exists():
+        raise SummarizerError(f"File not found: {path}")
+
+    content = file_path.read_text(encoding="utf-8", errors="replace")
+    suffix = file_path.suffix.lower()
+
+    if suffix == ".html":
+        import re
+        text = re.sub(r"<[^>]+>", " ", content)
+        text = re.sub(r"\s+", " ", text).strip()
+        title = _extract_title(content)
     else:
-        lines = content.splitlines()
-        title = lines[0].strip() if lines else path.stem
         text = content
-        source_type = "file"
+        title = file_path.stem
 
-    word_count = len(text.split())
     return Article(
-        url=str(path),
+        url=path,
         title=title,
-        text=text,
-        word_count=word_count,
-        source_type=source_type,
+        content=text[:10000],
+        source=path,
     )
 
 
-def _call_llm(article: Article, style: str, model: Optional[str], config) -> Summary:
-    """Call the configured LLM to summarize the article."""
-    from .llm import get_llm_client
+def _extract_title(html: str) -> str:
+    """Extract title from HTML content."""
+    import re
+    match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return "Untitled"
 
-    client = get_llm_client(config, model=model)
-    result = client.summarize(article=article, style=style)
-    return result
 
-
-def summarize_source(
+def summarize_article(
     source: str,
     style: str = "default",
-    model: Optional[str] = None,
-    config=None,
-    dry_run: bool = False,
-) -> tuple[Article, Summary]:
+    config: Optional[Config] = None,
+    use_cache: bool = True,
+) -> Summary:
     """
-    Fetch and summarize a source (URL or file path).
-    Returns (Article, Summary).
+    Fetch and summarize an article.
+
+    Args:
+        source: URL or local file path.
+        style: Summary style.
+        config: Optional configuration.
+        use_cache: Whether to use caching.
+
+    Returns:
+        Summary object.
     """
-    from urllib.parse import urlparse
-
-    parsed = urlparse(source)
-    if parsed.scheme in ("http", "https"):
-        article = _fetch_url(source)
-    else:
-        path = Path(source)
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {source}")
-        article = _read_file(path)
-
-    if dry_run:
-        summary = Summary(
-            text="[DRY RUN - LLM not called]",
-            style=style,
-            model=model or "dry-run",
-            tokens_used=None,
-            cost_estimate=None,
-            dry_run=True,
-        )
-        return article, summary
-
     if config is None:
-        from .config import load_config
-        config = load_config()
+        config = Config()
 
-    summary = _call_llm(article=article, style=style, model=model, config=config)
-    return article, summary
+    start = time.monotonic()
+
+    # Fetch article
+    article = fetch_article(source, config=config)
+
+    # Try to use LLM module
+    try:
+        from .llm import generate_summary
+        summary_text, tokens, cost = generate_summary(
+            article=article,
+            style=style,
+            config=config,
+            use_cache=use_cache,
+        )
+    except ImportError:
+        logger.debug("LLM module not available, using placeholder")
+        summary_text = f"[Summary of '{article.title}' – LLM not configured]"
+        tokens = 0
+        cost = 0.0
+
+    duration = time.monotonic() - start
+
+    return Summary(
+        article=article,
+        text=summary_text,
+        style=style,
+        model=getattr(config, "model", "unknown"),
+        tokens_used=tokens,
+        cost_estimate=cost,
+        duration_seconds=duration,
+    )

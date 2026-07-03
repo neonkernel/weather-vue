@@ -1,7 +1,8 @@
-"""Command-line interface for the summarizer."""
+"""Command-line interface for the article summarizer."""
+from __future__ import annotations
 
-import logging
 import sys
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -9,249 +10,259 @@ import click
 
 from .config import Config
 from .exceptions import SummarizerError
-from .logger import setup_logging
 
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _get_console():
+    """Lazily import and return a Rich Console."""
+    try:
+        from rich.console import Console
+        return Console()
+    except ImportError:
+        return None
 
-def _get_ingest_fn(cfg: Config):
-    """Return a callable that ingests a single source into an Article."""
-    from .ingestion import ingest  # local import to keep startup fast
-    return lambda source: ingest(source, cfg)
-
-
-def _get_summarize_fn(cfg: Config, style: str, model: Optional[str]):
-    """Return a callable that summarises an Article into a Summary."""
-    from .summarize import summarize_article  # local import
-    return lambda article: summarize_article(article, cfg, style=style, model=model)
-
-
-# ---------------------------------------------------------------------------
-# Root group
-# ---------------------------------------------------------------------------
 
 @click.group()
-@click.option("--debug/--no-debug", default=False, help="Enable debug logging.")
+@click.option("--debug", is_flag=True, default=False, help="Enable debug logging.")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=False),
+    default=None,
+    help="Path to configuration file.",
+)
 @click.pass_context
-def cli(ctx: click.Context, debug: bool):
-    """Article summarizer CLI."""
+def cli(ctx: click.Context, debug: bool, config_path: Optional[str]) -> None:
+    """Article Summarizer CLI – summarize web articles using LLMs."""
     ctx.ensure_object(dict)
-    setup_logging(level=logging.DEBUG if debug else logging.INFO)
+
+    level = logging.DEBUG if debug else logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    try:
+        config = Config.load(config_path)
+    except Exception as exc:
+        click.echo(f"Warning: Could not load config: {exc}", err=True)
+        config = Config()
+
+    ctx.obj["config"] = config
     ctx.obj["debug"] = debug
-    ctx.obj["config"] = Config()
 
-
-# ---------------------------------------------------------------------------
-# summarize (single-article) subcommand
-# ---------------------------------------------------------------------------
 
 @cli.command("summarize")
-@click.argument("source")
+@click.argument("url")
 @click.option(
     "--style",
-    default="concise",
+    default="default",
     show_default=True,
-    help="Summary style (e.g. concise, detailed, bullets).",
+    help="Summary style (default, bullets, academic, etc.).",
 )
-@click.option("--model", default=None, help="LLM model override.")
-@click.option("--output", "-o", default=None, help="Write summary to file.")
+@click.option("--model", default=None, help="LLM model to use.")
+@click.option("--no-cache", is_flag=True, default=False, help="Bypass cache.")
 @click.pass_context
 def summarize_cmd(
     ctx: click.Context,
-    source: str,
+    url: str,
     style: str,
     model: Optional[str],
-    output: Optional[str],
-):
-    """Summarize a single article from URL or file."""
-    cfg: Config = ctx.obj["config"]
+    no_cache: bool,
+) -> None:
+    """Summarize a single article from URL."""
+    config: Config = ctx.obj["config"]
+    console = _get_console()
 
     try:
-        ingest = _get_ingest_fn(cfg)
-        summarize = _get_summarize_fn(cfg, style, model)
+        from .summarize import summarize_article
 
-        article = ingest(source)
-        summary = summarize(article)
+        if model:
+            config.model = model
 
-        text = summary.text
-        if output:
-            Path(output).write_text(text, encoding="utf-8")
-            click.echo(f"Summary written to {output}")
+        summary = summarize_article(url, style=style, config=config, use_cache=not no_cache)
+
+        if console:
+            console.print(f"\n[bold]Summary[/bold] ([dim]{summary.model}[/dim])\n")
+            console.print(summary.text)
+            console.print(
+                f"\n[dim]Tokens: {summary.tokens_used} | "
+                f"Cost: ${summary.cost_estimate:.4f} | "
+                f"Time: {summary.duration_seconds:.1f}s[/dim]"
+            )
         else:
-            click.echo(text)
-
-        click.echo(
-            f"\n[tokens: {summary.tokens_used} | cost: ${summary.cost_estimate:.6f}]",
-            err=True,
-        )
+            print(f"\nSummary ({summary.model})\n")
+            print(summary.text)
+            print(
+                f"\nTokens: {summary.tokens_used} | "
+                f"Cost: ${summary.cost_estimate:.4f} | "
+                f"Time: {summary.duration_seconds:.1f}s"
+            )
     except SummarizerError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+    except Exception as exc:
+        logger.debug("Unexpected error", exc_info=True)
+        click.echo(f"Unexpected error: {exc}", err=True)
+        sys.exit(1)
 
-
-# ---------------------------------------------------------------------------
-# batch subcommand
-# ---------------------------------------------------------------------------
 
 @cli.command("batch")
-@click.argument("input_path")
+@click.argument("source")
 @click.option(
     "--workers",
-    "-w",
     default=4,
     show_default=True,
-    type=click.IntRange(1, 64),
+    type=click.IntRange(1, 32),
     help="Number of concurrent worker threads.",
 )
 @click.option(
     "--output",
-    "-o",
     default=None,
-    help="Output file for results (CSV or JSON Lines, inferred from extension).",
+    type=click.Path(),
+    help="Path to write results (CSV or JSON Lines).",
 )
 @click.option(
     "--format",
-    "fmt",
-    default="auto",
-    type=click.Choice(["auto", "csv", "jsonl"], case_sensitive=False),
+    "output_format",
+    default="csv",
     show_default=True,
-    help="Output format when --output is specified.",
+    type=click.Choice(["csv", "jsonl", "json"], case_sensitive=False),
+    help="Output file format (csv or jsonl).",
 )
 @click.option(
     "--style",
-    default="concise",
+    default="default",
     show_default=True,
-    help="Summary style applied to every article.",
+    help="Summary style for all articles.",
 )
-@click.option("--model", default=None, help="LLM model override.")
+@click.option("--model", default=None, help="LLM model to use for all articles.")
 @click.option(
     "--dry-run",
     is_flag=True,
     default=False,
     help="Fetch and validate sources without calling the LLM.",
 )
+@click.option("--no-cache", is_flag=True, default=False, help="Bypass cache.")
 @click.pass_context
 def batch_cmd(
     ctx: click.Context,
-    input_path: str,
+    source: str,
     workers: int,
     output: Optional[str],
-    fmt: str,
+    output_format: str,
     style: str,
     model: Optional[str],
     dry_run: bool,
-):
-    """
-    Summarize multiple articles from a URL list file or directory.
+    no_cache: bool,
+) -> None:
+    """Summarize multiple articles from a URL list file or directory.
 
-    INPUT_PATH can be:
-
-    \b
+    SOURCE can be:
       - A .txt file with one URL per line
-      - A directory containing .txt / .html article files
-      - A single URL or file path
-
-    Examples:
-
-    \b
-      summarizer batch urls.txt --workers 8 --output results.csv
-      summarizer batch articles/ --dry-run
-      summarizer batch urls.txt --output results.jsonl --format jsonl
+      - A directory containing .txt or .html article files
     """
-    cfg: Config = ctx.obj["config"]
+    config: Config = ctx.obj["config"]
+    console = _get_console()
+
+    if model:
+        config.model = model
+
+    if dry_run:
+        msg = "[yellow]Dry-run mode: sources will be fetched but not summarized.[/yellow]"
+        if console:
+            console.print(msg)
+        else:
+            click.echo("Dry-run mode: sources will be fetched but not summarized.")
 
     try:
+        from .summarize import summarize_article, fetch_article
         from .batch import BatchProcessor
-        from .reporter import BatchReporter
+        from .reporter import write_report
 
-        ingest_fn = _get_ingest_fn(cfg)
-        summarize_fn = _get_summarize_fn(cfg, style, model)
+        # Build callables
+        def _summarize(src: str):
+            return summarize_article(src, style=style, config=config, use_cache=not no_cache)
 
-        # Rich progress indicator (best-effort)
-        try:
-            from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-            from rich.console import Console
+        def _fetch(src: str):
+            return fetch_article(src, config=config)
 
-            console = Console()
-            progress_ctx = Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                console=console,
-                transient=True,
-            )
+        # Set up progress display
+        completed = [0]
+        total_ref = [0]
 
-            with progress_ctx as progress:
-                # We don't know the total until BatchProcessor loads sources, so
-                # we start the task lazily.
-                task_id = None
-                completed = [0]
-
-                def _progress_callback(result):
-                    nonlocal task_id
-                    if task_id is None:
-                        return
-                    completed[0] += 1
-                    status = "✓" if result.success else "✗"
-                    short_src = result.source[-50:] if len(result.source) > 50 else result.source
-                    progress.update(task_id, advance=1, description=f"{status} {short_src}")
-
-                processor = BatchProcessor(
-                    ingest_fn=ingest_fn,
-                    summarize_fn=summarize_fn,
-                    workers=workers,
-                    dry_run=dry_run,
-                    progress_callback=_progress_callback,
+        def _progress(result):
+            completed[0] += 1
+            status = "[green]OK[/green]" if result.success else "[red]FAIL[/red]"
+            if console:
+                console.print(
+                    f"  [{completed[0]}/{total_ref[0]}] {status} "
+                    f"[dim]{result.source[:70]}[/dim]"
+                )
+            else:
+                status_plain = "OK" if result.success else "FAIL"
+                click.echo(
+                    f"  [{completed[0]}/{total_ref[0]}] {status_plain} {result.source[:70]}"
                 )
 
-                # Load sources first so we can set the total
-                sources = processor._load_sources(input_path)
-                task_id = progress.add_task("Processing...", total=len(sources))
+        processor = BatchProcessor(
+            summarize_fn=_summarize,
+            fetch_fn=_fetch,
+            workers=workers,
+            dry_run=dry_run,
+            progress_callback=_progress,
+        )
 
-                results = processor.run(input_path)
+        # Load sources
+        sources = processor.load_sources(source)
 
-        except ImportError:
-            # Fallback without Rich progress
-            def _plain_callback(result):
-                status = "OK" if result.success else "FAIL"
-                click.echo(f"[{status}] {result.source} ({result.duration_seconds:.2f}s)")
-
-            processor = BatchProcessor(
-                ingest_fn=ingest_fn,
-                summarize_fn=summarize_fn,
-                workers=workers,
-                dry_run=dry_run,
-                progress_callback=_plain_callback,
-            )
-            results = processor.run(input_path)
-            console = None
-
-        reporter = BatchReporter(results, console=console if "console" in dir() else None)
-        reporter.print_table()
-
-        if output:
-            reporter.write_output(output, fmt=fmt)
-            click.echo(f"\nResults written to {output}", err=True)
-
-        # Exit with non-zero if any failures
-        if reporter.failures:
+        if not sources:
+            click.echo("No sources found. Exiting.", err=True)
             sys.exit(1)
 
+        total_ref[0] = len(sources)
+
+        mode_str = "dry-run" if dry_run else f"style={style}"
+        if console:
+            console.print(
+                f"\n[bold]Batch Processing[/bold] – "
+                f"{len(sources)} sources, {workers} workers, {mode_str}\n"
+            )
+        else:
+            click.echo(
+                f"\nBatch Processing – {len(sources)} sources, {workers} workers, {mode_str}\n"
+            )
+
+        # Run batch
+        report = processor.run(sources)
+
+        # Display and optionally write report
+        write_report(
+            report,
+            output_path=output,
+            output_format=output_format,
+            console=console,
+        )
+
+        # Exit with non-zero if any failures
+        if report.failures > 0 and report.successes == 0:
+            sys.exit(1)
+
+    except ValueError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
     except SummarizerError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+    except Exception as exc:
+        logger.debug("Unexpected error in batch", exc_info=True)
+        click.echo(f"Unexpected error: {exc}", err=True)
+        sys.exit(1)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-def main():
+def main() -> None:
+    """Entry point for the CLI."""
     cli(obj={})
 
 

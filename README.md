@@ -1,16 +1,12 @@
 # Article Summarizer
 
-A CLI tool and library for fetching, ingesting, and summarizing web articles and local text files using LLMs.
-
----
+A CLI tool for summarizing web articles using Large Language Models (LLMs).
 
 ## Installation
 
 ```bash
 pip install -e .
 ```
-
----
 
 ## Quick Start
 
@@ -20,27 +16,16 @@ pip install -e .
 summarizer summarize https://example.com/article
 ```
 
-Save the output to a file:
-
+With options:
 ```bash
-summarizer summarize https://example.com/article --output summary.txt
-```
-
-Choose a summary style:
-
-```bash
-summarizer summarize https://example.com/article --style bullets
+summarizer summarize https://example.com/article --style bullets --model gpt-4o
 ```
 
 ---
 
 ## Batch Processing
 
-The `batch` subcommand lets you summarize multiple articles concurrently from:
-
-- A `.txt` file containing one URL per line
-- A directory of `.txt` or `.html` article files
-- A single URL or file path
+The `batch` subcommand lets you summarize multiple articles concurrently from a list of URLs or a directory of local files.
 
 ### Basic usage
 
@@ -48,85 +33,116 @@ The `batch` subcommand lets you summarize multiple articles concurrently from:
 summarizer batch urls.txt
 ```
 
+### Batch from a directory
+
+```bash
+summarizer batch ./articles/
+```
+
+This will process all `.txt` and `.html` files found in the directory.
+
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--workers` / `-w` | `4` | Number of parallel worker threads (1–64) |
-| `--output` / `-o` | — | Write results to a CSV or JSON Lines file |
-| `--format` | `auto` | Output format: `auto` (inferred from extension), `csv`, or `jsonl` |
-| `--style` | `concise` | Summary style applied to every article |
-| `--model` | — | LLM model override |
-| `--dry-run` | `False` | Fetch and validate sources **without** calling the LLM |
-
-### Examples
-
-```bash
-# Process 5 URLs with 8 workers, save CSV results
-summarizer batch urls.txt --workers 8 --output results.csv
-
-# Summarize all articles in a directory
-summarizer batch articles/
-
-# Validate all URLs without calling the LLM
-summarizer batch urls.txt --dry-run
-
-# Export results as JSON Lines
-summarizer batch urls.txt --output results.jsonl --format jsonl
-
-# Use a specific model and detailed style
-summarizer batch urls.txt --model gpt-4o --style detailed --output out.csv
-```
+| `--workers N` | `4` | Number of concurrent worker threads (1–32) |
+| `--output PATH` | — | Path to write results file |
+| `--format csv\|jsonl` | `csv` | Output format when `--output` is set |
+| `--style STYLE` | `default` | Summary style for all articles |
+| `--model MODEL` | — | LLM model to use for all articles |
+| `--dry-run` | — | Fetch and validate sources without calling the LLM |
+| `--no-cache` | — | Bypass the response cache |
 
 ### URL list file format
 
+Create a plain text file with one URL per line:
+
 ```
-# Lines starting with '#' are ignored
+# Comments start with '#' and are ignored
 # Blank lines are also ignored
-https://example.com/article-1
-https://example.com/article-2
-https://example.com/article-3
+
+https://example.com/article-one
+https://example.com/article-two
+https://anothersite.org/post/interesting-topic
 ```
 
-### Output formats
+### Examples
 
-**CSV** (`.csv`):
+**Process 5 URLs with 8 workers, save CSV:**
+```bash
+summarizer batch urls.txt --workers 8 --output results.csv --format csv
+```
+
+**Dry-run to validate all sources:**
+```bash
+summarizer batch urls.txt --dry-run
+```
+
+**Process a directory and export JSON Lines:**
+```bash
+summarizer batch ./my-articles/ --output results.jsonl --format jsonl
+```
+
+**Use bullet-point style with a specific model:**
+```bash
+summarizer batch urls.txt --style bullets --model gpt-4o --workers 6
+```
+
+### Output
+
+After the batch completes, a summary table is printed to the console:
+
+```
+╭─────────────────────────────── Batch Processing Results ────────────────────────────────╮
+│  #  │ Source                                │ Status │ Duration │ Tokens │    Cost      │
+├─────┼───────────────────────────────────────┼────────┼──────────┼────────┼──────────────┤
+│  1  │ https://example.com/article-one       │  ✓ OK  │   2.3s   │  850   │  $0.0017     │
+│  2  │ https://example.com/article-two       │  ✓ OK  │   1.8s   │  720   │  $0.0014     │
+│  3  │ https://bad-url.example.com/missing   │ ✗ FAIL │   5.0s   │   -    │    -         │
+╰─────────────────────────────────────────────────────────────────────────────────────────╯
+
+Batch Summary
+  Total items  : 3
+  Successes    : 2
+  Failures     : 1
+  Success rate : 66.7%
+  Total time   : 8.1s
+  Total tokens : 1570
+  Total cost   : $0.0031
+```
+
+### CSV output columns
 
 | Column | Description |
 |--------|-------------|
-| `source` | Original URL or file path |
+| `index` | Row number |
+| `source` | URL or file path |
 | `success` | `True` / `False` |
-| `tokens_used` | Token count for this item |
-| `cost_estimate` | Estimated USD cost |
-| `duration_seconds` | Wall-clock time to process |
-| `error` | Error message if failed |
-| `summary_text` | Generated summary text |
+| `duration_seconds` | Processing time |
+| `tokens_used` | Tokens consumed |
+| `cost_estimate` | Estimated cost in USD |
+| `error` | Error message (if failed) |
+| `summary_text` | Generated summary |
+| `article_title` | Extracted article title |
+| `article_word_count` | Word count of article |
 
-**JSON Lines** (`.jsonl`):
+### JSON Lines output
 
-Each line is a JSON object with the same fields plus `article_title` and `article_word_count`.
+Each line is a JSON object:
 
-### Batch summary table
-
-After processing, a Rich table is printed to stdout:
-
+```json
+{"index": 1, "source": "https://example.com/article-one", "success": true, "duration_seconds": 2.3, "tokens_used": 850, "cost_estimate": 0.0017, "error": null, "summary": "...", "article": {"title": "...", "word_count": 1200, "url": "..."}}
 ```
-╭────────────────────────────────────────────────────────────────────╮
-│                    Batch Processing Results                        │
-├───┬──────────────────────────────────┬────────┬────────┬──────────┤
-│ # │ Source                           │ Status │ Tokens │ Duration │
-├───┼──────────────────────────────────┼────────┼────────┼──────────┤
-│ 1 │ https://example.com/article-1   │ ✓ OK   │    452 │    2.34s │
-│ 2 │ https://example.com/article-2   │ ✓ OK   │    381 │    1.87s │
-│ 3 │ https://example.com/article-3   │ ✗ FAIL │      - │    0.12s │
-╰───┴──────────────────────────────────┴────────┴────────┴──────────╯
-
-Summary: 3 items | 2 succeeded | 1 failed | Total tokens: 833 | Est. cost: $0.001666 | Wall time: 4.33s
-```
-
-Token usage and estimated cost are shown per-item and aggregated at the end.
 
 ---
+
+## Configuration
+
+Configuration can be provided via a config file:
+
+```bash
+summarizer --config config.yaml summarize https://example.com/article
+```
 
 ## Debug mode
 
@@ -134,34 +150,6 @@ Token usage and estimated cost are shown per-item and aggregated at the end.
 summarizer --debug batch urls.txt
 ```
 
----
+## License
 
-## Architecture
-
-```
-src/summarizer/
-├── cli.py          # Click CLI (summarize + batch subcommands)
-├── batch.py        # BatchProcessor with ThreadPoolExecutor
-├── reporter.py     # Rich table, CSV, and JSON Lines output
-├── models.py       # Article, Summary, BatchResult dataclasses
-├── ingestion/      # URL fetching and HTML parsing
-├── llm/            # LLM client wrappers
-├── summarize.py    # Core summarization logic
-├── cache.py        # Result caching
-├── config.py       # Configuration management
-└── exceptions.py   # Custom exception hierarchy
-```
-
----
-
-## Running tests
-
-```bash
-pytest tests/
-```
-
-Run batch-specific tests:
-
-```bash
-pytest tests/test_batch.py -v
-```
+MIT
