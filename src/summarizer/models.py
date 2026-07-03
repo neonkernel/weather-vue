@@ -1,65 +1,68 @@
-"""Data models for the summarizer."""
+"""Data models for the summarizer package."""
+
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Optional
 
 
 @dataclass
-class Article:
-    """Represents a fetched article."""
+class ArticleContent:
+    """Represents the ingested content of a single article."""
+
     url: str
     title: str
-    content: str
-    source: str = ""
+    text: str
+    html: Optional[str] = None
     word_count: int = 0
 
-    def __post_init__(self):
-        if self.word_count == 0 and self.content:
-            self.word_count = len(self.content.split())
+    def __post_init__(self) -> None:
+        if self.word_count == 0 and self.text:
+            self.word_count = len(self.text.split())
 
 
 @dataclass
-class Summary:
-    """Represents a generated summary."""
-    article: Article
-    text: str
-    style: str = "default"
-    model: str = ""
+class SummaryResult:
+    """Represents the result of summarising a single article."""
+
+    article: ArticleContent
+    summary: str
     tokens_used: int = 0
-    cost_estimate: float = 0.0
+    model: str = ""
+    style: str = "default"
     duration_seconds: float = 0.0
 
 
 @dataclass
 class BatchResult:
-    """Represents the result of processing a single item in a batch."""
+    """Represents the result of processing one source in a batch run."""
+
     source: str
-    article: Optional[Article] = None
-    summary: Optional[Summary] = None
-    error: Optional[str] = None
+    article: Optional[ArticleContent]
+    summary: Optional[str]
+    error: Optional[str]
     duration_seconds: float = 0.0
     tokens_used: int = 0
-    cost_estimate: float = 0.0
-    success: bool = False
 
-    def __post_init__(self):
-        if self.summary is not None and self.error is None:
-            self.success = True
-            if self.tokens_used == 0 and self.summary.tokens_used:
-                self.tokens_used = self.summary.tokens_used
-            if self.cost_estimate == 0.0 and self.summary.cost_estimate:
-                self.cost_estimate = self.summary.cost_estimate
+    @property
+    def succeeded(self) -> bool:
+        """True when the item was processed without error."""
+        return self.error is None
+
+    @property
+    def title(self) -> str:
+        """Article title if available, otherwise the source identifier."""
+        if self.article and self.article.title:
+            return self.article.title
+        return self.source
 
 
 @dataclass
 class BatchReport:
-    """Aggregate report for a batch processing run."""
+    """Aggregate statistics for a completed batch run."""
+
     results: list[BatchResult] = field(default_factory=list)
     total_duration_seconds: float = 0.0
-    start_time: float = field(default_factory=time.time)
-    end_time: float = 0.0
 
     @property
     def total(self) -> int:
@@ -67,22 +70,18 @@ class BatchReport:
 
     @property
     def successes(self) -> int:
-        return sum(1 for r in self.results if r.success)
+        return sum(1 for r in self.results if r.succeeded)
 
     @property
     def failures(self) -> int:
-        return sum(1 for r in self.results if not r.success)
+        return self.total - self.successes
 
     @property
     def total_tokens(self) -> int:
         return sum(r.tokens_used for r in self.results)
 
     @property
-    def total_cost(self) -> float:
-        return sum(r.cost_estimate for r in self.results)
-
-    @property
     def success_rate(self) -> float:
         if self.total == 0:
             return 0.0
-        return (self.successes / self.total) * 100.0
+        return self.successes / self.total * 100

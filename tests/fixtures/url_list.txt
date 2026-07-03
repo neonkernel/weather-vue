@@ -1,8 +1,8 @@
 # Sample batch input file for integration tests
-# Lines starting with '#' and blank lines are ignored
+# Lines starting with # are ignored; blank lines are skipped.
 
-https://en.wikipedia.org/wiki/Artificial_intelligence
-https://en.wikipedia.org/wiki/Machine_learning
-https://en.wikipedia.org/wiki/Natural_language_processing
-https://en.wikipedia.org/wiki/Large_language_model
-https://en.wikipedia.org/wiki/Transformer_(deep_learning_architecture)
+https://example.com/article-1
+https://example.com/article-2
+https://example.com/article-3
+https://example.com/article-4
+https://example.com/article-5
