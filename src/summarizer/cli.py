@@ -1,267 +1,385 @@
-"""Command-line interface for the article summarizer."""
+"""
+CLI entry point for the summarizer tool.
+Includes the `config` subcommand group for managing profiles.
+"""
 from __future__ import annotations
 
+import json
 import sys
-import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import click
 
-from .config import Config
 from .exceptions import SummarizerError
-from .logger import setup_logging
-
-logger = logging.getLogger(__name__)
 
 
-def _get_config(ctx: click.Context) -> Config:
-    """Retrieve config from Click context."""
-    return ctx.ensure_object(Config)
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _get_profile_manager():
+    from .profile import ProfileManager
+    return ProfileManager()
+
+
+def _format_profile(name: str, profile: Any, active: Optional[str] = None) -> str:
+    """Format a single profile for display."""
+    data = (
+        profile.model_dump(exclude_none=True)
+        if hasattr(profile, "model_dump")
+        else profile.dict(exclude_none=True)
+    )
+    marker = " (active)" if name == active else ""
+    lines = [f"[{name}]{marker}"]
+    if profile.description:
+        lines.append(f"  description = {profile.description}")
+    for key, value in data.items():
+        if key == "description":
+            continue
+        if isinstance(value, dict):
+            for sub_key, sub_val in value.items():
+                lines.append(f"  {key}.{sub_key} = {sub_val}")
+        else:
+            lines.append(f"  {key} = {value}")
+    return "\n".join(lines)
+
+
+def _echo_success(msg: str) -> None:
+    click.echo(click.style("✓ " + msg, fg="green"))
+
+
+def _echo_error(msg: str) -> None:
+    click.echo(click.style("✗ " + msg, fg="red"), err=True)
+
+
+def _echo_info(msg: str) -> None:
+    click.echo(click.style("ℹ " + msg, fg="cyan"))
+
+
+# ── Main CLI group ────────────────────────────────────────────────────────────
 
 @click.group()
-@click.option("--verbose", "-v", is_flag=True, help="Enable verbose/debug logging.")
-@click.option("--quiet", "-q", is_flag=True, help="Suppress non-essential output.")
+@click.version_option(version="1.0.0", prog_name="summarize")
+@click.option("--profile", "-p", default=None, help="Use a specific configuration profile.")
+@click.option("--provider", default=None, help="LLM provider to use.")
+@click.option("--model", "-m", default=None, help="Model name.")
+@click.option("--style", "-s", default=None, help="Summary style.")
+@click.option("--format", "-f", "fmt", default=None, help="Output format.")
+@click.option("--max-length", default=None, type=int, help="Maximum summary length.")
+@click.option("--language", "-l", default=None, help="Output language.")
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool, quiet: bool) -> None:
-    """Article summarizer — fetch and summarize articles from URLs or files."""
-    ctx.ensure_object(Config)
-    cfg: Config = ctx.obj
-    cfg.verbose = verbose
-    cfg.quiet = quiet
-    level = logging.DEBUG if verbose else (logging.WARNING if quiet else logging.INFO)
-    setup_logging(level)
-
-
-@cli.command("summarize")
-@click.argument("source")
-@click.option("--style", "-s", default="concise", show_default=True,
-              help="Summary style: concise, detailed, bullet.")
-@click.option("--model", "-m", default=None, help="LLM model to use.")
-@click.option("--format", "output_format", default="text", show_default=True,
-              help="Output format: text, markdown, json.")
-@click.pass_context
-def summarize_cmd(
+def cli(
     ctx: click.Context,
-    source: str,
-    style: str,
+    profile: Optional[str],
+    provider: Optional[str],
     model: Optional[str],
-    output_format: str,
+    style: Optional[str],
+    fmt: Optional[str],
+    max_length: Optional[int],
+    language: Optional[str],
 ) -> None:
-    """Summarize a single article from a URL or file path."""
-    cfg = _get_config(ctx)
-    try:
-        from .ingestion import fetch_article
-        from .summarize import summarize_article
-        from .formatter import format_output
-
-        article = fetch_article(source)
-        summary = summarize_article(article, style=style, model=model or cfg.default_model)
-        output = format_output(summary, article, fmt=output_format)
-        click.echo(output)
-    except SummarizerError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
-    except Exception as exc:
-        logger.debug("Unexpected error", exc_info=True)
-        click.echo(f"Unexpected error: {exc}", err=True)
-        sys.exit(1)
+    """AI-powered text summarizer with configuration profiles."""
+    ctx.ensure_object(dict)
+    ctx.obj["profile"] = profile
+    ctx.obj["cli_flags"] = {
+        "provider": provider,
+        "model": model,
+        "style": style,
+        "format": fmt,
+        "max_length": max_length,
+        "language": language,
+    }
 
 
-@cli.command("batch")
-@click.argument("input_path", metavar="INPUT")
-@click.option(
-    "--workers", "-w",
-    default=4,
-    show_default=True,
-    type=click.IntRange(1, 32),
-    help="Number of concurrent worker threads.",
-)
-@click.option(
-    "--output", "-o",
-    default=None,
-    help="Output file path for results (CSV or JSON Lines).",
-)
-@click.option(
-    "--format", "output_format",
-    default="csv",
-    show_default=True,
-    type=click.Choice(["csv", "jsonl"], case_sensitive=False),
-    help="Output file format when --output is specified.",
-)
-@click.option(
-    "--style", "-s",
-    default="concise",
-    show_default=True,
-    help="Summary style: concise, detailed, bullet.",
-)
-@click.option(
-    "--model", "-m",
-    default=None,
-    help="LLM model to use for summarization.",
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Fetch and validate sources without calling the LLM.",
-)
+@cli.command()
+@click.argument("url_or_text")
 @click.pass_context
-def batch_cmd(
-    ctx: click.Context,
-    input_path: str,
-    workers: int,
-    output: Optional[str],
-    output_format: str,
-    style: str,
-    model: Optional[str],
-    dry_run: bool,
-) -> None:
-    """
-    Summarize multiple articles from a URL list file or directory.
+def summarize(ctx: click.Context, url_or_text: str) -> None:
+    """Summarize a URL or text string."""
+    from .config import ConfigResolver
 
-    INPUT can be:
+    resolver = ConfigResolver()
+    resolved = resolver.resolve(
+        profile_name=ctx.obj.get("profile"),
+        cli_flags=ctx.obj.get("cli_flags", {}),
+    )
 
-    \b
-      - A .txt file with one URL per line
-      - A directory of .txt or .html article files
+    click.echo(f"Using provider: {resolved.provider}, model: {resolved.model}")
+    click.echo(f"Style: {resolved.style}, Format: {resolved.format}")
+    if resolved.active_profile:
+        _echo_info(f"Active profile: {resolved.active_profile}")
+    click.echo(f"\nSummarizing: {url_or_text[:100]}...")
 
-    Examples:
 
-    \b
-      summarizer batch urls.txt --workers 8 --output results.csv
-      summarizer batch articles/ --dry-run
-      summarizer batch urls.txt --output results.jsonl --format jsonl
-    """
-    cfg = _get_config(ctx)
+# ── Config command group ──────────────────────────────────────────────────────
 
+@cli.group("config")
+def config_group() -> None:
+    """Manage configuration profiles and settings."""
+    pass
+
+
+@config_group.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+def config_list(as_json: bool) -> None:
+    """List all configuration profiles."""
+    manager = _get_profile_manager()
     try:
-        from .batch import BatchProcessor
-        from .reporter import generate_rich_table, write_output
-    except ImportError as exc:
-        click.echo(f"Import error: {exc}", err=True)
+        profiles = manager.list_profiles()
+        active = manager.get_active_profile_name()
+    except SummarizerError as e:
+        _echo_error(str(e))
         sys.exit(1)
 
-    # Try to import ingestion and summarize; provide helpful errors if missing
-    try:
-        from .ingestion import fetch_article
-    except ImportError:
-        click.echo(
-            "Error: ingestion module not found. Ensure the package is installed correctly.",
-            err=True,
+    if not profiles:
+        _echo_info("No profiles configured.")
+        _echo_info(
+            f"Config file: {manager.config_path}\n"
+            "Create a profile with: summarize config create <name>"
         )
-        sys.exit(1)
+        return
 
-    summarize_fn = None
-    if not dry_run:
-        try:
-            from .summarize import summarize_article
-            summarize_fn = summarize_article
-        except ImportError:
-            click.echo(
-                "Error: summarize module not found. Use --dry-run to skip LLM calls.",
-                err=True,
+    if as_json:
+        output = {}
+        for name, profile in profiles.items():
+            data = (
+                profile.model_dump(exclude_none=True)
+                if hasattr(profile, "model_dump")
+                else profile.dict(exclude_none=True)
             )
-            sys.exit(1)
+            output[name] = data
+        output["_active"] = active
+        click.echo(json.dumps(output, indent=2))
+        return
 
-    # Set up progress display
-    try:
-        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-        from rich.console import Console
+    click.echo(f"Profiles (config: {manager.config_path}):\n")
+    for name, profile in sorted(profiles.items()):
+        click.echo(_format_profile(name, profile, active))
+        click.echo()
 
-        console = Console(stderr=True)
-        use_rich = True
-    except ImportError:
-        use_rich = False
-        console = None
-
-    if use_rich:
-        progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=console,
-            transient=True,
-        )
+    if active:
+        _echo_info(f"Active profile: {active}")
     else:
-        progress = None
+        _echo_info("No active profile. Use 'summarize config use <name>' to activate one.")
 
-    def _progress_callback(result, completed, total):
-        status = "✓" if (result.dry_run_success if dry_run else result.success) else "✗"
-        source_short = result.source[-50:] if len(result.source) > 50 else result.source
-        if use_rich and progress and task_id is not None:
-            progress.update(
-                task_id,
-                completed=completed,
-                description=f"[{status}] {source_short}",
-            )
-        else:
-            symbol = "OK" if (result.dry_run_success if dry_run else result.success) else "FAIL"
-            click.echo(f"  [{completed}/{total}] {symbol}: {source_short}", err=True)
 
-    task_id = None
+@config_group.command("create")
+@click.argument("name")
+@click.option("--provider", default=None, help="LLM provider.")
+@click.option("--model", "-m", default=None, help="Model name.")
+@click.option("--style", "-s", default=None, help="Summary style.")
+@click.option("--format", "-f", "fmt", default=None, help="Output format.")
+@click.option("--max-length", default=None, type=int, help="Max summary length.")
+@click.option("--language", "-l", default=None, help="Output language.")
+@click.option("--description", "-d", default=None, help="Profile description.")
+@click.option("--cache-enabled/--no-cache", default=None, help="Enable/disable caching.")
+@click.option("--requests-per-minute", default=None, type=int, help="Rate limit.")
+@click.option("--activate", is_flag=True, default=False, help="Set as active profile after creating.")
+def config_create(
+    name: str,
+    provider: Optional[str],
+    model: Optional[str],
+    style: Optional[str],
+    fmt: Optional[str],
+    max_length: Optional[int],
+    language: Optional[str],
+    description: Optional[str],
+    cache_enabled: Optional[bool],
+    requests_per_minute: Optional[int],
+    activate: bool,
+) -> None:
+    """Create a new configuration profile."""
+    manager = _get_profile_manager()
 
-    processor = BatchProcessor(
-        max_workers=workers,
-        dry_run=dry_run,
-        progress_callback=_progress_callback,
-    )
+    kwargs: dict[str, Any] = {}
+    if provider:
+        kwargs["provider"] = provider
+    if model:
+        kwargs["model"] = model
+    if style:
+        kwargs["style"] = style
+    if fmt:
+        kwargs["format"] = fmt
+    if max_length is not None:
+        kwargs["max_length"] = max_length
+    if language:
+        kwargs["language"] = language
+    if description:
+        kwargs["description"] = description
+    if cache_enabled is not None:
+        from .schemas import CacheConfig
+        kwargs["cache"] = CacheConfig(enabled=cache_enabled)
+    if requests_per_minute is not None:
+        from .schemas import RateLimitConfig
+        kwargs["rate_limit"] = RateLimitConfig(requests_per_minute=requests_per_minute)
 
-    # Load sources
     try:
-        sources = processor.load_sources(input_path)
-    except (FileNotFoundError, ValueError) as exc:
-        click.echo(f"Error loading sources: {exc}", err=True)
+        manager.create_profile(name, **kwargs)
+        _echo_success(f"Created profile '{name}'.")
+        if activate:
+            manager.set_active_profile(name)
+            _echo_success(f"Activated profile '{name}'.")
+    except SummarizerError as e:
+        _echo_error(str(e))
         sys.exit(1)
 
-    mode_label = "[DRY RUN] " if dry_run else ""
-    click.echo(
-        f"{mode_label}Processing {len(sources)} source(s) with {workers} worker(s)...",
-        err=True,
-    )
 
-    # Run batch with optional progress bar
-    effective_model = model or cfg.default_model if hasattr(cfg, "default_model") else model
-
+@config_group.command("use")
+@click.argument("name")
+def config_use(name: str) -> None:
+    """Set the active configuration profile."""
+    manager = _get_profile_manager()
     try:
-        if use_rich and progress is not None:
-            with progress:
-                task_id = progress.add_task("Starting...", total=len(sources))
-                results = processor.run(
-                    sources,
-                    fetch_fn=fetch_article,
-                    summarize_fn=summarize_fn,
-                    style=style,
-                    model=effective_model,
-                )
-        else:
-            results = processor.run(
-                sources,
-                fetch_fn=fetch_article,
-                summarize_fn=summarize_fn,
-                style=style,
-                model=effective_model,
-            )
-    except Exception as exc:
-        logger.debug("Batch processing error", exc_info=True)
-        click.echo(f"Batch processing error: {exc}", err=True)
+        manager.set_active_profile(name)
+        _echo_success(f"Active profile set to '{name}'.")
+    except SummarizerError as e:
+        _echo_error(str(e))
         sys.exit(1)
 
-    # Display results table
-    generate_rich_table(results, dry_run=dry_run)
 
-    # Write output file if requested
-    if output:
+@config_group.command("unset")
+def config_unset() -> None:
+    """Clear the active profile (revert to defaults)."""
+    manager = _get_profile_manager()
+    try:
+        manager.clear_active_profile()
+        _echo_success("Active profile cleared. Using built-in defaults.")
+    except SummarizerError as e:
+        _echo_error(str(e))
+        sys.exit(1)
+
+
+@config_group.command("set")
+@click.argument("profile_name")
+@click.argument("key")
+@click.argument("value")
+def config_set(profile_name: str, key: str, value: str) -> None:
+    """Set a key-value pair on a profile.
+
+    Example: summarize config set work provider anthropic
+    """
+    manager = _get_profile_manager()
+
+    # Type-coerce value based on key
+    coerced_value: Any = _coerce_value(key, value)
+
+    try:
+        manager.upsert_profile(profile_name, **{key: coerced_value})
+        _echo_success(f"Set '{key}' = '{coerced_value}' on profile '{profile_name}'.")
+    except SummarizerError as e:
+        _echo_error(str(e))
+        sys.exit(1)
+
+
+@config_group.command("get")
+@click.argument("profile_name")
+@click.argument("key", required=False, default=None)
+def config_get(profile_name: str, key: Optional[str]) -> None:
+    """Get a setting from a profile.
+
+    If KEY is omitted, shows all settings for the profile.
+    """
+    manager = _get_profile_manager()
+    try:
+        if key is None:
+            profile = manager.get_profile(profile_name)
+            active = manager.get_active_profile_name()
+            click.echo(_format_profile(profile_name, profile, active))
+        else:
+            value = manager.get_profile_key(profile_name, key)
+            click.echo(f"{key} = {value}")
+    except SummarizerError as e:
+        _echo_error(str(e))
+        sys.exit(1)
+
+
+@config_group.command("delete")
+@click.argument("name")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+def config_delete(name: str, yes: bool) -> None:
+    """Delete a configuration profile."""
+    manager = _get_profile_manager()
+    if not yes:
+        click.confirm(f"Delete profile '{name}'?", abort=True)
+    try:
+        manager.delete_profile(name)
+        _echo_success(f"Deleted profile '{name}'.")
+    except SummarizerError as e:
+        _echo_error(str(e))
+        sys.exit(1)
+
+
+@config_group.command("rename")
+@click.argument("old_name")
+@click.argument("new_name")
+def config_rename(old_name: str, new_name: str) -> None:
+    """Rename a configuration profile."""
+    manager = _get_profile_manager()
+    try:
+        manager.rename_profile(old_name, new_name)
+        _echo_success(f"Renamed profile '{old_name}' to '{new_name}'.")
+    except SummarizerError as e:
+        _echo_error(str(e))
+        sys.exit(1)
+
+
+@config_group.command("show")
+@click.option("--profile", "-p", default=None, help="Profile to use (default: active).")
+def config_show(profile: Optional[str]) -> None:
+    """Show the resolved configuration (all sources merged)."""
+    from .config import ConfigResolver
+
+    resolver = ConfigResolver()
+    try:
+        resolved = resolver.resolve(profile_name=profile)
+    except SummarizerError as e:
+        _echo_error(str(e))
+        sys.exit(1)
+
+    click.echo("Resolved configuration:\n")
+    data = resolved.to_dict()
+    for key, value in sorted(data.items()):
+        click.echo(f"  {key} = {value}")
+
+    if resolved.active_profile:
+        click.echo(f"\nActive profile: {resolved.active_profile}")
+    else:
+        click.echo("\nNo active profile (using defaults + env vars).")
+
+
+@config_group.command("path")
+def config_path() -> None:
+    """Show the path to the config file."""
+    manager = _get_profile_manager()
+    exists = manager.config_path.exists()
+    status = "exists" if exists else "not yet created"
+    click.echo(f"{manager.config_path}  ({status})")
+
+
+def _coerce_value(key: str, value: str) -> Any:
+    """Coerce a string value to the appropriate Python type based on the key."""
+    int_keys = {"max_length", "requests_per_minute", "tokens_per_minute", "cache_ttl_hours", "cache_max_entries"}
+    bool_keys = {"cache_enabled"}
+
+    if key in int_keys:
         try:
-            write_output(results, output, fmt=output_format)
-            click.echo(f"Results written to: {output}", err=True)
-        except Exception as exc:
-            click.echo(f"Failed to write output file: {exc}", err=True)
-            sys.exit(1)
+            return int(value)
+        except ValueError:
+            raise SummarizerError(f"Key '{key}' requires an integer value, got: '{value}'")
+    elif key in bool_keys:
+        if value.lower() in ("true", "1", "yes", "on"):
+            return True
+        elif value.lower() in ("false", "0", "no", "off"):
+            return False
+        else:
+            raise SummarizerError(f"Key '{key}' requires a boolean value (true/false), got: '{value}'")
+    return value
 
-    # Exit with non-zero code if any failures occurred
-    failures = [r for r in results if r.error]
-    if failures:
-        sys.exit(1)
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main() -> None:
+    cli(obj={})
+
+
+if __name__ == "__main__":
+    main()
