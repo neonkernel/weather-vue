@@ -1,6 +1,6 @@
 """
 ProfileManager: reads/writes ~/.config/summarizer/config.toml
-CRUD operations for named configuration profiles.
+Provides CRUD operations for named configuration profiles.
 """
 from __future__ import annotations
 
@@ -9,15 +9,26 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from .exceptions import ConfigError
-from .schemas import ConfigFile, ProfileConfig, DefaultConfig
+from .schemas import ConfigFile, ProfileConfig, DefaultConfig, VALID_PROVIDERS, VALID_STYLES, VALID_FORMATS
+from .exceptions import SummarizerError
+
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ImportError:
+        tomllib = None  # type: ignore[assignment]
+
+try:
+    import tomli_w
+    HAS_TOMLI_W = True
+except ImportError:
+    HAS_TOMLI_W = False
 
 
 def _get_config_dir() -> Path:
-    """
-    Return the XDG Base Directory config path for the summarizer.
-    Respects XDG_CONFIG_HOME env var, falls back to ~/.config/summarizer.
-    """
+    """Return the XDG config directory for the summarizer."""
     xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "")
     if xdg_config_home:
         base = Path(xdg_config_home)
@@ -26,328 +37,311 @@ def _get_config_dir() -> Path:
     return base / "summarizer"
 
 
-def _load_toml(path: Path) -> dict[str, Any]:
-    """Load a TOML file, returning an empty dict if not found."""
-    if not path.exists():
-        return {}
-    try:
-        if sys.version_info >= (3, 11):
-            import tomllib
-            with open(path, "rb") as f:
-                return tomllib.load(f)
-        else:
-            try:
-                import tomli
-                with open(path, "rb") as f:
-                    return tomli.load(f)
-            except ImportError:
-                # Fallback: try tomllib anyway (might be backported)
-                raise ConfigError(
-                    "Python < 3.11 requires the 'tomli' package. "
-                    "Install it with: pip install tomli"
-                )
-    except Exception as e:
-        if isinstance(e, ConfigError):
-            raise
-        raise ConfigError(f"Failed to parse config file at {path}: {e}") from e
+def _get_config_path() -> Path:
+    """Return the path to the main config file."""
+    return _get_config_dir() / "config.toml"
 
 
-def _dump_toml(data: dict[str, Any], path: Path) -> None:
-    """Write a dict as TOML to a file."""
-    try:
-        import tomli_w
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "wb") as f:
-            tomli_w.dump(data, f)
-    except ImportError:
-        # Fallback: write TOML manually for simple cases
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(_dict_to_toml_str(data))
-
-
-def _dict_to_toml_str(data: dict[str, Any], prefix: str = "") -> str:
-    """
-    Simple TOML serializer for nested dicts (no library dependency).
-    Handles strings, ints, floats, bools, and nested tables.
-    """
+def _dict_to_toml_string(data: dict[str, Any], indent: int = 0) -> str:
+    """Simple TOML serializer for our config structure."""
     lines: list[str] = []
-    nested: list[tuple[str, dict]] = []
+    # Write scalar values first
+    scalars: dict[str, Any] = {}
+    tables: dict[str, Any] = {}
 
     for key, value in data.items():
-        full_key = f"{prefix}.{key}" if prefix else key
         if isinstance(value, dict):
-            nested.append((full_key, value))
-        elif isinstance(value, bool):
-            lines.append(f"{key} = {str(value).lower()}")
-        elif isinstance(value, str):
-            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-            lines.append(f'{key} = "{escaped}"')
-        elif isinstance(value, (int, float)):
-            lines.append(f"{key} = {value}")
-        elif value is None:
-            pass  # Skip None values
+            tables[key] = value
         else:
-            lines.append(f'{key} = "{value}"')
+            scalars[key] = value
 
-    result = "\n".join(lines)
+    for key, value in scalars.items():
+        lines.append(f"{key} = {_toml_value(value)}")
 
-    for full_key, nested_dict in nested:
-        section = f"\n[{full_key}]\n"
-        section += _dict_to_toml_str(nested_dict)
-        result += section
+    for key, value in tables.items():
+        lines.append(f"\n[{key}]")
+        for k, v in value.items():
+            if not isinstance(v, dict):
+                lines.append(f"{k} = {_toml_value(v)}")
+        # Nested tables
+        for k, v in value.items():
+            if isinstance(v, dict):
+                lines.append(f"\n[{key}.{k}]")
+                for kk, vv in v.items():
+                    lines.append(f"{kk} = {_toml_value(vv)}")
 
-    return result
+    return "\n".join(lines)
+
+
+def _toml_value(value: Any) -> str:
+    """Convert a Python value to a TOML string representation."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    elif isinstance(value, int):
+        return str(value)
+    elif isinstance(value, float):
+        return str(value)
+    elif isinstance(value, str):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    elif value is None:
+        return '""'
+    else:
+        return f'"{value}"'
+
+
+def _config_to_toml(config: ConfigFile) -> str:
+    """Serialize a ConfigFile to a TOML string."""
+    lines: list[str] = []
+
+    # [default] section
+    lines.append("[default]")
+    lines.append(f'profile = "{config.default.profile}"')
+    lines.append("")
+
+    # Profile sections
+    for profile_name, profile in config.profiles.items():
+        lines.append(f"[{profile_name}]")
+        profile_dict = profile.model_dump(exclude_none=True)
+
+        # Write scalar profile fields
+        scalar_keys = ["provider", "model", "style", "format", "max_length",
+                       "temperature", "description"]
+        for key in scalar_keys:
+            if key in profile_dict:
+                val = profile_dict[key]
+                lines.append(f"{key} = {_toml_value(val)}")
+
+        # Write cache sub-table
+        if "cache" in profile_dict:
+            cache = profile_dict["cache"]
+            lines.append(f"\n[{profile_name}.cache]")
+            for k, v in cache.items():
+                lines.append(f"{k} = {_toml_value(v)}")
+
+        # Write rate_limit sub-table
+        if "rate_limit" in profile_dict:
+            rl = profile_dict["rate_limit"]
+            lines.append(f"\n[{profile_name}.rate_limit]")
+            for k, v in rl.items():
+                lines.append(f"{k} = {_toml_value(v)}")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+class ProfileError(SummarizerError):
+    """Raised when a profile operation fails."""
+    pass
 
 
 class ProfileManager:
     """
-    Manages configuration profiles stored in ~/.config/summarizer/config.toml.
-
-    Usage:
-        pm = ProfileManager()
-        pm.create_profile("work", provider="openai", model="gpt-4")
-        pm.use_profile("work")
-        profile = pm.get_profile("work")
+    Manages named configuration profiles stored in ~/.config/summarizer/config.toml.
     """
 
-    def __init__(self, config_dir: Optional[Path] = None) -> None:
-        self.config_dir = config_dir or _get_config_dir()
-        self.config_path = self.config_dir / "config.toml"
+    def __init__(self, config_dir: Optional[Path] = None):
+        if config_dir is not None:
+            self._config_dir = config_dir
+        else:
+            self._config_dir = _get_config_dir()
+        self._config_path = self._config_dir / "config.toml"
         self._config: Optional[ConfigFile] = None
 
-    def _load(self) -> ConfigFile:
-        """Load and validate the config file, caching the result."""
-        if self._config is not None:
-            return self._config
+    @property
+    def config_path(self) -> Path:
+        return self._config_path
 
-        raw = _load_toml(self.config_path)
+    def _ensure_config_dir(self) -> None:
+        self._config_dir.mkdir(parents=True, exist_ok=True)
+
+    def _load_raw(self) -> dict[str, Any]:
+        """Load the raw TOML data from the config file."""
+        if not self._config_path.exists():
+            return {}
+        if tomllib is None:
+            raise ProfileError(
+                "No TOML library available. Install 'tomli' for Python < 3.11: pip install tomli"
+            )
         try:
-            from pydantic import ValidationError
-            config = ConfigFile.model_validate(raw)
+            with open(self._config_path, "rb") as f:
+                return tomllib.load(f)
         except Exception as e:
-            from pydantic import ValidationError
-            if isinstance(e, ValidationError):
-                errors = e.errors()
-                messages = []
-                for err in errors:
-                    loc = " -> ".join(str(l) for l in err["loc"])
-                    messages.append(f"  {loc}: {err['msg']}")
-                raise ConfigError(
-                    f"Invalid config file at {self.config_path}:\n" + "\n".join(messages)
-                ) from e
-            raise ConfigError(f"Failed to load config: {e}") from e
+            raise ProfileError(f"Failed to parse config file {self._config_path}: {e}") from e
 
+    def load(self) -> ConfigFile:
+        """Load and validate the config file, returning a ConfigFile."""
+        from pydantic import ValidationError
+        raw = self._load_raw()
+        try:
+            config = ConfigFile.model_validate(raw)
+        except ValidationError as e:
+            errors = []
+            for err in e.errors():
+                loc = " -> ".join(str(l) for l in err["loc"])
+                errors.append(f"  {loc}: {err['msg']}")
+            raise ProfileError(
+                f"Invalid config file {self._config_path}:\n" + "\n".join(errors)
+            ) from e
         self._config = config
+        return config
+
+    def save(self, config: ConfigFile) -> None:
+        """Save the ConfigFile to disk."""
+        self._ensure_config_dir()
+        toml_str = _config_to_toml(config)
+        with open(self._config_path, "w", encoding="utf-8") as f:
+            f.write(toml_str)
+        self._config = config
+
+    def get_config(self) -> ConfigFile:
+        """Return cached config or load from disk."""
+        if self._config is None:
+            self._config = self.load()
         return self._config
-
-    def _save(self, config: ConfigFile) -> None:
-        """Save the config to disk and invalidate cache."""
-        data = config.to_toml_dict()
-        _dump_toml(data, self.config_path)
-        self._config = config
-
-    def _invalidate_cache(self) -> None:
-        self._config = None
-
-    def load_config(self) -> ConfigFile:
-        """Public method to load the full config file."""
-        return self._load()
 
     def list_profiles(self) -> list[str]:
         """Return a list of all profile names."""
-        config = self._load()
+        config = self.get_config()
         return list(config.profiles.keys())
 
-    def get_profile(self, name: str) -> Optional[ProfileConfig]:
-        """Get a profile by name, or None if it doesn't exist."""
-        config = self._load()
-        return config.profiles.get(name)
+    def get_profile(self, name: str) -> ProfileConfig:
+        """Get a profile by name."""
+        config = self.get_config()
+        profile = config.get_profile(name)
+        if profile is None:
+            raise ProfileError(
+                f"Profile '{name}' not found. Available profiles: {', '.join(self.list_profiles()) or 'none'}"
+            )
+        return profile
 
-    def get_active_profile_name(self) -> str:
-        """Return the name of the currently active profile."""
-        config = self._load()
-        return config.default.profile
+    def create_profile(
+        self,
+        name: str,
+        overwrite: bool = False,
+        **kwargs: Any
+    ) -> ProfileConfig:
+        """Create a new profile with the given settings."""
+        _validate_profile_name(name)
+        config = self.get_config()
 
-    def get_active_profile(self) -> Optional[ProfileConfig]:
-        """Return the currently active profile config, or None if it's 'default'."""
-        config = self._load()
-        active = config.default.profile
-        if active == "default":
-            return None
-        return config.profiles.get(active)
-
-    def create_profile(self, name: str, **kwargs: Any) -> ProfileConfig:
-        """
-        Create a new named profile with the given settings.
-        Raises ConfigError if profile already exists.
-        """
-        self._invalidate_cache()
-        config = self._load()
-
-        if name in config.profiles:
-            raise ConfigError(
-                f"Profile '{name}' already exists. Use 'config set' to modify it, "
-                "or delete it first."
+        if name in config.profiles and not overwrite:
+            raise ProfileError(
+                f"Profile '{name}' already exists. Use --overwrite to replace it."
             )
 
-        if name == "default":
-            raise ConfigError(
-                "'default' is a reserved profile name. Use 'config use' to set "
-                "top-level defaults."
-            )
-
-        # Build profile from kwargs
-        profile_data = _extract_profile_data(kwargs)
+        from pydantic import ValidationError
         try:
-            from pydantic import ValidationError
-            profile = ProfileConfig.model_validate(profile_data)
-        except Exception as e:
-            from pydantic import ValidationError
-            if isinstance(e, ValidationError):
-                raise ConfigError(f"Invalid profile settings: {e}") from e
-            raise
+            profile = ProfileConfig(**kwargs)
+        except ValidationError as e:
+            errors = []
+            for err in e.errors():
+                loc = " -> ".join(str(l) for l in err["loc"])
+                errors.append(f"  {loc}: {err['msg']}")
+            raise ProfileError(
+                f"Invalid profile settings:\n" + "\n".join(errors)
+            ) from e
 
         config.profiles[name] = profile
-        self._save(config)
+        self.save(config)
         return profile
 
     def update_profile(self, name: str, **kwargs: Any) -> ProfileConfig:
-        """
-        Update settings on an existing profile.
-        Raises ConfigError if profile does not exist.
-        """
-        self._invalidate_cache()
-        config = self._load()
-
+        """Update an existing profile's settings."""
+        config = self.get_config()
         if name not in config.profiles:
-            raise ConfigError(
-                f"Profile '{name}' does not exist. "
-                f"Available profiles: {', '.join(config.profiles.keys()) or 'none'}. "
-                "Use 'config create' to create it."
-            )
+            raise ProfileError(f"Profile '{name}' not found.")
 
         existing = config.profiles[name]
-        existing_data = existing.model_dump(exclude_none=True)
-        updates = _extract_profile_data(kwargs)
-        merged = {**existing_data, **updates}
+        existing_dict = existing.model_dump()
 
+        # Merge: flatten cache and rate_limit updates
+        for key, value in kwargs.items():
+            if key in ("cache", "rate_limit") and isinstance(value, dict):
+                existing_dict[key].update(value)
+            else:
+                existing_dict[key] = value
+
+        from pydantic import ValidationError
         try:
-            from pydantic import ValidationError
-            profile = ProfileConfig.model_validate(merged)
-        except Exception as e:
-            from pydantic import ValidationError
-            if isinstance(e, ValidationError):
-                raise ConfigError(f"Invalid profile settings: {e}") from e
-            raise
+            updated = ProfileConfig(**existing_dict)
+        except ValidationError as e:
+            errors = []
+            for err in e.errors():
+                loc = " -> ".join(str(l) for l in err["loc"])
+                errors.append(f"  {loc}: {err['msg']}")
+            raise ProfileError(
+                f"Invalid profile settings:\n" + "\n".join(errors)
+            ) from e
 
-        config.profiles[name] = profile
-        self._save(config)
-        return profile
+        config.profiles[name] = updated
+        self.save(config)
+        return updated
 
     def delete_profile(self, name: str) -> None:
-        """
-        Delete a named profile.
-        If it was the active profile, resets active to 'default'.
-        """
-        self._invalidate_cache()
-        config = self._load()
-
+        """Delete a profile."""
+        config = self.get_config()
         if name not in config.profiles:
-            raise ConfigError(f"Profile '{name}' does not exist.")
+            raise ProfileError(f"Profile '{name}' not found.")
+        if name == "default":
+            raise ProfileError("Cannot delete the 'default' profile.")
 
         del config.profiles[name]
 
-        # Reset active profile if we just deleted it
+        # If the active profile was deleted, reset to 'default'
         if config.default.profile == name:
             config.default.profile = "default"
 
-        self._save(config)
+        self.save(config)
 
-    def use_profile(self, name: str) -> None:
-        """
-        Set the active profile.
-        Pass 'default' to clear and use built-in defaults.
-        """
-        self._invalidate_cache()
-        config = self._load()
+    def set_active_profile(self, name: str) -> None:
+        """Set the active (default) profile."""
+        config = self.get_config()
 
         if name != "default" and name not in config.profiles:
-            raise ConfigError(
-                f"Profile '{name}' does not exist. "
-                f"Available profiles: {', '.join(config.profiles.keys()) or 'none'}. "
-                "Use 'config create' to create it."
+            raise ProfileError(
+                f"Profile '{name}' not found. Available profiles: {', '.join(self.list_profiles()) or 'none'}"
             )
 
         config.default.profile = name
-        self._save(config)
+        self.save(config)
 
-    def set_default(self, **kwargs: Any) -> None:
-        """
-        Set top-level default settings (not tied to a named profile).
-        """
-        self._invalidate_cache()
-        config = self._load()
-        default_data = config.default.model_dump(exclude_none=True)
-        updates = {k: v for k, v in kwargs.items() if v is not None}
-        merged = {**default_data, **updates}
+    def get_active_profile_name(self) -> str:
+        """Return the name of the currently active profile."""
+        config = self.get_config()
+        return config.default.profile
 
-        try:
-            from pydantic import ValidationError
-            config.default = DefaultConfig.model_validate(merged)
-        except Exception as e:
-            from pydantic import ValidationError
-            if isinstance(e, ValidationError):
-                raise ConfigError(f"Invalid default settings: {e}") from e
-            raise
+    def get_active_profile(self) -> Optional[ProfileConfig]:
+        """Return the currently active ProfileConfig, or None if not set."""
+        config = self.get_config()
+        return config.get_active_profile()
 
-        self._save(config)
+    def set_profile_key(self, profile_name: str, key: str, value: Any) -> None:
+        """Set a single key in a profile."""
+        self.update_profile(profile_name, **{key: value})
 
-    def get_setting(self, key: str, profile_name: Optional[str] = None) -> Any:
-        """
-        Get a specific setting value from a profile (or the active profile).
-        Returns None if not set.
-        """
-        config = self._load()
-        target_name = profile_name or config.default.profile
-
-        if target_name == "default":
-            # Look in [default] section
-            return getattr(config.default, key, None)
-
-        profile = config.profiles.get(target_name)
-        if profile is None:
-            raise ConfigError(f"Profile '{target_name}' does not exist.")
-
-        return getattr(profile, key, None)
-
-    def set_setting(self, key: str, value: Any, profile_name: Optional[str] = None) -> None:
-        """
-        Set a specific setting in a profile (or the active profile).
-        """
-        config = self._load()
-        target_name = profile_name or config.default.profile
-
-        if target_name == "default":
-            self.set_default(**{key: value})
-        else:
-            self.update_profile(target_name, **{key: value})
-
-    def profile_as_dict(self, name: str) -> dict[str, Any]:
-        """Return a profile as a flat dictionary."""
-        config = self._load()
-        if name == "default":
-            return config.default.model_dump(exclude_none=True)
-        profile = config.profiles.get(name)
-        if profile is None:
-            raise ConfigError(f"Profile '{name}' does not exist.")
-        return profile.model_dump(exclude_none=True)
+    def get_profile_key(self, profile_name: str, key: str) -> Any:
+        """Get a single key from a profile."""
+        profile = self.get_profile(profile_name)
+        profile_dict = profile.model_dump()
+        if key not in profile_dict:
+            raise ProfileError(
+                f"Unknown key '{key}'. Valid keys: {', '.join(sorted(profile_dict.keys()))}"
+            )
+        return profile_dict[key]
 
 
-def _extract_profile_data(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Extract and clean profile data from kwargs."""
-    data: dict[str, Any] = {}
-    for k, v in kwargs.items():
-        if v is not None:
-            data[k] = v
-    return data
+def _validate_profile_name(name: str) -> None:
+    """Validate that a profile name is acceptable."""
+    reserved = {"default", "profiles"}
+    if not name:
+        raise ProfileError("Profile name cannot be empty.")
+    if not name.replace("_", "").replace("-", "").isalnum():
+        raise ProfileError(
+            f"Profile name '{name}' is invalid. Use only letters, numbers, hyphens, and underscores."
+        )
+    if name in reserved:
+        raise ProfileError(
+            f"'{name}' is a reserved name and cannot be used as a profile name."
+        )

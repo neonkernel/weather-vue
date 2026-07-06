@@ -1,6 +1,7 @@
 """
-Custom exceptions for the summarizer package.
+Shared exception base classes for the summarizer package.
 """
+from __future__ import annotations
 
 
 class SummarizerError(Exception):
@@ -8,36 +9,21 @@ class SummarizerError(Exception):
     pass
 
 
-class ConfigError(SummarizerError):
-    """Raised for configuration errors (invalid values, missing files, etc.)."""
+class IngestionError(SummarizerError):
+    """Raised when content ingestion fails."""
     pass
 
 
-class ProfileNotFoundError(ConfigError):
-    """Raised when a requested profile does not exist."""
-    pass
-
-
-class ValidationError(ConfigError):
-    """Raised when config file fails schema validation."""
-    pass
-
-
-class ProviderError(SummarizerError):
-    """Raised when an LLM provider encounters an error."""
+class LLMError(SummarizerError):
+    """Raised when an LLM call fails."""
     pass
 
 
 class RateLimitError(SummarizerError):
-    """Raised when rate limits are exceeded."""
+    """Raised when a rate limit is exceeded."""
     pass
 
 
 class CacheError(SummarizerError):
-    """Raised when cache operations fail."""
-    pass
-
-
-class IngestError(SummarizerError):
-    """Raised when content ingestion fails."""
+    """Raised when a cache operation fails."""
     pass
