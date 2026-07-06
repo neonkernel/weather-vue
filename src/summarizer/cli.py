@@ -1,71 +1,76 @@
 """
 CLI entry point for the summarizer tool.
-Includes the `config` subcommand group for managing profiles.
+Includes the `config` subcommand group for managing configuration profiles.
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional, Any
 
 import click
 
-from .exceptions import SummarizerError
+from .config import ConfigResolver
+from .exceptions import ConfigError
+from .profile import ProfileManager
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Shared context ──────────────────────────────────────────────────────────
 
-def _get_profile_manager():
-    from .profile import ProfileManager
-    return ProfileManager()
+pass_profile_manager = click.make_pass_decorator(ProfileManager, ensure=True)
 
 
-def _format_profile(name: str, profile: Any, active: Optional[str] = None) -> str:
-    """Format a single profile for display."""
-    data = (
-        profile.model_dump(exclude_none=True)
-        if hasattr(profile, "model_dump")
-        else profile.dict(exclude_none=True)
-    )
-    marker = " (active)" if name == active else ""
-    lines = [f"[{name}]{marker}"]
-    if profile.description:
-        lines.append(f"  description = {profile.description}")
-    for key, value in data.items():
-        if key == "description":
-            continue
-        if isinstance(value, dict):
-            for sub_key, sub_val in value.items():
-                lines.append(f"  {key}.{sub_key} = {sub_val}")
-        else:
-            lines.append(f"  {key} = {value}")
-    return "\n".join(lines)
+def _get_profile_manager(ctx: click.Context) -> ProfileManager:
+    """Get or create a ProfileManager from the Click context."""
+    if not hasattr(ctx, "obj") or ctx.obj is None or not isinstance(ctx.obj, dict):
+        ctx.ensure_object(dict)
+    obj = ctx.obj
+    if "profile_manager" not in obj:
+        config_dir = obj.get("config_dir")
+        obj["profile_manager"] = ProfileManager(
+            config_dir=Path(config_dir) if config_dir else None
+        )
+    return obj["profile_manager"]
 
 
-def _echo_success(msg: str) -> None:
-    click.echo(click.style("✓ " + msg, fg="green"))
-
-
-def _echo_error(msg: str) -> None:
-    click.echo(click.style("✗ " + msg, fg="red"), err=True)
-
-
-def _echo_info(msg: str) -> None:
-    click.echo(click.style("ℹ " + msg, fg="cyan"))
-
-
-# ── Main CLI group ────────────────────────────────────────────────────────────
+# ── Main CLI group ──────────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option(version="1.0.0", prog_name="summarize")
-@click.option("--profile", "-p", default=None, help="Use a specific configuration profile.")
-@click.option("--provider", default=None, help="LLM provider to use.")
-@click.option("--model", "-m", default=None, help="Model name.")
-@click.option("--style", "-s", default=None, help="Summary style.")
-@click.option("--format", "-f", "fmt", default=None, help="Output format.")
-@click.option("--max-length", default=None, type=int, help="Maximum summary length.")
-@click.option("--language", "-l", default=None, help="Output language.")
+@click.option(
+    "--profile",
+    default=None,
+    help="Use a specific configuration profile.",
+    metavar="NAME",
+)
+@click.option(
+    "--provider",
+    default=None,
+    help="LLM provider (openai, anthropic, ollama, openrouter).",
+)
+@click.option(
+    "--model",
+    default=None,
+    help="Model name to use.",
+)
+@click.option(
+    "--style",
+    default=None,
+    type=click.Choice(["concise", "detailed", "bullet", "academic", "casual"]),
+    help="Summarization style.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    default=None,
+    type=click.Choice(["text", "markdown", "json", "html"]),
+    help="Output format.",
+)
+@click.option(
+    "--config-dir",
+    default=None,
+    help="Override config directory path.",
+    metavar="PATH",
+)
 @click.pass_context
 def cli(
     ctx: click.Context,
@@ -73,311 +78,378 @@ def cli(
     provider: Optional[str],
     model: Optional[str],
     style: Optional[str],
-    fmt: Optional[str],
-    max_length: Optional[int],
-    language: Optional[str],
+    output_format: Optional[str],
+    config_dir: Optional[str],
 ) -> None:
-    """AI-powered text summarizer with configuration profiles."""
+    """Summarizer - AI-powered text summarization tool."""
     ctx.ensure_object(dict)
-    ctx.obj["profile"] = profile
     ctx.obj["cli_flags"] = {
+        "profile": profile,
         "provider": provider,
         "model": model,
         "style": style,
-        "format": fmt,
-        "max_length": max_length,
-        "language": language,
+        "format": output_format,
     }
+    if config_dir:
+        ctx.obj["config_dir"] = config_dir
 
 
 @cli.command()
-@click.argument("url_or_text")
+@click.argument("source")
+@click.option("--max-length", default=None, type=int, help="Maximum summary length.")
+@click.option("--temperature", default=None, type=float, help="LLM temperature (0.0-2.0).")
 @click.pass_context
-def summarize(ctx: click.Context, url_or_text: str) -> None:
-    """Summarize a URL or text string."""
-    from .config import ConfigResolver
+def summarize(
+    ctx: click.Context,
+    source: str,
+    max_length: Optional[int],
+    temperature: Optional[float],
+) -> None:
+    """Summarize text from SOURCE (URL, file path, or '-' for stdin)."""
+    pm = _get_profile_manager(ctx)
+    resolver = ConfigResolver(profile_manager=pm)
 
-    resolver = ConfigResolver()
-    resolved = resolver.resolve(
-        profile_name=ctx.obj.get("profile"),
-        cli_flags=ctx.obj.get("cli_flags", {}),
-    )
+    cli_flags = ctx.obj.get("cli_flags", {})
+    cli_flags["max_length"] = max_length
+    cli_flags["temperature"] = temperature
 
-    click.echo(f"Using provider: {resolved.provider}, model: {resolved.model}")
-    click.echo(f"Style: {resolved.style}, Format: {resolved.format}")
-    if resolved.active_profile:
-        _echo_info(f"Active profile: {resolved.active_profile}")
-    click.echo(f"\nSummarizing: {url_or_text[:100]}...")
+    try:
+        config = resolver.resolve(cli_flags=cli_flags)
+        click.echo(f"Summarizing '{source}' with profile '{config.profile}'...")
+        click.echo(f"  Provider : {config.provider}")
+        click.echo(f"  Model    : {config.model}")
+        click.echo(f"  Style    : {config.style}")
+        click.echo(f"  Format   : {config.format}")
+        # Actual summarization would happen here
+    except ConfigError as e:
+        click.secho(f"Configuration error: {e}", fg="red", err=True)
+        sys.exit(1)
 
 
-# ── Config command group ──────────────────────────────────────────────────────
+# ── Config subcommand group ─────────────────────────────────────────────────
 
 @cli.group("config")
-def config_group() -> None:
+@click.pass_context
+def config_group(ctx: click.Context) -> None:
     """Manage configuration profiles and settings."""
-    pass
+    ctx.ensure_object(dict)
 
 
 @config_group.command("list")
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-def config_list(as_json: bool) -> None:
+@click.option("--verbose", "-v", is_flag=True, help="Show profile details.")
+@click.pass_context
+def config_list(ctx: click.Context, verbose: bool) -> None:
     """List all configuration profiles."""
-    manager = _get_profile_manager()
+    pm = _get_profile_manager(ctx)
     try:
-        profiles = manager.list_profiles()
-        active = manager.get_active_profile_name()
-    except SummarizerError as e:
-        _echo_error(str(e))
-        sys.exit(1)
+        profiles = pm.list_profiles()
+        active = pm.get_active_profile_name()
 
-    if not profiles:
-        _echo_info("No profiles configured.")
-        _echo_info(
-            f"Config file: {manager.config_path}\n"
-            "Create a profile with: summarize config create <name>"
-        )
-        return
-
-    if as_json:
-        output = {}
-        for name, profile in profiles.items():
-            data = (
-                profile.model_dump(exclude_none=True)
-                if hasattr(profile, "model_dump")
-                else profile.dict(exclude_none=True)
+        if not profiles:
+            click.echo("No profiles defined.")
+            click.echo(
+                "Create one with: summarize config create <name> --provider openai"
             )
-            output[name] = data
-        output["_active"] = active
-        click.echo(json.dumps(output, indent=2))
-        return
+            return
 
-    click.echo(f"Profiles (config: {manager.config_path}):\n")
-    for name, profile in sorted(profiles.items()):
-        click.echo(_format_profile(name, profile, active))
-        click.echo()
+        click.echo(f"Active profile: {active}")
+        click.echo("")
+        click.echo("Profiles:")
+        for name in profiles:
+            marker = "* " if name == active else "  "
+            if verbose:
+                profile_dict = pm.profile_as_dict(name)
+                click.echo(f"{marker}{name}:")
+                for k, v in profile_dict.items():
+                    if k not in ("cache", "rate_limit", "extra"):
+                        click.echo(f"     {k} = {v}")
+            else:
+                click.echo(f"{marker}{name}")
 
-    if active:
-        _echo_info(f"Active profile: {active}")
-    else:
-        _echo_info("No active profile. Use 'summarize config use <name>' to activate one.")
+    except ConfigError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        sys.exit(1)
 
 
 @config_group.command("create")
-@click.argument("name")
+@click.argument("profile_name")
 @click.option("--provider", default=None, help="LLM provider.")
-@click.option("--model", "-m", default=None, help="Model name.")
-@click.option("--style", "-s", default=None, help="Summary style.")
-@click.option("--format", "-f", "fmt", default=None, help="Output format.")
-@click.option("--max-length", default=None, type=int, help="Max summary length.")
-@click.option("--language", "-l", default=None, help="Output language.")
-@click.option("--description", "-d", default=None, help="Profile description.")
-@click.option("--cache-enabled/--no-cache", default=None, help="Enable/disable caching.")
-@click.option("--requests-per-minute", default=None, type=int, help="Rate limit.")
-@click.option("--activate", is_flag=True, default=False, help="Set as active profile after creating.")
+@click.option("--model", default=None, help="Model name.")
+@click.option(
+    "--style",
+    default=None,
+    type=click.Choice(["concise", "detailed", "bullet", "academic", "casual"]),
+    help="Summarization style.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    default=None,
+    type=click.Choice(["text", "markdown", "json", "html"]),
+    help="Output format.",
+)
+@click.option("--max-length", default=None, type=int, help="Maximum summary length.")
+@click.option("--temperature", default=None, type=float, help="LLM temperature.")
+@click.option("--cache/--no-cache", default=None, help="Enable/disable cache.")
+@click.option("--cache-ttl", default=None, type=int, help="Cache TTL in hours.")
+@click.option("--rpm", default=None, type=int, help="Rate limit: requests per minute.")
+@click.option("--use", "activate", is_flag=True, help="Set as active profile after creating.")
+@click.pass_context
 def config_create(
-    name: str,
+    ctx: click.Context,
+    profile_name: str,
     provider: Optional[str],
     model: Optional[str],
     style: Optional[str],
-    fmt: Optional[str],
+    output_format: Optional[str],
     max_length: Optional[int],
-    language: Optional[str],
-    description: Optional[str],
-    cache_enabled: Optional[bool],
-    requests_per_minute: Optional[int],
+    temperature: Optional[float],
+    cache: Optional[bool],
+    cache_ttl: Optional[int],
+    rpm: Optional[int],
     activate: bool,
 ) -> None:
     """Create a new configuration profile."""
-    manager = _get_profile_manager()
-
-    kwargs: dict[str, Any] = {}
-    if provider:
-        kwargs["provider"] = provider
-    if model:
-        kwargs["model"] = model
-    if style:
-        kwargs["style"] = style
-    if fmt:
-        kwargs["format"] = fmt
-    if max_length is not None:
-        kwargs["max_length"] = max_length
-    if language:
-        kwargs["language"] = language
-    if description:
-        kwargs["description"] = description
-    if cache_enabled is not None:
-        from .schemas import CacheConfig
-        kwargs["cache"] = CacheConfig(enabled=cache_enabled)
-    if requests_per_minute is not None:
-        from .schemas import RateLimitConfig
-        kwargs["rate_limit"] = RateLimitConfig(requests_per_minute=requests_per_minute)
-
+    pm = _get_profile_manager(ctx)
     try:
-        manager.create_profile(name, **kwargs)
-        _echo_success(f"Created profile '{name}'.")
+        kwargs: dict[str, Any] = {}
+        if provider is not None:
+            kwargs["provider"] = provider
+        if model is not None:
+            kwargs["model"] = model
+        if style is not None:
+            kwargs["style"] = style
+        if output_format is not None:
+            kwargs["format"] = output_format
+        if max_length is not None:
+            kwargs["max_length"] = max_length
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+
+        # Handle nested settings
+        if cache is not None or cache_ttl is not None:
+            from .schemas import CacheConfig
+            cache_data: dict[str, Any] = {}
+            if cache is not None:
+                cache_data["enabled"] = cache
+            if cache_ttl is not None:
+                cache_data["ttl_hours"] = cache_ttl
+            kwargs["cache"] = cache_data
+
+        if rpm is not None:
+            from .schemas import RateLimitConfig
+            kwargs["rate_limit"] = {"requests_per_minute": rpm}
+
+        profile = pm.create_profile(profile_name, **kwargs)
+
+        click.secho(f"✓ Profile '{profile_name}' created.", fg="green")
+
         if activate:
-            manager.set_active_profile(name)
-            _echo_success(f"Activated profile '{name}'.")
-    except SummarizerError as e:
-        _echo_error(str(e))
+            pm.use_profile(profile_name)
+            click.secho(f"✓ Profile '{profile_name}' is now active.", fg="green")
+
+    except ConfigError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
         sys.exit(1)
 
 
 @config_group.command("use")
-@click.argument("name")
-def config_use(name: str) -> None:
-    """Set the active configuration profile."""
-    manager = _get_profile_manager()
-    try:
-        manager.set_active_profile(name)
-        _echo_success(f"Active profile set to '{name}'.")
-    except SummarizerError as e:
-        _echo_error(str(e))
-        sys.exit(1)
-
-
-@config_group.command("unset")
-def config_unset() -> None:
-    """Clear the active profile (revert to defaults)."""
-    manager = _get_profile_manager()
-    try:
-        manager.clear_active_profile()
-        _echo_success("Active profile cleared. Using built-in defaults.")
-    except SummarizerError as e:
-        _echo_error(str(e))
-        sys.exit(1)
-
-
-@config_group.command("set")
 @click.argument("profile_name")
-@click.argument("key")
-@click.argument("value")
-def config_set(profile_name: str, key: str, value: str) -> None:
-    """Set a key-value pair on a profile.
-
-    Example: summarize config set work provider anthropic
-    """
-    manager = _get_profile_manager()
-
-    # Type-coerce value based on key
-    coerced_value: Any = _coerce_value(key, value)
-
+@click.pass_context
+def config_use(ctx: click.Context, profile_name: str) -> None:
+    """Set the active configuration profile."""
+    pm = _get_profile_manager(ctx)
     try:
-        manager.upsert_profile(profile_name, **{key: coerced_value})
-        _echo_success(f"Set '{key}' = '{coerced_value}' on profile '{profile_name}'.")
-    except SummarizerError as e:
-        _echo_error(str(e))
+        pm.use_profile(profile_name)
+        if profile_name == "default":
+            click.secho("✓ Reset to built-in defaults (no profile active).", fg="green")
+        else:
+            click.secho(f"✓ Now using profile '{profile_name}'.", fg="green")
+    except ConfigError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
         sys.exit(1)
 
 
 @config_group.command("get")
-@click.argument("profile_name")
-@click.argument("key", required=False, default=None)
-def config_get(profile_name: str, key: Optional[str]) -> None:
-    """Get a setting from a profile.
-
-    If KEY is omitted, shows all settings for the profile.
-    """
-    manager = _get_profile_manager()
+@click.argument("key")
+@click.option("--profile", "profile_name", default=None, help="Profile to query.")
+@click.pass_context
+def config_get(ctx: click.Context, key: str, profile_name: Optional[str]) -> None:
+    """Get a configuration setting value."""
+    pm = _get_profile_manager(ctx)
     try:
-        if key is None:
-            profile = manager.get_profile(profile_name)
-            active = manager.get_active_profile_name()
-            click.echo(_format_profile(profile_name, profile, active))
+        value = pm.get_setting(key, profile_name=profile_name)
+        if value is None:
+            click.echo(f"{key} = (not set)")
         else:
-            value = manager.get_profile_key(profile_name, key)
             click.echo(f"{key} = {value}")
-    except SummarizerError as e:
-        _echo_error(str(e))
+    except ConfigError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
         sys.exit(1)
 
 
-@config_group.command("delete")
-@click.argument("name")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
-def config_delete(name: str, yes: bool) -> None:
-    """Delete a configuration profile."""
-    manager = _get_profile_manager()
-    if not yes:
-        click.confirm(f"Delete profile '{name}'?", abort=True)
+@config_group.command("set")
+@click.argument("key")
+@click.argument("value")
+@click.option("--profile", "profile_name", default=None, help="Profile to update.")
+@click.pass_context
+def config_set(
+    ctx: click.Context,
+    key: str,
+    value: str,
+    profile_name: Optional[str],
+) -> None:
+    """Set a configuration setting value."""
+    pm = _get_profile_manager(ctx)
     try:
-        manager.delete_profile(name)
-        _echo_success(f"Deleted profile '{name}'.")
-    except SummarizerError as e:
-        _echo_error(str(e))
-        sys.exit(1)
-
-
-@config_group.command("rename")
-@click.argument("old_name")
-@click.argument("new_name")
-def config_rename(old_name: str, new_name: str) -> None:
-    """Rename a configuration profile."""
-    manager = _get_profile_manager()
-    try:
-        manager.rename_profile(old_name, new_name)
-        _echo_success(f"Renamed profile '{old_name}' to '{new_name}'.")
-    except SummarizerError as e:
-        _echo_error(str(e))
+        pm.set_setting(key, value, profile_name=profile_name)
+        target = profile_name or pm.get_active_profile_name()
+        click.secho(f"✓ Set '{key}' = '{value}' in profile '{target}'.", fg="green")
+    except ConfigError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
         sys.exit(1)
 
 
 @config_group.command("show")
-@click.option("--profile", "-p", default=None, help="Profile to use (default: active).")
-def config_show(profile: Optional[str]) -> None:
-    """Show the resolved configuration (all sources merged)."""
-    from .config import ConfigResolver
+@click.argument("profile_name", required=False)
+@click.option("--resolved", is_flag=True, help="Show fully resolved config with all sources.")
+@click.pass_context
+def config_show(
+    ctx: click.Context,
+    profile_name: Optional[str],
+    resolved: bool,
+) -> None:
+    """Show configuration for a profile (or the active profile)."""
+    pm = _get_profile_manager(ctx)
 
-    resolver = ConfigResolver()
+    if resolved:
+        resolver = ConfigResolver(profile_manager=pm)
+        cli_flags = ctx.obj.get("cli_flags", {})
+        try:
+            explanation = resolver.explain(cli_flags=cli_flags)
+            click.echo(explanation)
+        except ConfigError as e:
+            click.secho(f"Error: {e}", fg="red", err=True)
+            sys.exit(1)
+        return
+
     try:
-        resolved = resolver.resolve(profile_name=profile)
-    except SummarizerError as e:
-        _echo_error(str(e))
+        target = profile_name or pm.get_active_profile_name()
+        data = pm.profile_as_dict(target)
+
+        click.echo(f"Profile: {target}")
+        click.echo("-" * 40)
+        for k, v in data.items():
+            if k == "extra":
+                continue
+            if isinstance(v, dict):
+                click.echo(f"[{k}]")
+                for sk, sv in v.items():
+                    click.echo(f"  {sk} = {sv}")
+            else:
+                click.echo(f"{k} = {v}")
+
+    except ConfigError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
         sys.exit(1)
 
-    click.echo("Resolved configuration:\n")
-    data = resolved.to_dict()
-    for key, value in sorted(data.items()):
-        click.echo(f"  {key} = {value}")
 
-    if resolved.active_profile:
-        click.echo(f"\nActive profile: {resolved.active_profile}")
-    else:
-        click.echo("\nNo active profile (using defaults + env vars).")
+@config_group.command("delete")
+@click.argument("profile_name")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def config_delete(ctx: click.Context, profile_name: str, yes: bool) -> None:
+    """Delete a configuration profile."""
+    pm = _get_profile_manager(ctx)
+
+    if not yes:
+        click.confirm(
+            f"Delete profile '{profile_name}'? This cannot be undone.",
+            abort=True,
+        )
+
+    try:
+        pm.delete_profile(profile_name)
+        click.secho(f"✓ Profile '{profile_name}' deleted.", fg="green")
+    except ConfigError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        sys.exit(1)
 
 
 @config_group.command("path")
-def config_path() -> None:
+@click.pass_context
+def config_path(ctx: click.Context) -> None:
     """Show the path to the config file."""
-    manager = _get_profile_manager()
-    exists = manager.config_path.exists()
-    status = "exists" if exists else "not yet created"
-    click.echo(f"{manager.config_path}  ({status})")
+    pm = _get_profile_manager(ctx)
+    click.echo(str(pm.config_path))
+    if pm.config_path.exists():
+        click.echo("(file exists)")
+    else:
+        click.echo("(file does not exist yet)")
 
 
-def _coerce_value(key: str, value: str) -> Any:
-    """Coerce a string value to the appropriate Python type based on the key."""
-    int_keys = {"max_length", "requests_per_minute", "tokens_per_minute", "cache_ttl_hours", "cache_max_entries"}
-    bool_keys = {"cache_enabled"}
+@config_group.command("init")
+@click.option("--force", is_flag=True, help="Overwrite existing config file.")
+@click.pass_context
+def config_init(ctx: click.Context, force: bool) -> None:
+    """Initialize config file with example profiles."""
+    pm = _get_profile_manager(ctx)
 
-    if key in int_keys:
-        try:
-            return int(value)
-        except ValueError:
-            raise SummarizerError(f"Key '{key}' requires an integer value, got: '{value}'")
-    elif key in bool_keys:
-        if value.lower() in ("true", "1", "yes", "on"):
-            return True
-        elif value.lower() in ("false", "0", "no", "off"):
-            return False
-        else:
-            raise SummarizerError(f"Key '{key}' requires a boolean value (true/false), got: '{value}'")
-    return value
+    if pm.config_path.exists() and not force:
+        click.secho(
+            f"Config file already exists at {pm.config_path}. "
+            "Use --force to overwrite.",
+            fg="yellow",
+        )
+        sys.exit(1)
 
+    try:
+        # Create example profiles
+        pm._invalidate_cache()
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+        # Write a minimal starter config manually
+        from .schemas import ConfigFile, DefaultConfig, ProfileConfig, CacheConfig
+        from .profile import _dump_toml
+
+        config = ConfigFile(
+            default=DefaultConfig(profile="default"),
+            profiles={
+                "quick": ProfileConfig(
+                    provider="openai",
+                    model="gpt-3.5-turbo",
+                    style="concise",
+                    format="text",
+                    max_length=200,
+                ),
+                "work": ProfileConfig(
+                    provider="openai",
+                    model="gpt-4",
+                    style="bullet",
+                    format="markdown",
+                    max_length=500,
+                ),
+                "research": ProfileConfig(
+                    provider="anthropic",
+                    model="claude-3-opus-20240229",
+                    style="detailed",
+                    format="markdown",
+                    max_length=2000,
+                ),
+            },
+        )
+
+        pm._save(config)
+        click.secho(f"✓ Config initialized at {pm.config_path}", fg="green")
+        click.echo("\nExample profiles created: quick, work, research")
+        click.echo("Use 'summarize config use <profile>' to activate one.")
+
+    except ConfigError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        sys.exit(1)
+
 
 def main() -> None:
+    """Main entry point."""
     cli(obj={})
 
 

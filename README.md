@@ -1,17 +1,21 @@
 # Summarizer
 
-An AI-powered text summarizer with support for multiple LLM providers, configurable styles, and named configuration profiles.
+AI-powered text summarization tool with support for multiple LLM providers, configurable styles, and named configuration profiles.
 
 ---
 
-## Features
+## Table of Contents
 
-- 🤖 Multi-provider support: OpenAI, Anthropic, Ollama, OpenRouter
-- 🎨 Multiple summary styles: concise, detailed, bullet, academic, casual, technical
-- 📄 Output formats: text, markdown, JSON, HTML
-- 💾 Result caching with configurable TTL
-- ⚡ Rate limiting
-- 🗂️ **Named configuration profiles** — define and switch between named setups
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Configuration Profiles](#configuration-profiles)
+  - [Config File Format](#config-file-format)
+  - [Profile Commands](#profile-commands)
+  - [Common Profile Recipes](#common-profile-recipes)
+  - [Configuration Priority](#configuration-priority)
+  - [Environment Variables](#environment-variables)
+- [Usage](#usage)
+- [Development](#development)
 
 ---
 
@@ -19,264 +23,357 @@ An AI-powered text summarizer with support for multiple LLM providers, configura
 
 ```bash
 pip install summarizer
-# For Python < 3.11, also install TOML support:
+```
+
+For Python < 3.11, also install `tomli` and `tomli-w`:
+
+```bash
 pip install tomli tomli-w
+```
+
+---
+
+## Quick Start
+
+```bash
+# Summarize a URL
+summarize summarize https://example.com/article
+
+# Summarize a file
+summarize summarize ./document.txt
+
+# Summarize stdin
+echo "Long text here..." | summarize summarize -
+
+# Use a specific provider and style
+summarize --provider anthropic --style detailed summarize https://example.com
 ```
 
 ---
 
 ## Configuration Profiles
 
-Profiles let you define named sets of options and switch between them instantly.
+Named profiles let you define and switch between different summarization setups. Profiles are stored in `~/.config/summarizer/config.toml` (following the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html)).
 
-### Config file location
-
-Configuration is stored in `~/.config/summarizer/config.toml` (follows the [XDG Base Directory spec](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html)).
-
-You can override the location by setting `XDG_CONFIG_HOME`.
-
-### Example `config.toml`
+### Config File Format
 
 ```toml
+# ~/.config/summarizer/config.toml
+
 [default]
-active_profile = "work"
+# The active profile name ("default" means no profile, use built-in defaults)
+profile = "work"
 
-[work]
-description = "Day-to-day work summaries"
+# Top-level defaults applied before any profile
+# provider = "openai"
+
+[profiles.quick]
 provider = "openai"
-model = "gpt-4o-mini"
+model = "gpt-3.5-turbo"
 style = "concise"
-format = "markdown"
-max_length = 300
-
-[work.cache]
-enabled = true
-ttl_hours = 24
-
-[work.rate_limit]
-requests_per_minute = 60
-
-[research]
-description = "In-depth research summaries"
-provider = "anthropic"
-model = "claude-3-5-sonnet-20241022"
-style = "academic"
-format = "markdown"
-max_length = 1000
-
-[research.cache]
-enabled = true
-ttl_hours = 168  # one week
-
-[quick]
-description = "Fast bullet-point summaries"
-provider = "openai"
-model = "gpt-4o-mini"
-style = "bullet"
-max_length = 150
 format = "text"
+max_length = 200
 
-[quick.cache]
-enabled = false
+[profiles.quick.cache]
+enabled = true
+ttl_hours = 48
+
+[profiles.quick.rate_limit]
+requests_per_minute = 60
+retry_attempts = 3
+
+[profiles.work]
+provider = "openai"
+model = "gpt-4"
+style = "bullet"
+format = "markdown"
+max_length = 500
+
+[profiles.research]
+provider = "anthropic"
+model = "claude-3-opus-20240229"
+style = "detailed"
+format = "markdown"
+max_length = 2000
+temperature = 0.3
+
+[profiles.research.cache]
+enabled = true
+ttl_hours = 168  # One week
+
+[profiles.local]
+provider = "ollama"
+model = "llama3"
+style = "concise"
+format = "text"
 ```
 
----
+### Profile Commands
 
-## CLI Reference
+#### Initialize config with example profiles
 
-### `summarize config` subcommands
+```bash
+summarize config init
+```
 
 #### List all profiles
+
 ```bash
 summarize config list
-summarize config list --json   # JSON output
+
+# With details
+summarize config list --verbose
+```
+
+Output:
+```
+Active profile: work
+
+Profiles:
+* work
+  quick
+  research
+  local
 ```
 
 #### Create a profile
+
 ```bash
 summarize config create work \
   --provider openai \
-  --model gpt-4o-mini \
-  --style concise \
+  --model gpt-4 \
+  --style bullet \
   --format markdown \
-  --description "Work profile"
-
-# Create and immediately activate
-summarize config create quick --style bullet --activate
+  --max-length 500
 ```
 
-#### Switch active profile
+Options:
+- `--provider` — LLM provider (`openai`, `anthropic`, `ollama`, `openrouter`)
+- `--model` — Model name
+- `--style` — Style (`concise`, `detailed`, `bullet`, `academic`, `casual`)
+- `--format` — Output format (`text`, `markdown`, `json`, `html`)
+- `--max-length` — Maximum summary length (tokens/words)
+- `--temperature` — LLM temperature (0.0–2.0)
+- `--cache` / `--no-cache` — Enable/disable cache
+- `--cache-ttl` — Cache TTL in hours
+- `--rpm` — Rate limit: requests per minute
+- `--use` — Set as active profile immediately after creating
+
+#### Switch to a profile
+
 ```bash
-summarize config use research
+summarize config use work
+# ✓ Now using profile 'work'.
+
+# Reset to built-in defaults
+summarize config use default
 ```
 
-#### Clear active profile (revert to defaults)
+#### Show a profile's settings
+
 ```bash
-summarize config unset
+summarize config show
+summarize config show research
+summarize config show --resolved  # Show fully merged config with sources
 ```
 
-#### Get profile settings
-```bash
-summarize config get work           # show all settings
-summarize config get work provider  # show one key
-```
+#### Get/set individual settings
 
-#### Set a value on a profile
 ```bash
-summarize config set work style detailed
-summarize config set work max_length 500
+# Get a setting
+summarize config get provider
+# provider = openai
+
+summarize config get style --profile research
+# style = detailed
+
+# Set a setting
+summarize config set provider anthropic
+summarize config set model gpt-4o --profile work
 ```
 
 #### Delete a profile
-```bash
-summarize config delete old-profile
-summarize config delete old-profile --yes  # skip confirmation
-```
 
-#### Rename a profile
 ```bash
-summarize config rename oldname newname
-```
-
-#### Show resolved config (all sources merged)
-```bash
-summarize config show             # uses active profile
-summarize config show --profile research
+summarize config delete research
+summarize config delete research --yes  # Skip confirmation
 ```
 
 #### Show config file path
+
 ```bash
 summarize config path
+# /home/user/.config/summarizer/config.toml
 ```
 
----
+### Common Profile Recipes
 
-## Configuration Priority
+#### Quick summarization (cheap & fast)
 
-Settings are resolved in this order (highest priority wins):
-
-```
-Built-in defaults
-    ↓
-Config file profile  (active profile or --profile flag)
-    ↓
-Environment variables
-    ↓
-CLI flags  ← highest priority
-```
-
-### Environment variables
-
-| Variable | Config key |
-|---|---|
-| `SUMMARIZER_PROVIDER` | provider |
-| `SUMMARIZER_MODEL` | model |
-| `SUMMARIZER_STYLE` | style |
-| `SUMMARIZER_FORMAT` | format |
-| `SUMMARIZER_MAX_LENGTH` | max_length |
-| `SUMMARIZER_LANGUAGE` | language |
-| `SUMMARIZER_CACHE_ENABLED` | cache_enabled |
-| `SUMMARIZER_CACHE_TTL_HOURS` | cache_ttl_hours |
-| `SUMMARIZER_CACHE_MAX_ENTRIES` | cache_max_entries |
-| `SUMMARIZER_REQUESTS_PER_MINUTE` | requests_per_minute |
-| `SUMMARIZER_TOKENS_PER_MINUTE` | tokens_per_minute |
-
----
-
-## Common Profile Recipes
-
-### Fast & cheap (OpenAI)
 ```bash
 summarize config create quick \
   --provider openai \
-  --model gpt-4o-mini \
-  --style bullet \
-  --max-length 150 \
-  --description "Quick bullet summaries"
-```
-
-### Deep research (Anthropic)
-```bash
-summarize config create research \
-  --provider anthropic \
-  --model claude-3-5-sonnet-20241022 \
-  --style academic \
-  --format markdown \
-  --max-length 1500 \
-  --description "Thorough academic summaries"
-```
-
-### Local/offline (Ollama)
-```bash
-summarize config create local \
-  --provider ollama \
-  --model llama3.2 \
+  --model gpt-3.5-turbo \
   --style concise \
-  --description "Local model, no API key needed"
+  --max-length 150 \
+  --use
 ```
 
-### Work (minimal, fast)
+#### Work (structured bullet points)
+
 ```bash
 summarize config create work \
   --provider openai \
-  --model gpt-4o-mini \
-  --style concise \
+  --model gpt-4 \
+  --style bullet \
   --format markdown \
-  --description "Work summaries"
-
-summarize config use work
+  --max-length 500
 ```
 
----
-
-## Valid Values
-
-| Setting | Valid values |
-|---|---|
-| `provider` | `openai`, `anthropic`, `ollama`, `openrouter` |
-| `style` | `concise`, `detailed`, `bullet`, `academic`, `casual`, `technical` |
-| `format` | `text`, `markdown`, `json`, `html` |
-
----
-
-## Running Summarizations
+#### Research (deep analysis)
 
 ```bash
-# Use active profile
-summarize summarize "https://example.com/article"
+summarize config create research \
+  --provider anthropic \
+  --model claude-3-opus-20240229 \
+  --style detailed \
+  --format markdown \
+  --max-length 2000 \
+  --temperature 0.3 \
+  --cache-ttl 168
+```
 
-# Use a specific profile
-summarize --profile research summarize "https://example.com/paper"
+#### Local (offline with Ollama)
 
-# Override a single setting
-summarize --style bullet summarize "https://example.com/article"
+```bash
+summarize config create local \
+  --provider ollama \
+  --model llama3 \
+  --style concise \
+  --no-cache
+```
 
-# CLI flags always win over profile settings
-summarize --profile work --provider anthropic summarize "some text"
+#### Academic writing
+
+```bash
+summarize config create academic \
+  --provider anthropic \
+  --model claude-3-sonnet-20240229 \
+  --style academic \
+  --format markdown \
+  --temperature 0.2
+```
+
+### Configuration Priority
+
+Settings are resolved in the following order (highest priority wins):
+
+```
+CLI flags          ← highest priority
+    ↑
+Environment vars
+    ↑
+Config file profile
+    ↑
+Built-in defaults  ← lowest priority
+```
+
+Example:
+
+```bash
+# Profile sets provider=anthropic, env sets style=detailed, CLI sets model=gpt-4
+SUMMARIZER_STYLE=detailed summarize --profile research --model gpt-4 summarize https://example.com
+```
+
+To see exactly where each value is coming from:
+
+```bash
+summarize config show --resolved
+```
+
+### Environment Variables
+
+All settings can be overridden via environment variables:
+
+| Variable                   | Config Key                      | Example Value       |
+|----------------------------|---------------------------------|---------------------|
+| `SUMMARIZER_PROVIDER`      | `provider`                      | `anthropic`         |
+| `SUMMARIZER_MODEL`         | `model`                         | `claude-3-sonnet`   |
+| `SUMMARIZER_STYLE`         | `style`                         | `detailed`          |
+| `SUMMARIZER_FORMAT`        | `format`                        | `markdown`          |
+| `SUMMARIZER_MAX_LENGTH`    | `max_length`                    | `500`               |
+| `SUMMARIZER_TEMPERATURE`   | `temperature`                   | `0.7`               |
+| `SUMMARIZER_CACHE_ENABLED` | `cache_enabled`                 | `true`              |
+| `SUMMARIZER_CACHE_TTL_HOURS` | `cache_ttl_hours`             | `48`                |
+| `SUMMARIZER_CACHE_MAX_SIZE_MB` | `cache_max_size_mb`         | `200`               |
+| `SUMMARIZER_RATE_LIMIT_RPM` | `rate_limit_requests_per_minute` | `30`            |
+| `SUMMARIZER_RATE_LIMIT_RPD` | `rate_limit_requests_per_day` | `1000`              |
+| `SUMMARIZER_RETRY_ATTEMPTS` | `rate_limit_retry_attempts`   | `5`                 |
+| `SUMMARIZER_RETRY_DELAY`   | `rate_limit_retry_delay_seconds` | `2.0`             |
+| `SUMMARIZER_PROFILE`       | `profile`                       | `work`              |
+
+---
+
+## Usage
+
+```
+Usage: summarize [OPTIONS] COMMAND [ARGS]...
+
+  Summarizer - AI-powered text summarization tool.
+
+Options:
+  --profile NAME          Use a specific configuration profile.
+  --provider TEXT         LLM provider (openai, anthropic, ollama, openrouter).
+  --model TEXT            Model name to use.
+  --style [concise|detailed|bullet|academic|casual]
+                          Summarization style.
+  --format [text|markdown|json|html]
+                          Output format.
+  --config-dir PATH       Override config directory path.
+  --help                  Show this message and exit.
+
+Commands:
+  summarize  Summarize text from SOURCE.
+  config     Manage configuration profiles and settings.
+    list     List all configuration profiles.
+    create   Create a new configuration profile.
+    use      Set the active configuration profile.
+    show     Show configuration for a profile.
+    get      Get a configuration setting value.
+    set      Set a configuration setting value.
+    delete   Delete a configuration profile.
+    path     Show the path to the config file.
+    init     Initialize config file with example profiles.
 ```
 
 ---
 
-## Python API
+## Development
 
-```python
-from summarizer.config import ConfigResolver
-from summarizer.profile import ProfileManager
+### Setup
 
-# Use active profile
-resolver = ConfigResolver()
-config = resolver.resolve()
-print(config.provider, config.model, config.style)
-
-# Use a specific profile
-config = resolver.resolve(profile_name="research")
-
-# Override with CLI-style flags
-config = resolver.resolve(cli_flags={"style": "bullet", "max_length": 200})
-
-# Manage profiles programmatically
-manager = ProfileManager()
-manager.create_profile("myprofile", provider="anthropic", style="detailed")
-manager.set_active_profile("myprofile")
-profile = manager.get_profile("myprofile")
+```bash
+git clone <repo>
+cd summarizer
+pip install -e ".[dev]"
 ```
+
+### Run Tests
+
+```bash
+pytest tests/ -v
+pytest tests/test_config.py tests/test_profile.py -v  # Profile tests only
+```
+
+### Config File Schema
+
+The config file is validated using Pydantic models defined in `src/summarizer/schemas.py`.
+
+Valid values:
+- **provider**: `openai`, `anthropic`, `ollama`, `openrouter`
+- **style**: `concise`, `detailed`, `bullet`, `academic`, `casual`
+- **format**: `text`, `markdown`, `json`, `html`
+- **temperature**: 0.0–2.0
+- **max_length**: 1–100,000
+- **cache.ttl_hours**: 1–8,760 (1 hour – 1 year)
+- **rate_limit.requests_per_minute**: 1–10,000
