@@ -1,369 +1,430 @@
-# Plugin Development Guide
+# Summarizer Plugin Development Guide
 
-This guide explains how to write, package, and distribute custom plugins for
-the **summarizer** package using its lightweight entry-point–based plugin
-system.
+This guide explains how to write, package, and distribute custom plugins for the
+`summarizer` tool. Plugins let you extend the tool's behaviour — adding new
+article extractors, post-processing steps, or output formats — **without
+modifying the core package source**.
 
 ---
 
 ## Table of Contents
 
-1. [Architecture overview](#architecture-overview)
-2. [Plugin types](#plugin-types)
-   - [Extractor](#extractor)
-   - [Post-Processor](#post-processor)
-   - [Formatter](#formatter)
-3. [Writing your first plugin](#writing-your-first-plugin)
-4. [Registering via `pyproject.toml`](#registering-via-pyprojecttoml)
-5. [Installing and testing locally](#installing-and-testing-locally)
-6. [Listing discovered plugins](#listing-discovered-plugins)
-7. [Complete example: `sentiment` post-processor](#complete-example-sentiment-post-processor)
-8. [Error handling & best practices](#error-handling--best-practices)
-9. [API reference](#api-reference)
+1. [Architecture Overview](#1-architecture-overview)
+2. [Plugin Hook Types](#2-plugin-hook-types)
+3. [Writing a Plugin Package](#3-writing-a-plugin-package)
+4. [Complete Example: Sentiment Post-Processor](#4-complete-example-sentiment-post-processor)
+5. [Registering Plugins via Entry Points](#5-registering-plugins-via-entry-points)
+6. [Testing Your Plugin](#6-testing-your-plugin)
+7. [Discovering Installed Plugins](#7-discovering-installed-plugins)
+8. [Built-in Plugins Reference](#8-built-in-plugins-reference)
+9. [FAQ & Troubleshooting](#9-faq--troubleshooting)
 
 ---
 
-## Architecture overview
+## 1. Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     summarizer CLI                      │
-│  summarize <url>  ──►  LLM  ──►  PostProcessors  ──►  Output │
-└──────────────┬──────────────────────────┬───────────────┘
-               │                          │
-        PluginRegistry             PluginRegistry
-        .extractors                .postprocessors
-        .formatters
-               ▲                          ▲
-  importlib.metadata.entry_points()  (same mechanism)
-               │
-  [project.entry-points."summarizer.extractors"]
-  my_extractor = "mypkg.extractors:MyExtractor"
+┌────────────────────────────────────────────────────┐
+│                   summarizer CLI                   │
+│                                                    │
+│  1. Fetch article                                  │
+│  2. (optional) Custom Extractor                    │
+│  3. LLM → Summary object                          │
+│  4. Post-processors (in registration order)        │
+│  5. Formatter → string output                      │
+└────────────────────────────────────────────────────┘
 ```
 
-At startup the `PluginRegistry` calls `importlib.metadata.entry_points()` for
-each of the three plugin groups and validates that every loaded class is a
-proper subclass of the corresponding ABC (`BaseExtractor`,
-`BasePostProcessor`, or `BaseFormatter`).
+The `PluginRegistry` discovers plugins at startup by reading **Python package
+entry points** (see [PEP 517 / importlib.metadata][1]).  It validates each class
+against the appropriate ABC and stores a single instance per plugin name.
+
+[1]: https://docs.python.org/3/library/importlib.metadata.html#entry-points
 
 ---
 
-## Plugin types
+## 2. Plugin Hook Types
 
-### Extractor
+| Hook Group | Base Class | Purpose |
+|---|---|---|
+| `summarizer.extractors` | `BaseExtractor` | Custom article fetching / parsing |
+| `summarizer.postprocessors` | `BasePostProcessor` | Enrich Summary after LLM response |
+| `summarizer.formatters` | `BaseFormatter` | Custom output string formatting |
 
-Group key: `summarizer.extractors`  
-Base class: `summarizer.plugins.base.BaseExtractor`
-
-An **Extractor** receives a source string (URL or raw HTML) and returns the
-plain article text that is forwarded to the LLM.
-
-```python
-from summarizer.plugins.base import BaseExtractor
-
-class MyExtractor(BaseExtractor):
-    name = "my_extractor"
-    description = "Downloads and parses articles from MyBlog."
-
-    def extract(self, source: str) -> str:
-        # source is either a URL or raw HTML
-        ...
-        return plain_text
-```
-
-### Post-Processor
-
-Group key: `summarizer.postprocessors`  
-Base class: `summarizer.plugins.base.BasePostProcessor`
-
-A **Post-Processor** transforms the `Summary` object *after* the LLM has
-generated a response.  Processors are chained sequentially; each receives the
-output of the previous one.
-
-```python
-from summarizer.plugins.base import BasePostProcessor
-
-class MyPostProcessor(BasePostProcessor):
-    name = "my_processor"
-    description = "Appends a disclaimer to every summary."
-
-    def process(self, summary, article_text: str = ""):
-        disclaimer = "\n\n*This summary was auto-generated.*"
-        return summary.model_copy(update={"text": summary.text + disclaimer})
-```
-
-### Formatter
-
-Group key: `summarizer.formatters`  
-Base class: `summarizer.plugins.base.BaseFormatter`
-
-A **Formatter** serialises a `Summary` object to a string in a custom format
-(Markdown, HTML, CSV, …).
-
-```python
-from summarizer.plugins.base import BaseFormatter
-
-class MyFormatter(BaseFormatter):
-    name = "html"
-    description = "Renders summaries as HTML fragments."
-
-    def format(self, summary) -> str:
-        return f"<article><p>{summary.text}</p></article>"
-```
+All base classes live in `summarizer.plugins.base`.
 
 ---
 
-## Writing your first plugin
+## 3. Writing a Plugin Package
 
-### 1. Create a Python package
+A plugin is a regular Python package that:
+
+1. Contains one or more classes that subclass a `Base*` ABC.
+2. Declares entry points under one of the `summarizer.*` groups in its
+   `pyproject.toml`.
+
+### Minimal directory layout
 
 ```
-my_summarizer_plugins/
+my-summarizer-plugin/
 ├── pyproject.toml
+├── README.md
 └── src/
-    └── my_summarizer_plugins/
+    └── my_plugin/
         ├── __init__.py
-        └── processors.py
+        └── my_processor.py
 ```
 
-### 2. Implement the plugin class
+### Install alongside summarizer
+
+```bash
+pip install -e .          # install your plugin in development mode
+pip install summarizer    # ensure the core package is also installed
+```
+
+Once both packages are installed, `summarize plugins list` will show your plugin.
+
+---
+
+## 4. Complete Example: Sentiment Post-Processor
+
+This example adds a simple sentiment label to every summary using
+[TextBlob](https://textblob.readthedocs.io/).
+
+### `src/my_plugin/sentiment.py`
 
 ```python
-# src/my_summarizer_plugins/processors.py
+"""Sentiment analysis post-processor for summarizer."""
+from __future__ import annotations
+
+from summarizer.models import Summary
 from summarizer.plugins.base import BasePostProcessor
 
 
-class UpperCaseProcessor(BasePostProcessor):
-    """Converts every summary to upper-case (demo only)."""
+class SentimentPostProcessor(BasePostProcessor):
+    """Adds a sentiment label to summary.metadata['sentiment']."""
 
-    name = "uppercase"
-    description = "Converts the summary text to upper-case."
-    version = "0.1.0"
+    name = "sentiment_analyzer"
+    description = "Uses TextBlob to label summary sentiment as positive/negative/neutral."
 
-    def process(self, summary, article_text: str = ""):
-        return summary.model_copy(update={"text": summary.text.upper()})
-```
-
-### 3. Register the entry point
-
-```toml
-# pyproject.toml for my_summarizer_plugins
-[project.entry-points."summarizer.postprocessors"]
-uppercase = "my_summarizer_plugins.processors:UpperCaseProcessor"
-```
-
----
-
-## Registering via `pyproject.toml`
-
-The full schema for each group is:
-
-```toml
-# Custom extractor
-[project.entry-points."summarizer.extractors"]
-<name> = "<python.module.path>:<ClassName>"
-
-# Custom post-processor
-[project.entry-points."summarizer.postprocessors"]
-<name> = "<python.module.path>:<ClassName>"
-
-# Custom formatter
-[project.entry-points."summarizer.formatters"]
-<name> = "<python.module.path>:<ClassName>"
-```
-
-- `<name>` must be a unique identifier within its group (snake_case recommended).
-- If two plugins share a name the first registered wins; a debug log is emitted.
-
----
-
-## Installing and testing locally
-
-```bash
-# Development install (editable)
-pip install -e path/to/my_summarizer_plugins
-
-# Verify the entry point is visible
-python -c "
-from importlib.metadata import entry_points
-eps = entry_points(group='summarizer.postprocessors')
-print(list(eps))
-"
-```
-
-Run the built-in `plugins list` command to confirm:
-
-```bash
-summarize plugins list
-```
-
----
-
-## Listing discovered plugins
-
-```bash
-# Human-readable table
-summarize plugins list
-
-# JSON output (useful for scripting)
-summarize plugins list --json
-
-# Detailed info about a single plugin
-summarize plugins info keyword_extractor
-```
-
----
-
-## Complete example: `sentiment` post-processor
-
-Below is a complete, runnable example that uses the
-[`textblob`](https://textblob.readthedocs.io/) library to attach a sentiment
-score to each summary.
-
-### Directory layout
-
-```
-summarizer_sentiment/
-├── pyproject.toml
-└── src/
-    └── summarizer_sentiment/
-        ├── __init__.py
-        └── sentiment.py
-```
-
-### `sentiment.py`
-
-```python
-"""Sentiment post-processor using TextBlob."""
-
-from summarizer.plugins.base import BasePostProcessor
-
-
-class SentimentAnalyser(BasePostProcessor):
-    """Attaches TextBlob polarity and subjectivity to summary.metadata."""
-
-    name = "sentiment"
-    description = "Adds TextBlob sentiment polarity/subjectivity to summary metadata."
-    version = "0.1.0"
-
-    def process(self, summary, article_text: str = ""):
+    def process(self, summary: Summary, article_text: str = "") -> Summary:
         try:
-            from textblob import TextBlob  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError(
-                "Install textblob: pip install textblob"
-            ) from exc
+            from textblob import TextBlob  # soft dependency
+        except ImportError:
+            return summary  # gracefully skip if TextBlob not installed
 
-        blob = TextBlob(summary.text)
-        sentiment = {
-            "polarity": round(blob.sentiment.polarity, 4),
-            "subjectivity": round(blob.sentiment.subjectivity, 4),
+        text = getattr(summary, "summary", "") or ""
+        if not text.strip():
+            return summary
+
+        polarity = TextBlob(text).sentiment.polarity
+
+        if polarity > 0.1:
+            label = "positive"
+        elif polarity < -0.1:
+            label = "negative"
+        else:
+            label = "neutral"
+
+        if summary.metadata is None:
+            summary.metadata = {}
+
+        summary.metadata["sentiment"] = {
+            "label": label,
+            "polarity": round(polarity, 4),
         }
-
-        existing = dict(getattr(summary, "metadata", {}) or {})
-        existing["sentiment"] = sentiment
-        return summary.model_copy(update={"metadata": existing})
+        return summary
 ```
 
 ### `pyproject.toml`
 
 ```toml
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "summarizer-sentiment"
 version = "0.1.0"
-dependencies = ["summarizer", "textblob>=0.18"]
+description = "Sentiment analysis plugin for summarizer"
+requires-python = ">=3.9"
+dependencies = [
+    "summarizer",
+    "textblob>=0.17",
+]
 
 [project.entry-points."summarizer.postprocessors"]
-sentiment = "summarizer_sentiment.sentiment:SentimentAnalyser"
+sentiment_analyzer = "my_plugin.sentiment:SentimentPostProcessor"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/my_plugin"]
 ```
 
-### Usage
+After `pip install -e .`, run:
 
 ```bash
-pip install -e ./summarizer_sentiment
 summarize plugins list
-# → Post-Processors: keyword_extractor, readability, sentiment
-
-summarize summarize https://example.com/article
-# summary now has .metadata["sentiment"] = {"polarity": 0.12, "subjectivity": 0.45}
+# → Post-Processors:
+#     • sentiment_analyzer
+#       Uses TextBlob to label summary sentiment as positive/negative/neutral.
 ```
 
 ---
 
-## Error handling & best practices
+## 5. Registering Plugins via Entry Points
 
-| Concern | Recommendation |
-|---------|---------------|
-| Import errors | Wrap optional imports in `try/except ImportError` and raise `RuntimeError` with a helpful message. |
-| Side effects | Keep `__init__` lightweight; defer heavy imports to `process()` / `extract()` / `format()`. |
-| Idempotency | Post-processors should be safe to run multiple times. |
-| Metadata keys | Use a namespaced key (e.g. `"mypkg.score"`) to avoid clashing with other plugins. |
-| Exceptions | Let exceptions propagate; the `PluginRegistry` will log them and skip the processor without crashing the pipeline. |
-| Versioning | Set `version` on your class and increment it when the metadata schema changes. |
+Entry points are the standard Python mechanism for plugin discovery.  They are
+defined in the **plugin package's** `pyproject.toml` (not the core package).
+
+### Syntax
+
+```toml
+[project.entry-points."<group>"]
+<name> = "<module.path>:<ClassName>"
+```
+
+### The three groups
+
+| Group | Base class |
+|---|---|
+| `summarizer.extractors` | `BaseExtractor` |
+| `summarizer.postprocessors` | `BasePostProcessor` |
+| `summarizer.formatters` | `BaseFormatter` |
+
+### Example — registering all three types
+
+```toml
+[project.entry-points."summarizer.extractors"]
+pdf_extractor = "my_plugin.pdf:PdfExtractor"
+
+[project.entry-points."summarizer.postprocessors"]
+sentiment_analyzer = "my_plugin.sentiment:SentimentPostProcessor"
+
+[project.entry-points."summarizer.formatters"]
+html_formatter = "my_plugin.html_fmt:HtmlFormatter"
+```
+
+> **Tip:** The `name` on the left-hand side must be unique across all installed
+> plugins of the same type.  Duplicate names produce a warning and the last one
+> registered wins.
 
 ---
 
-## API reference
+## 6. Testing Your Plugin
 
-### `summarizer.plugins.base.PluginBase`
-
-All plugin ABCs inherit from `PluginBase`.
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `name` | `str` | Unique identifier (snake_case). |
-| `description` | `str` | Human-readable description. |
-| `version` | `str` | Semantic version string. |
-
-**Method:** `get_metadata() -> dict` — returns all metadata as a plain dict.
-
----
-
-### `summarizer.plugins.base.BaseExtractor`
-
-Abstract method:
+You can test your plugin without registering entry points by using the
+programmatic registration API:
 
 ```python
-def extract(self, source: str) -> str: ...
+from summarizer.plugins import PluginRegistry
+
+# Create an isolated registry (no auto-discovery)
+registry = PluginRegistry(autoload=False)
+
+# Register your class directly
+from my_plugin.sentiment import SentimentPostProcessor
+registry.register_postprocessor(SentimentPostProcessor)
+
+# Run it
+from unittest.mock import MagicMock
+summary = MagicMock()
+summary.summary = "The company reported record profits this quarter."
+summary.metadata = {}
+
+pp = registry.get_postprocessor("sentiment_analyzer")
+result = pp.process(summary)
+assert result.metadata["sentiment"]["label"] == "positive"
 ```
 
----
-
-### `summarizer.plugins.base.BasePostProcessor`
-
-Abstract method:
+### Full test example
 
 ```python
-def process(self, summary: Summary, article_text: str = "") -> Summary: ...
+import pytest
+from summarizer.plugins import PluginRegistry, PluginLoadError
+from my_plugin.sentiment import SentimentPostProcessor
+
+
+def test_sentiment_registered():
+    reg = PluginRegistry(autoload=False)
+    reg.register_postprocessor(SentimentPostProcessor)
+    assert reg.get_postprocessor("sentiment_analyzer") is not None
+
+
+def test_sentiment_not_subclass_raises():
+    class FakeProcessor:
+        pass
+
+    reg = PluginRegistry(autoload=False)
+    with pytest.raises(PluginLoadError, match="BasePostProcessor"):
+        reg.register_postprocessor(FakeProcessor)
+
+
+def test_sentiment_process():
+    pp = SentimentPostProcessor()
+    from unittest.mock import MagicMock
+    summary = MagicMock()
+    summary.summary = "Excellent results exceeded all expectations."
+    summary.metadata = {}
+    result = pp.process(summary)
+    assert result.metadata["sentiment"]["label"] == "positive"
 ```
 
 ---
 
-### `summarizer.plugins.base.BaseFormatter`
+## 7. Discovering Installed Plugins
 
-Abstract method:
+```bash
+# Human-readable table
+summarize plugins list
+
+# JSON output (useful for tooling / CI)
+summarize plugins list --json
+```
+
+Sample output:
+
+```
+Discovered 3 plugin(s):
+
+  Extractors:
+    (none)
+
+  Post-Processors:
+    • keyword_extractor
+      Extracts the top-N keywords from the article using TF-IDF scoring ...
+      class: summarizer.plugins.builtin.keyword_extractor.KeywordExtractor
+    • readability_scorer
+      Computes Flesch Reading Ease and Flesch-Kincaid Grade Level ...
+      class: summarizer.plugins.builtin.readability.ReadabilityScorer
+
+  Formatters:
+    (none)
+```
+
+---
+
+## 8. Built-in Plugins Reference
+
+### `KeywordExtractor` (post-processor)
+
+**Entry point:** `keyword_extractor`  
+**Module:** `summarizer.plugins.builtin.keyword_extractor`
+
+Extracts the top-N keywords from the **original article text** using a
+TF-IDF-style approach (no external dependencies required; NLTK stopwords used
+when available).
+
+**Output** (added to `summary.metadata["keywords"]`):
 
 ```python
-def format(self, summary: Summary) -> str: ...
+[
+    {"term": "machine", "score": 0.042},
+    {"term": "learning", "score": 0.038},
+    ...
+]
+```
+
+**Constructor arguments:**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `top_n` | `10` | Maximum number of keywords to return |
+
+---
+
+### `ReadabilityScorer` (post-processor)
+
+**Entry point:** `readability_scorer`  
+**Module:** `summarizer.plugins.builtin.readability`
+
+Computes Flesch Reading Ease and Flesch-Kincaid Grade Level for the **summary
+text** using only the Python standard library.
+
+**Output** (added to `summary.metadata["readability"]`):
+
+```python
+{
+    "flesch_ease": 72.4,         # 0–100; higher = easier to read
+    "flesch_kincaid_grade": 8.2, # US school grade level
+    "label": "Fairly Easy",      # human-readable difficulty
+    "word_count": 45,
+    "sentence_count": 3,
+    "syllable_count": 62
+}
+```
+
+**Flesch Reading Ease score interpretation:**
+
+| Score | Difficulty |
+|---|---|
+| 90–100 | Very Easy (5th grade) |
+| 80–90 | Easy |
+| 70–80 | Fairly Easy |
+| 60–70 | Standard |
+| 50–60 | Fairly Difficult |
+| 30–50 | Difficult |
+| 0–30 | Very Confusing |
+
+---
+
+## 9. FAQ & Troubleshooting
+
+**Q: My plugin doesn't appear in `summarize plugins list`.**
+
+A: Make sure the package is installed in the same Python environment as
+`summarizer`. Run `pip show my-plugin-package` to confirm.  If installed,
+check that the entry point group name matches exactly (case-sensitive).
+
+---
+
+**Q: I get `PluginLoadError: ... is not a subclass of BasePostProcessor`.**
+
+A: Ensure you are importing `BasePostProcessor` from
+`summarizer.plugins.base` and that your class directly or indirectly inherits
+from it.
+
+---
+
+**Q: Can I register multiple plugins from one package?**
+
+A: Yes. Add multiple entries under the same group:
+
+```toml
+[project.entry-points."summarizer.postprocessors"]
+my_first  = "my_package.processors:FirstProcessor"
+my_second = "my_package.processors:SecondProcessor"
 ```
 
 ---
 
-### `summarizer.plugins.PluginRegistry`
+**Q: How do I control the order post-processors run in?**
 
-| Method | Description |
-|--------|-------------|
-| `discover()` | Load all plugins (built-ins + entry points). |
-| `extractors` | `dict[str, type[BaseExtractor]]` |
-| `postprocessors` | `dict[str, type[BasePostProcessor]]` |
-| `formatters` | `dict[str, type[BaseFormatter]]` |
-| `errors` | `list[str]` – load errors that did not abort startup. |
-| `list_all()` | Returns a nested dict of all plugins for display. |
-| `apply_postprocessors(summary, article_text, *, names)` | Run post-processors and return the transformed summary. |
+A: Post-processors are applied in the order they are returned by
+`registry.get_postprocessors()`, which reflects the order they were registered
+(insertion order). For deterministic ordering across multiple packages, prefer
+a single plugin package that chains processors explicitly.
 
 ---
 
-### `summarizer.plugins.get_registry(*, force_reload=False)`
+**Q: Can I use async code in a plugin?**
 
-Returns the module-level singleton `PluginRegistry`.  Call
-`get_registry(force_reload=True)` in tests to get a fresh instance.
+A: The `BasePostProcessor.process()` and `BaseExtractor.extract()` signatures
+are synchronous.  If you need async I/O, run it inside the method using
+`asyncio.run()` or `nest_asyncio`.  A future version of summarizer may add
+async plugin hooks.
+
+---
+
+**Q: Where should I handle import errors for optional dependencies?**
+
+A: Import soft dependencies *inside* the method that uses them, and return the
+summary unchanged if the import fails.  This way the plugin degrades gracefully:
+
+```python
+def process(self, summary, article_text=""):
+    try:
+        import some_optional_library
+    except ImportError:
+        return summary   # skip silently
+    # ... use the library
+```

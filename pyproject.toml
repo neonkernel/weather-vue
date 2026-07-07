@@ -1,81 +1,120 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "summarizer"
 version = "0.1.0"
-description = "AI-powered article summarizer with a lightweight plugin system."
+description = "AI-powered article summarisation tool with plugin support"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = { text = "MIT" }
+authors = [
+    { name = "Summarizer Contributors" },
+]
+keywords = ["summarization", "nlp", "ai", "llm"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Linguistic",
 ]
 dependencies = [
-    "click>=8.1",
-    "httpx>=0.27",
+    "click>=8.0",
+    "httpx>=0.24",
     "pydantic>=2.0",
     "rich>=13.0",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
-nlp = ["nltk>=3.8"]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "pytest-cov>=5.0",
-    "ruff>=0.4",
-    "mypy>=1.10",
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "ruff>=0.1",
+    "mypy>=1.0",
 ]
+nlp = [
+    # Optional: richer stopword lists for KeywordExtractor
+    "nltk>=3.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/example/summarizer"
+Documentation = "https://github.com/example/summarizer/blob/main/docs/plugin_development.md"
+Repository = "https://github.com/example/summarizer"
+"Bug Tracker" = "https://github.com/example/summarizer/issues"
+
+# ---------------------------------------------------------------------------
+# Console Scripts
+# ---------------------------------------------------------------------------
 
 [project.scripts]
 summarize = "summarizer.cli:main"
 
 # ---------------------------------------------------------------------------
-# Built-in plugin entry points
+# Plugin Entry Points
 #
-# These register the bundled extractors / post-processors / formatters so
-# they are discoverable via importlib.metadata.entry_points() at runtime.
+# This section documents the three plugin hook groups that third-party
+# packages can use to extend summarizer without modifying its source.
 #
-# Third-party plugin packages should add their own [project.entry-points.*]
-# sections following the same schema.
+# Group: summarizer.extractors
+#   Register a custom article extractor (subclass of BaseExtractor).
+#   Entry point value: "your_package.module:YourExtractorClass"
+#
+# Group: summarizer.postprocessors
+#   Register a custom post-processor (subclass of BasePostProcessor).
+#   Entry point value: "your_package.module:YourPostProcessorClass"
+#
+# Group: summarizer.formatters
+#   Register a custom output formatter (subclass of BaseFormatter).
+#   Entry point value: "your_package.module:YourFormatterClass"
+#
+# Built-in plugins are registered here so they are auto-discovered
+# when the package is installed.
 # ---------------------------------------------------------------------------
 
 [project.entry-points."summarizer.postprocessors"]
 keyword_extractor = "summarizer.plugins.builtin.keyword_extractor:KeywordExtractor"
-readability       = "summarizer.plugins.builtin.readability:ReadabilityScorer"
+readability_scorer = "summarizer.plugins.builtin.readability:ReadabilityScorer"
 
-# Placeholder sections for extractors and formatters so external packages know
-# the correct group names to use.
+# Uncomment to register built-in extractors or formatters in the future:
 # [project.entry-points."summarizer.extractors"]
-# my_extractor = "mypkg.extractors:MyExtractor"
+# default_extractor = "summarizer.ingestion.extractor:DefaultExtractor"
 
 # [project.entry-points."summarizer.formatters"]
-# my_formatter = "mypkg.formatters:MyFormatter"
+# markdown_formatter = "summarizer.formatter:MarkdownFormatter"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+# ---------------------------------------------------------------------------
+# Tool Configuration
+# ---------------------------------------------------------------------------
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/summarizer"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--tb=short -q"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py39"
+src = ["src"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "C4"]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.9"
 strict = false
 ignore_missing_imports = true

@@ -1,28 +1,69 @@
-"""Command-line interface for the summarizer package."""
+"""
+CLI entry point for the summarizer package.
+
+Commands
+--------
+summarize run        – Summarise one or more URLs / files
+summarize batch      – Batch processing from a file of URLs
+summarize plugins    – Plugin management subcommands
+  plugins list       – List all discovered plugins
+"""
 
 from __future__ import annotations
 
+import json
+import logging
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 import click
 
-from .config import Config
-from .logger import get_logger
+from summarizer.config import Config
+from summarizer.exceptions import SummarizerError
+from summarizer.logger import configure_logging
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Helper: load plugin registry lazily so startup cost is only paid when needed
+# Helpers
 # ---------------------------------------------------------------------------
 
 
 def _get_registry():
-    from .plugins import get_registry
+    """Lazy-import the plugin registry to avoid circular imports at module load."""
+    from summarizer.plugins import registry
+    return registry
 
-    return get_registry()
+
+def _apply_postprocessors(summary, article_text: str = ""):
+    """
+    Run all registered post-processors against a Summary object in order.
+
+    Args:
+        summary: A Summary instance returned by the LLM pipeline.
+        article_text: The original article plain text (may be empty).
+
+    Returns:
+        The (potentially modified) Summary object.
+    """
+    reg = _get_registry()
+    postprocessors = reg.get_postprocessors()
+    if not postprocessors:
+        return summary
+
+    for pp in postprocessors:
+        try:
+            summary = pp.process(summary, article_text=article_text)
+            logger.debug("Post-processor '%s' applied successfully.", pp.name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Post-processor '%s' raised an exception and was skipped: %s",
+                getattr(pp, "name", repr(pp)),
+                exc,
+            )
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -31,84 +72,184 @@ def _get_registry():
 
 
 @click.group()
-@click.version_option(package_name="summarizer")
-@click.option("--verbose", "-v", is_flag=True, default=False, help="Enable verbose logging.")
+@click.option(
+    "--config",
+    "-c",
+    "config_path",
+    default=None,
+    type=click.Path(exists=False),
+    help="Path to a TOML configuration file.",
+)
+@click.option(
+    "--verbose", "-v", is_flag=True, default=False, help="Enable verbose/debug logging."
+)
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool) -> None:
-    """AI-powered article summarizer."""
+def cli(ctx: click.Context, config_path: Optional[str], verbose: bool) -> None:
+    """Summarizer – AI-powered article summarisation tool."""
     ctx.ensure_object(dict)
+    configure_logging(debug=verbose)
+
+    cfg = Config.load(config_path) if config_path else Config()
+    ctx.obj["config"] = cfg
     ctx.obj["verbose"] = verbose
-    if verbose:
-        import logging
-
-        logging.basicConfig(level=logging.DEBUG)
 
 
 # ---------------------------------------------------------------------------
-# summarize (main command)
+# `summarize run` command
 # ---------------------------------------------------------------------------
 
 
-@cli.command("summarize")
-@click.argument("sources", nargs=-1, required=False)
-@click.option("--file", "-f", "source_file", type=click.Path(exists=True), default=None,
-              help="File containing one URL/path per line.")
-@click.option("--style", "-s", default=None, help="Summary style (e.g. brief, detailed).")
-@click.option("--format", "output_format", default="text",
-              type=click.Choice(["text", "json", "markdown"], case_sensitive=False),
-              help="Output format.")
-@click.option("--no-plugins", is_flag=True, default=False,
-              help="Disable post-processors.")
-@click.option("--postprocessors", "-p", default=None,
-              help="Comma-separated list of post-processor names to apply (default: all).")
+@cli.command("run")
+@click.argument("sources", nargs=-1, required=True)
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    default="text",
+    show_default=True,
+    help="Output format. Use a registered formatter name or 'text' / 'json'.",
+)
+@click.option(
+    "--output",
+    "-o",
+    "output_file",
+    default=None,
+    type=click.Path(),
+    help="Write output to this file instead of stdout.",
+)
+@click.option(
+    "--style",
+    "-s",
+    default=None,
+    help="Summary style (e.g. 'brief', 'detailed', 'bullet').",
+)
+@click.option(
+    "--no-postprocess",
+    is_flag=True,
+    default=False,
+    help="Skip all registered post-processors.",
+)
 @click.pass_context
-def summarize_cmd(
+def run_command(
     ctx: click.Context,
     sources: tuple,
-    source_file: Optional[str],
-    style: Optional[str],
     output_format: str,
-    no_plugins: bool,
-    postprocessors: Optional[str],
+    output_file: Optional[str],
+    style: Optional[str],
+    no_postprocess: bool,
 ) -> None:
-    """Summarize one or more articles.
+    """Summarise one or more article URLs or file paths."""
+    from summarizer.summarize import summarize_source
 
-    SOURCES can be URLs or file paths.
-    """
-    from .summarize import summarize_article
-    from .formatter import format_summary
+    config: Config = ctx.obj["config"]
+    if style:
+        config.style = style
 
-    all_sources: List[str] = list(sources)
-    if source_file:
-        lines = Path(source_file).read_text(encoding="utf-8").splitlines()
-        all_sources.extend(line.strip() for line in lines if line.strip())
-
-    if not all_sources:
-        click.echo(ctx.get_help())
-        sys.exit(0)
-
-    registry = None if no_plugins else _get_registry()
-    processor_names: Optional[List[str]] = None
-    if postprocessors:
-        processor_names = [p.strip() for p in postprocessors.split(",")]
-
-    for source in all_sources:
+    results = []
+    for source in sources:
         try:
-            summary = summarize_article(source, style=style)
-        except Exception as exc:  # noqa: BLE001
-            click.echo(f"ERROR: {source}: {exc}", err=True)
-            continue
+            click.echo(f"Summarising: {source}", err=True)
+            summary, article_text = summarize_source(source, config=config)
 
-        if registry is not None:
-            summary = registry.apply_postprocessors(
-                summary, article_text="", names=processor_names
-            )
+            if not no_postprocess:
+                summary = _apply_postprocessors(summary, article_text=article_text)
 
-        click.echo(format_summary(summary, fmt=output_format))
+            results.append(summary)
+        except SummarizerError as exc:
+            click.echo(f"Error summarising '{source}': {exc}", err=True)
+            sys.exit(1)
+
+    # Determine output formatter
+    reg = _get_registry()
+    fmt = reg.get_formatter(output_format)
+
+    if fmt is not None:
+        output_text = fmt.format_many(results)
+    elif output_format == "json":
+        output_text = json.dumps(
+            [s.model_dump() if hasattr(s, "model_dump") else vars(s) for s in results],
+            indent=2,
+            default=str,
+        )
+    else:
+        # Default plain-text rendering
+        parts = []
+        for s in results:
+            title = getattr(s, "title", "") or ""
+            summary_text = getattr(s, "summary", "") or ""
+            parts.append(f"# {title}\n\n{summary_text}" if title else summary_text)
+        output_text = "\n\n---\n\n".join(parts)
+
+    if output_file:
+        Path(output_file).write_text(output_text, encoding="utf-8")
+        click.echo(f"Output written to {output_file}", err=True)
+    else:
+        click.echo(output_text)
 
 
 # ---------------------------------------------------------------------------
-# plugins subcommand group
+# `summarize batch` command
+# ---------------------------------------------------------------------------
+
+
+@cli.command("batch")
+@click.argument("url_file", type=click.Path(exists=True))
+@click.option("--format", "-f", "output_format", default="text", show_default=True)
+@click.option("--output", "-o", "output_file", default=None, type=click.Path())
+@click.option("--no-postprocess", is_flag=True, default=False)
+@click.pass_context
+def batch_command(
+    ctx: click.Context,
+    url_file: str,
+    output_format: str,
+    output_file: Optional[str],
+    no_postprocess: bool,
+) -> None:
+    """Batch summarise URLs listed one-per-line in URL_FILE."""
+    from summarizer.batch import run_batch
+
+    config: Config = ctx.obj["config"]
+    sources = Path(url_file).read_text(encoding="utf-8").splitlines()
+    sources = [s.strip() for s in sources if s.strip() and not s.startswith("#")]
+
+    if not sources:
+        click.echo("No sources found in file.", err=True)
+        sys.exit(1)
+
+    click.echo(f"Batch processing {len(sources)} sources…", err=True)
+    summaries = run_batch(sources, config=config)
+
+    if not no_postprocess:
+        summaries = [_apply_postprocessors(s) for s in summaries]
+
+    reg = _get_registry()
+    fmt = reg.get_formatter(output_format)
+
+    if fmt is not None:
+        output_text = fmt.format_many(summaries)
+    elif output_format == "json":
+        output_text = json.dumps(
+            [s.model_dump() if hasattr(s, "model_dump") else vars(s) for s in summaries],
+            indent=2,
+            default=str,
+        )
+    else:
+        parts = []
+        for s in summaries:
+            title = getattr(s, "title", "") or ""
+            summary_text = getattr(s, "summary", "") or ""
+            parts.append(f"# {title}\n\n{summary_text}" if title else summary_text)
+        output_text = "\n\n---\n\n".join(parts)
+
+    if output_file:
+        Path(output_file).write_text(output_text, encoding="utf-8")
+        click.echo(f"Output written to {output_file}", err=True)
+    else:
+        click.echo(output_text)
+
+
+# ---------------------------------------------------------------------------
+# `summarize plugins` command group
 # ---------------------------------------------------------------------------
 
 
@@ -118,76 +259,47 @@ def plugins_group() -> None:
 
 
 @plugins_group.command("list")
-@click.option("--json", "as_json", is_flag=True, default=False,
-              help="Output as JSON.")
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    default=False,
+    help="Output plugin list as JSON.",
+)
 def plugins_list(as_json: bool) -> None:
     """List all discovered plugins (extractors, post-processors, formatters)."""
-    import json as json_mod
-
-    registry = _get_registry()
-    all_plugins = registry.list_all()
+    reg = _get_registry()
+    all_plugins = reg.list_all()
 
     if as_json:
-        click.echo(json_mod.dumps(all_plugins, indent=2))
+        click.echo(json.dumps(all_plugins, indent=2))
         return
 
-    _LABELS = {
-        "summarizer.extractors": "Extractors",
-        "summarizer.postprocessors": "Post-Processors",
-        "summarizer.formatters": "Formatters",
-    }
+    # Human-readable output
+    sections = [
+        ("Extractors", all_plugins.get("extractors", [])),
+        ("Post-Processors", all_plugins.get("postprocessors", [])),
+        ("Formatters", all_plugins.get("formatters", [])),
+    ]
 
-    total = 0
-    for group_key, label in _LABELS.items():
-        plugins = all_plugins.get(group_key, {})
-        click.echo(f"\n{click.style(label, bold=True)} ({len(plugins)} registered)")
-        if plugins:
-            for name, fqn in plugins.items():
-                click.echo(f"  {click.style(name, fg='green')}  →  {fqn}")
-                total += 1
+    total = sum(len(v) for _, v in sections)
+    click.echo(f"\nDiscovered {total} plugin(s):\n")
+
+    for section_name, plugins in sections:
+        click.echo(click.style(f"  {section_name}:", bold=True))
+        if not plugins:
+            click.echo("    (none)")
         else:
-            click.echo("  (none)")
-
-    if registry.errors:
-        click.echo(f"\n{click.style('Load errors:', fg='red', bold=True)}")
-        for err in registry.errors:
-            click.echo(f"  ✗ {err}")
-
-    click.echo(f"\nTotal: {total} plugin(s) registered.")
-
-
-@plugins_group.command("info")
-@click.argument("name")
-def plugins_info(name: str) -> None:
-    """Show detailed information about a specific plugin by NAME."""
-    from .plugins import EP_EXTRACTORS, EP_POSTPROCESSORS, EP_FORMATTERS
-
-    registry = _get_registry()
-    all_plugins = registry.list_all()
-
-    for group_key, plugins in all_plugins.items():
-        if name in plugins:
-            fqn = plugins[name]
-            click.echo(f"Name:   {name}")
-            click.echo(f"Group:  {group_key}")
-            click.echo(f"Class:  {fqn}")
-
-            # Try to show description / version
-            dest_map = {
-                EP_EXTRACTORS: registry.extractors,
-                EP_POSTPROCESSORS: registry.postprocessors,
-                EP_FORMATTERS: registry.formatters,
-            }
-            cls = dest_map.get(group_key, {}).get(name)
-            if cls:
-                instance = cls()
-                meta = instance.get_metadata()
-                click.echo(f"Desc:   {meta.get('description', '(none)')}")
-                click.echo(f"Version:{meta.get('version', '?')}")
-            return
-
-    click.echo(f"Plugin '{name}' not found.", err=True)
-    sys.exit(1)
+            for p in plugins:
+                name = p.get("name", "?")
+                desc = p.get("description", "")
+                cls = p.get("class", "")
+                click.echo(f"    • {click.style(name, fg='green')}")
+                if desc:
+                    click.echo(f"      {desc}")
+                if cls:
+                    click.echo(f"      class: {click.style(cls, dim=True)}")
+        click.echo()
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +308,7 @@ def plugins_info(name: str) -> None:
 
 
 def main() -> None:
+    """Package entry point called by the console_scripts setup."""
     cli(obj={})
 
 
