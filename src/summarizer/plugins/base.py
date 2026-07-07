@@ -1,112 +1,99 @@
-"""
-Base ABCs for all plugin types.
-
-Plugin authors should subclass one of:
-- BaseExtractor: custom article extraction logic
-- BasePostProcessor: transforms Summary after LLM response
-- BaseFormatter: custom output formats
-"""
+"""Base ABCs for all plugin types."""
 
 from __future__ import annotations
 
 import abc
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 
 class BaseExtractor(abc.ABC):
-    """
-    Abstract base class for custom article extractors.
+    """Base class for custom article extractors.
 
-    Extractors are responsible for fetching and parsing raw content
-    from a URL or other source into plain text.
+    Plugin authors should subclass this and implement `extract`.
+    Register via the `summarizer.extractors` entry point group.
     """
 
-    #: Human-readable name shown in `plugins list`
-    name: str = ""
+    #: Human-readable name for this extractor
+    name: str = "base_extractor"
     #: Short description shown in `plugins list`
     description: str = ""
 
     @abc.abstractmethod
-    def can_handle(self, url: str) -> bool:
+    def extract(self, url: str, raw_html: str) -> Dict[str, Any]:
+        """Extract structured content from raw HTML.
+
+        Parameters
+        ----------
+        url:
+            The URL the HTML was fetched from.
+        raw_html:
+            The raw HTML string of the page.
+
+        Returns
+        -------
+        dict with at least the key ``"text"`` containing the main article text.
+        Additional optional keys: ``"title"``, ``"author"``, ``"published_date"``.
         """
-        Return True if this extractor knows how to handle the given URL.
 
-        The registry will call each extractor's ``can_handle`` in registration
-        order and use the first one that returns True.
+    def supports(self, url: str) -> bool:  # noqa: ARG002
+        """Return True if this extractor can handle the given URL.
 
-        Args:
-            url: The URL to be extracted.
-
-        Returns:
-            bool: Whether this extractor can process the URL.
+        Override to restrict the extractor to specific domains / URL patterns.
+        The registry uses the first extractor whose ``supports()`` returns True.
         """
-
-    @abc.abstractmethod
-    def extract(self, url: str) -> str:
-        """
-        Fetch and return the plain-text content of the article at *url*.
-
-        Args:
-            url: The URL to extract content from.
-
-        Returns:
-            str: The extracted plain-text article body.
-
-        Raises:
-            ExtractionError: If extraction fails.
-        """
+        return True
 
 
 class BasePostProcessor(abc.ABC):
-    """
-    Abstract base class for post-processors.
+    """Base class for summary post-processors.
 
-    Post-processors receive the completed Summary object (and optionally the
-    original article text) and may augment or transform it in place.
+    Plugin authors should subclass this and implement `process`.
+    Register via the `summarizer.postprocessors` entry point group.
     """
 
-    #: Human-readable name shown in `plugins list`
-    name: str = ""
-    #: Short description shown in `plugins list`
+    name: str = "base_postprocessor"
     description: str = ""
 
     @abc.abstractmethod
-    def process(self, summary: Any, article_text: Optional[str] = None) -> Any:
-        """
-        Process/augment the summary object.
+    def process(self, summary: "Summary", article_text: str) -> "Summary":  # type: ignore[name-defined]  # noqa: F821
+        """Transform or annotate a Summary object.
 
-        Args:
-            summary: The Summary dataclass/object returned by the LLM client.
-            article_text: The original article text, if available.
+        Parameters
+        ----------
+        summary:
+            The :class:`~summarizer.models.Summary` produced by the LLM step.
+        article_text:
+            The original (pre-LLM) article text, useful for keyword extraction
+            and readability scoring on the source material.
 
-        Returns:
-            The (possibly modified) summary object.
+        Returns
+        -------
+        The (possibly mutated) Summary object.
         """
 
 
 class BaseFormatter(abc.ABC):
-    """
-    Abstract base class for output formatters.
+    """Base class for custom output formatters.
 
-    Formatters convert a Summary object into a string representation
-    in a particular format (e.g., HTML, Markdown, JSON, CSV).
+    Plugin authors should subclass this and implement `format`.
+    Register via the `summarizer.formatters` entry point group.
     """
 
-    #: Human-readable name shown in `plugins list`
-    name: str = ""
-    #: Short description shown in `plugins list`
+    name: str = "base_formatter"
     description: str = ""
-    #: File extension hint (e.g. ".html", ".md") — used by CLI when writing output
-    extension: str = ".txt"
+    #: File extension produced by this formatter, e.g. ``"html"``
+    extension: str = "txt"
 
     @abc.abstractmethod
-    def format(self, summary: Any) -> str:
-        """
-        Convert a Summary object to a formatted string.
+    def format(self, summary: "Summary") -> str:  # type: ignore[name-defined]  # noqa: F821
+        """Render a Summary to a string in this formatter's output format.
 
-        Args:
-            summary: The Summary dataclass/object to format.
+        Parameters
+        ----------
+        summary:
+            The :class:`~summarizer.models.Summary` to render.
 
-        Returns:
-            str: The formatted output string.
+        Returns
+        -------
+        A string representation of the summary.
         """
