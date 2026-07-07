@@ -5,81 +5,88 @@ build-backend = "setuptools.backends.legacy:build"
 [project]
 name = "summarizer"
 version = "0.1.0"
-description = "AI-powered article summarisation tool with a plugin system."
+description = "AI-powered article summariser with a plugin system"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
+keywords = ["summariser", "nlp", "ai", "plugins"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
 dependencies = [
-    "click>=8.0",
-    "httpx>=0.24",
+    "httpx>=0.25",
     "beautifulsoup4>=4.12",
-    "lxml>=4.9",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
+nlp = [
+    "nltk>=3.8",
+]
 dev = [
-    "pytest>=7.0",
-    "pytest-cov",
-    "ruff",
-    "mypy",
+    "pytest>=7.4",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+    "mypy>=1.6",
 ]
 
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
 [project.scripts]
 summarize = "summarizer.cli:main"
 
 # ---------------------------------------------------------------------------
-# Plugin entry points
+# Built-in plugin entry points
 #
-# Third-party packages announce their plugins by declaring entry points under
-# one of the three groups below in their own pyproject.toml.  The summarizer
-# PluginRegistry discovers them automatically at startup via importlib.metadata.
+# Third-party plugin authors register their own entry points in the same
+# groups inside *their* package's pyproject.toml, e.g.:
 #
-# Group                      | Base class           | Purpose
-# -------------------------- | -------------------- | -----------------------
-# summarizer.extractors      | BaseExtractor        | Custom content fetching
-# summarizer.postprocessors  | BasePostProcessor    | Enrich/mutate summaries
-# summarizer.formatters      | BaseFormatter        | Custom output formats
+#   [project.entry-points."summarizer.postprocessors"]
+#   my_sentiment = "my_package.plugins:SentimentAnalyser"
 #
-# Built-in plugins are registered programmatically inside PluginRegistry so
-# they don't need entry-point declarations.  The stubs below are left as
-# commented examples for plugin authors to reference.
+# The three supported groups are:
+#   summarizer.extractors      → subclass of BaseExtractor
+#   summarizer.postprocessors  → subclass of BasePostProcessor
+#   summarizer.formatters      → subclass of BaseFormatter
 # ---------------------------------------------------------------------------
 
-# [project.entry-points."summarizer.extractors"]
-# my_extractor = "my_package.extractors:MyExtractor"
+[project.entry-points."summarizer.extractors"]
+# (No built-in extractors — the default HTTP extractor is used automatically)
 
-# [project.entry-points."summarizer.postprocessors"]
-# my_postprocessor = "my_package.postprocessors:MyPostProcessor"
+[project.entry-points."summarizer.postprocessors"]
+keyword_extractor = "summarizer.plugins.builtin.keyword_extractor:KeywordExtractor"
+readability_scorer = "summarizer.plugins.builtin.readability:ReadabilityScorer"
 
-# [project.entry-points."summarizer.formatters"]
-# my_formatter = "my_package.formatters:MyFormatter"
+[project.entry-points."summarizer.formatters"]
+# (No built-in formatters beyond the default str() representation)
 
 # ---------------------------------------------------------------------------
-# Setuptools configuration
+# Tool configuration
 # ---------------------------------------------------------------------------
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
 
-# ---------------------------------------------------------------------------
-# Pytest
-# ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--tb=short -q"
+asyncio_mode = "auto"
+log_cli = false
 
-# ---------------------------------------------------------------------------
-# Ruff (linting)
-# ---------------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
+select = ["E", "F", "I", "UP", "B"]
 
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
-ignore = ["E501"]
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true

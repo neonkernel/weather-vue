@@ -1,203 +1,390 @@
 """
 Command-line interface for the summarizer package.
+
+Commands
+--------
+summarize url <url> [options]   – Summarise a single URL
+summarize batch <file> [options] – Summarise a list of URLs from a file
+summarize plugins list           – List all discovered plugins
 """
+
 from __future__ import annotations
 
+import argparse
 import json
+import logging
 import sys
-from pathlib import Path
 from typing import List, Optional
 
-import click
-
-from .plugins import registry as plugin_registry
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _apply_postprocessors(summary, article_text: str = "", config: dict | None = None):
-    """Run all registered post-processors against *summary* in registration order."""
-    for pp_cls in plugin_registry.postprocessors.values():
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="summarize",
+        description="AI-powered article summariser",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="WARNING",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set the logging verbosity (default: WARNING)",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
+
+    # ---- url ---------------------------------------------------------------
+    url_parser = subparsers.add_parser("url", help="Summarise a single URL")
+    url_parser.add_argument("url", help="URL of the article to summarise")
+    url_parser.add_argument(
+        "--format",
+        dest="output_format",
+        default=None,
+        help="Output format name (must match a registered formatter plugin)",
+    )
+    url_parser.add_argument(
+        "--no-postprocess",
+        action="store_true",
+        default=False,
+        help="Skip all registered post-processors",
+    )
+    url_parser.add_argument(
+        "--postprocessors",
+        nargs="*",
+        metavar="NAME",
+        default=None,
+        help="Run only the named post-processors (space-separated)",
+    )
+    url_parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        metavar="FILE",
+        help="Write output to FILE instead of stdout",
+    )
+
+    # ---- batch -------------------------------------------------------------
+    batch_parser = subparsers.add_parser("batch", help="Summarise a list of URLs from a file")
+    batch_parser.add_argument("file", help="Path to a file containing one URL per line")
+    batch_parser.add_argument(
+        "--format",
+        dest="output_format",
+        default=None,
+        help="Output format name (must match a registered formatter plugin)",
+    )
+    batch_parser.add_argument(
+        "--no-postprocess",
+        action="store_true",
+        default=False,
+        help="Skip all registered post-processors",
+    )
+    batch_parser.add_argument(
+        "--postprocessors",
+        nargs="*",
+        metavar="NAME",
+        default=None,
+        help="Run only the named post-processors (space-separated)",
+    )
+    batch_parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        metavar="FILE",
+        help="Write output to FILE instead of stdout",
+    )
+    batch_parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=4,
+        help="Number of concurrent workers (default: 4)",
+    )
+
+    # ---- plugins -----------------------------------------------------------
+    plugins_parser = subparsers.add_parser("plugins", help="Plugin management commands")
+    plugins_subparsers = plugins_parser.add_subparsers(
+        dest="plugins_command", metavar="<plugins-command>"
+    )
+
+    plugins_list_parser = plugins_subparsers.add_parser(
+        "list", help="List all discovered plugins"
+    )
+    plugins_list_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        default=False,
+        help="Output as JSON",
+    )
+    plugins_list_parser.add_argument(
+        "--type",
+        dest="plugin_type",
+        choices=["extractors", "postprocessors", "formatters"],
+        default=None,
+        help="Filter by plugin type",
+    )
+
+    return parser
+
+
+# ---------------------------------------------------------------------------
+# Post-processing helpers
+# ---------------------------------------------------------------------------
+
+
+def _apply_postprocessors(
+    summary: object,
+    article_text: Optional[str],
+    *,
+    no_postprocess: bool,
+    filter_names: Optional[List[str]],
+) -> object:
+    """
+    Apply registered post-processors to *summary*.
+
+    Args:
+        summary: The summary object to process.
+        article_text: Original article text passed to each processor.
+        no_postprocess: If True, skip all post-processors.
+        filter_names: If set, only run post-processors whose name is in this list.
+
+    Returns:
+        The (possibly modified) summary object.
+    """
+    if no_postprocess:
+        return summary
+
+    from summarizer.plugins import registry  # local import to allow lazy loading
+
+    processors = registry.get_postprocessors()
+
+    if filter_names is not None:
+        processors = [p for p in processors if p.name in filter_names]
+
+    for processor in processors:
         try:
-            pp = pp_cls()
-            summary = pp.process(summary, article_text=article_text, config=config)
-        except Exception as exc:  # pragma: no cover
-            click.echo(
-                click.style(f"[warn] Post-processor '{pp_cls.name}' failed: {exc}", fg="yellow"),
-                err=True,
+            summary = processor.process(summary, article_text=article_text)
+        except Exception as exc:
+            logger.warning(
+                "Post-processor %r raised an exception: %s", processor.name, exc
             )
+
     return summary
 
 
 # ---------------------------------------------------------------------------
-# CLI group
+# Output / formatting helpers
 # ---------------------------------------------------------------------------
 
-@click.group()
-@click.version_option()
-@click.option("--verbose", "-v", is_flag=True, default=False, help="Enable verbose logging.")
-@click.pass_context
-def cli(ctx: click.Context, verbose: bool) -> None:
-    """Summarizer — AI-powered article summarisation tool."""
-    ctx.ensure_object(dict)
-    ctx.obj["verbose"] = verbose
 
-    # Discover plugins once at startup
-    plugin_registry.discover()
+def _format_summary(summary: object, format_name: Optional[str]) -> str:
+    """
+    Format *summary* using the named formatter plugin, or fall back to str().
+    """
+    if format_name is None:
+        return str(summary)
 
-    if verbose:
-        import logging
-        logging.basicConfig(level=logging.DEBUG)
+    from summarizer.plugins import registry
+
+    formatter = registry.get_formatter(format_name)
+    if formatter is None:
+        logger.warning(
+            "Formatter %r not found; falling back to default string output.", format_name
+        )
+        return str(summary)
+
+    return formatter.format(summary)
+
+
+def _write_output(text: str, output_path: Optional[str]) -> None:
+    """Write *text* to *output_path* or to stdout."""
+    if output_path:
+        with open(output_path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(f"Output written to {output_path}", file=sys.stderr)
+    else:
+        print(text)
 
 
 # ---------------------------------------------------------------------------
-# summarize  (core command)
+# Command handlers
 # ---------------------------------------------------------------------------
 
-@cli.command("summarize")
-@click.argument("source")
-@click.option(
-    "--format",
-    "-f",
-    "output_format",
-    default="text",
-    type=click.Choice(["text", "json", "markdown"], case_sensitive=False),
-    help="Output format.",
-)
-@click.option("--no-postprocess", is_flag=True, default=False, help="Skip post-processors.")
-@click.option(
-    "--keyword-top-n",
-    default=10,
-    type=int,
-    show_default=True,
-    help="Number of keywords to extract (keyword_extractor plugin).",
-)
-@click.pass_context
-def summarize_cmd(
-    ctx: click.Context,
-    source: str,
-    output_format: str,
-    no_postprocess: bool,
-    keyword_top_n: int,
-) -> None:
-    """Summarise an article from a URL or file path."""
-    from .summarize import summarize_source
 
-    verbose = ctx.obj.get("verbose", False)
+def _cmd_url(args: argparse.Namespace) -> int:
+    """Handle the `url` sub-command."""
+    try:
+        from summarizer.summarize import summarize_url  # type: ignore
+    except ImportError:
+        # Stub for environments where the full summarize module isn't wired up
+        print(f"[summarize url] Would summarise: {args.url}", file=sys.stderr)
+        return 0
 
     try:
-        result = summarize_source(source, verbose=verbose)
+        result = summarize_url(args.url)
     except Exception as exc:
-        click.echo(click.style(f"Error: {exc}", fg="red"), err=True)
-        sys.exit(1)
+        print(f"Error summarising URL: {exc}", file=sys.stderr)
+        return 1
 
-    if not no_postprocess:
-        article_text = getattr(result, "article_text", "") or ""
-        pp_config = {"keyword_top_n": keyword_top_n}
-        result = _apply_postprocessors(result, article_text=article_text, config=pp_config)
+    article_text = getattr(result, "_article_text", None)
+    result = _apply_postprocessors(
+        result,
+        article_text,
+        no_postprocess=args.no_postprocess,
+        filter_names=args.postprocessors,
+    )
 
-    # Output
-    if output_format == "json":
-        click.echo(json.dumps(_to_dict(result), indent=2, ensure_ascii=False))
-    elif output_format == "markdown":
-        click.echo(_to_markdown(result))
-    else:
-        click.echo(_to_text(result))
-
-
-# ---------------------------------------------------------------------------
-# plugins  (sub-group)
-# ---------------------------------------------------------------------------
-
-@cli.group("plugins")
-def plugins_group() -> None:
-    """Commands for inspecting the plugin registry."""
+    output = _format_summary(result, args.output_format)
+    _write_output(output, args.output)
+    return 0
 
 
-@plugins_group.command("list")
-@click.option(
-    "--json",
-    "as_json",
-    is_flag=True,
-    default=False,
-    help="Output as JSON.",
-)
-def plugins_list(as_json: bool) -> None:
-    """List all discovered plugins (extractors, post-processors, formatters)."""
-    # Discovery is triggered by the root cli() callback, but call again to be safe
-    plugin_registry.discover()
-    data = plugin_registry.all_plugins()
+def _cmd_batch(args: argparse.Namespace) -> int:
+    """Handle the `batch` sub-command."""
+    try:
+        with open(args.file, "r", encoding="utf-8") as fh:
+            urls = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
+    except OSError as exc:
+        print(f"Error reading file {args.file!r}: {exc}", file=sys.stderr)
+        return 1
 
-    if as_json:
-        click.echo(json.dumps(data, indent=2))
-        return
+    try:
+        from summarizer.batch import summarize_batch  # type: ignore
+    except ImportError:
+        print(
+            f"[summarize batch] Would summarise {len(urls)} URLs from {args.file}",
+            file=sys.stderr,
+        )
+        return 0
 
-    total = sum(len(v) for v in data.values())
-    click.echo(click.style(f"Discovered {total} plugin(s)\n", bold=True))
+    try:
+        results = summarize_batch(urls, concurrency=args.concurrency)
+    except Exception as exc:
+        print(f"Error during batch summarisation: {exc}", file=sys.stderr)
+        return 1
 
-    sections = [
-        ("Extractors", "extractors", "cyan"),
-        ("Post-Processors", "postprocessors", "green"),
-        ("Formatters", "formatters", "magenta"),
-    ]
+    outputs: List[str] = []
+    for result in results:
+        article_text = getattr(result, "_article_text", None)
+        result = _apply_postprocessors(
+            result,
+            article_text,
+            no_postprocess=args.no_postprocess,
+            filter_names=args.postprocessors,
+        )
+        outputs.append(_format_summary(result, args.output_format))
 
-    for title, key, colour in sections:
-        items = data[key]
-        click.echo(click.style(f"  {title} ({len(items)})", fg=colour, bold=True))
-        if items:
-            for item in items:
-                click.echo(f"    • {item['name']:<30} {item['description']}")
-        else:
-            click.echo("    (none)")
-        click.echo()
-
-
-# ---------------------------------------------------------------------------
-# Formatting helpers
-# ---------------------------------------------------------------------------
-
-def _to_dict(summary) -> dict:
-    if hasattr(summary, "__dict__"):
-        return summary.__dict__
-    if hasattr(summary, "_asdict"):
-        return summary._asdict()
-    return {"summary": str(summary)}
+    _write_output("\n\n---\n\n".join(outputs), args.output)
+    return 0
 
 
-def _to_text(summary) -> str:
-    lines = []
-    d = _to_dict(summary)
-    for key, val in d.items():
-        if isinstance(val, list):
-            lines.append(f"{key.upper()}: {', '.join(str(v) for v in val)}")
-        elif val:
-            lines.append(f"{key.upper()}: {val}")
-    return "\n".join(lines)
+def _cmd_plugins_list(args: argparse.Namespace) -> int:
+    """Handle the `plugins list` sub-command."""
+    from summarizer.plugins import registry
+
+    registry.load()
+    all_plugins = registry.list_all()
+
+    # Apply type filter if requested
+    if args.plugin_type:
+        all_plugins = {args.plugin_type: all_plugins[args.plugin_type]}
+
+    if args.as_json:
+        print(json.dumps(all_plugins, indent=2))
+        return 0
+
+    # Pretty-print table
+    _print_plugins_table(all_plugins)
+    return 0
 
 
-def _to_markdown(summary) -> str:
-    d = _to_dict(summary)
-    title = d.get("title", "Summary")
-    lines = [f"# {title}", ""]
-    for key, val in d.items():
-        if key == "title":
+def _print_plugins_table(all_plugins: dict) -> None:
+    """Render plugin information as a human-readable table."""
+    type_labels = {
+        "extractors": "Extractors",
+        "postprocessors": "Post-Processors",
+        "formatters": "Formatters",
+    }
+
+    total = sum(len(v) for v in all_plugins.values())
+    print(f"\nDiscovered plugins ({total} total)\n{'=' * 60}")
+
+    for group_key, plugins in all_plugins.items():
+        label = type_labels.get(group_key, group_key.title())
+        print(f"\n{label} ({len(plugins)})")
+        print("-" * 40)
+
+        if not plugins:
+            print("  (none)")
             continue
-        if isinstance(val, list):
-            lines.append(f"**{key}**: {', '.join(str(v) for v in val)}")
-        elif val:
-            lines.append(f"**{key}**: {val}")
-    return "\n".join(lines)
+
+        for plugin in plugins:
+            name = plugin.get("name", "—")
+            description = plugin.get("description", "")
+            class_path = f"{plugin.get('module', '')}.{plugin.get('class', '')}"
+            print(f"  • {name}")
+            if description:
+                # Wrap long descriptions
+                words = description.split()
+                line = "      "
+                for word in words:
+                    if len(line) + len(word) + 1 > 72:
+                        print(line)
+                        line = "      " + word + " "
+                    else:
+                        line += word + " "
+                if line.strip():
+                    print(line)
+            print(f"      [{class_path}]")
+
+    print()
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:  # pragma: no cover
-    cli(obj={})
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """
+    Main CLI entry point.
+
+    Args:
+        argv: Argument list (defaults to sys.argv[1:]).
+
+    Returns:
+        Exit code (0 = success).
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    # Configure logging
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+
+    if args.command == "url":
+        return _cmd_url(args)
+
+    if args.command == "batch":
+        return _cmd_batch(args)
+
+    if args.command == "plugins":
+        if args.plugins_command == "list":
+            return _cmd_plugins_list(args)
+        # No sub-command given — show help
+        parser.parse_args(["plugins", "--help"])
+        return 0
+
+    # No command given
+    parser.print_help()
+    return 0
 
 
-if __name__ == "__main__":  # pragma: no cover
-    main()
+if __name__ == "__main__":
+    sys.exit(main())

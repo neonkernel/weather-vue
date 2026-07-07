@@ -1,81 +1,92 @@
 """
-Built-in post-processor: computes a Flesch-Kincaid readability score for the
-summary text and attaches it to the summary object.
+Built-in post-processor: ReadabilityScorer
 
-No external dependencies are required — the Flesch Reading Ease formula is
-implemented here directly.
+Computes a Flesch-Kincaid readability score for the summary text and attaches
+it as ``summary.readability``.  The implementation is self-contained and
+requires no external dependencies.
 
-Flesch Reading Ease
--------------------
-    score = 206.835
-            - 1.015  * (words / sentences)
-            - 84.6   * (syllables / words)
+Flesch Reading Ease formula:
+    206.835 - 1.015 * (words / sentences) - 84.6 * (syllables / words)
 
-Interpretation (approximate):
-    90–100  Very Easy
-    80–90   Easy
-    70–80   Fairly Easy
-    60–70   Standard
-    50–60   Fairly Difficult
-    30–50   Difficult
-    0–30    Very Confusing
+Flesch-Kincaid Grade Level formula:
+    0.39 * (words / sentences) + 11.8 * (syllables / words) - 15.59
 """
+
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Optional
 
-from ..base import BasePostProcessor
+from summarizer.plugins.base import BasePostProcessor
 
 
 # ---------------------------------------------------------------------------
-# Syllable counting heuristic (no CMU dict / NLTK required)
+# Syllable counting (approximation — avoids any external dependency)
 # ---------------------------------------------------------------------------
 
 _VOWELS = re.compile(r"[aeiouy]+", re.IGNORECASE)
-_SILENT_E = re.compile(r"[^aeiou]e$", re.IGNORECASE)
-_DOUBLE_VOWELS = re.compile(r"[aeiou]{2}", re.IGNORECASE)
 
 
 def _count_syllables(word: str) -> int:
-    word = word.lower().strip(". ,;:\"'")
+    """
+    Approximate the number of syllables in an English word.
+
+    Uses the heuristic:
+      1. Count vowel groups.
+      2. Subtract for silent-e endings.
+      3. Ensure at least 1 syllable.
+    """
+    word = word.lower().rstrip(".,;:!?\"'")
     if not word:
         return 0
     count = len(_VOWELS.findall(word))
-    if word.endswith("e") and len(word) > 2 and not re.search(r"[aeiou]e$", word[:-1]):
+    # Silent 'e' at end
+    if word.endswith("e") and count > 1:
         count -= 1
     return max(1, count)
 
 
-def _syllables_in_text(text: str) -> int:
-    return sum(_count_syllables(w) for w in text.split())
-
-
-def _sentence_count(text: str) -> int:
+def _count_sentences(text: str) -> int:
+    """Count sentences by splitting on terminal punctuation."""
     sentences = re.split(r"[.!?]+", text)
-    return max(1, sum(1 for s in sentences if s.strip()))
+    sentences = [s.strip() for s in sentences if s.strip()]
+    return max(1, len(sentences))
 
 
-def flesch_reading_ease(text: str) -> float:
-    """Return the Flesch Reading Ease score for *text* (0–100 scale)."""
-    words = text.split()
-    word_count = len(words)
-    if word_count < 2:
-        return 0.0
-
-    sentence_count = _sentence_count(text)
-    syllable_count = _syllables_in_text(text)
-
-    score = (
-        206.835
-        - 1.015 * (word_count / sentence_count)
-        - 84.6 * (syllable_count / word_count)
-    )
-    # Clamp to [0, 100]
-    return round(max(0.0, min(100.0, score)), 2)
+def _count_words(text: str) -> list:
+    """Return list of word tokens."""
+    return re.findall(r"\b[a-zA-Z']+\b", text)
 
 
-def _grade_label(score: float) -> str:
+@dataclass
+class ReadabilityResult:
+    """Container for readability metrics."""
+
+    flesch_reading_ease: float
+    flesch_kincaid_grade: float
+    word_count: int
+    sentence_count: int
+    syllable_count: int
+    avg_words_per_sentence: float
+    avg_syllables_per_word: float
+    interpretation: str
+
+    def as_dict(self) -> dict:
+        return {
+            "flesch_reading_ease": self.flesch_reading_ease,
+            "flesch_kincaid_grade": self.flesch_kincaid_grade,
+            "word_count": self.word_count,
+            "sentence_count": self.sentence_count,
+            "syllable_count": self.syllable_count,
+            "avg_words_per_sentence": self.avg_words_per_sentence,
+            "avg_syllables_per_word": self.avg_syllables_per_word,
+            "interpretation": self.interpretation,
+        }
+
+
+def _interpret_reading_ease(score: float) -> str:
+    """Map a Flesch Reading Ease score to a human-readable label."""
     if score >= 90:
         return "Very Easy"
     if score >= 80:
@@ -91,41 +102,99 @@ def _grade_label(score: float) -> str:
     return "Very Confusing"
 
 
-class ReadabilityScorer(BasePostProcessor):
+def compute_readability(text: str) -> ReadabilityResult:
     """
-    Computes the Flesch Reading Ease score for the summary text and attaches
-    ``summary.readability_score`` and ``summary.readability_label`` to the
-    summary object.
-    """
+    Compute Flesch readability metrics for *text*.
 
-    name = "readability_scorer"
-    description = (
-        "Computes Flesch Reading Ease score for the summary text and attaches "
-        "`summary.readability_score` and `summary.readability_label`."
+    Args:
+        text: The text to analyse.
+
+    Returns:
+        A :class:`ReadabilityResult` dataclass.
+    """
+    words = _count_words(text)
+    num_words = len(words)
+    num_sentences = _count_sentences(text)
+    num_syllables = sum(_count_syllables(w) for w in words)
+
+    avg_wps = num_words / num_sentences if num_sentences else 0.0
+    avg_spw = num_syllables / num_words if num_words else 0.0
+
+    # Flesch Reading Ease
+    fre = 206.835 - 1.015 * avg_wps - 84.6 * avg_spw
+
+    # Flesch-Kincaid Grade Level
+    fkgl = 0.39 * avg_wps + 11.8 * avg_spw - 15.59
+
+    return ReadabilityResult(
+        flesch_reading_ease=round(fre, 2),
+        flesch_kincaid_grade=round(fkgl, 2),
+        word_count=num_words,
+        sentence_count=num_sentences,
+        syllable_count=num_syllables,
+        avg_words_per_sentence=round(avg_wps, 2),
+        avg_syllables_per_word=round(avg_spw, 2),
+        interpretation=_interpret_reading_ease(fre),
     )
 
-    def process(
-        self,
-        summary: Any,
-        *,
-        article_text: str = "",
-        config: Optional[Dict[str, Any]] = None,
-    ) -> Any:
-        # Prefer the summary text over the raw article for readability
-        text = getattr(summary, "summary", None) or getattr(summary, "content", None) or ""
-        if not text and isinstance(summary, str):
-            text = summary
 
-        score = flesch_reading_ease(text) if text.strip() else 0.0
-        label = _grade_label(score)
+class ReadabilityScorer(BasePostProcessor):
+    """
+    Post-processor that computes Flesch-Kincaid readability metrics for the
+    summary text and attaches them as ``summary.readability``.
 
-        for attr, val in [("readability_score", score), ("readability_label", label)]:
-            try:
-                object.__setattr__(summary, attr, val)
-            except (AttributeError, TypeError):
-                try:
-                    setattr(summary, attr, val)
-                except AttributeError:
-                    pass
+    The scorer operates on the summary text fields in this priority order:
+    ``summary``, ``text``, ``content``, ``body``.
+
+    Example::
+
+        scorer = ReadabilityScorer()
+        summary = scorer.process(summary)
+        print(summary.readability.flesch_reading_ease)
+    """
+
+    name: str = "readability_scorer"
+    description: str = (
+        "Computes Flesch-Kincaid readability metrics for the summary text. "
+        "Attaches results to summary.readability."
+    )
+
+    def process(self, summary: Any, article_text: Optional[str] = None) -> Any:
+        """
+        Compute readability and attach result to *summary*.
+
+        Args:
+            summary: The Summary object to augment.
+            article_text: Ignored by this processor (operates on summary text).
+
+        Returns:
+            The augmented summary object.
+        """
+        source_text = ""
+        for attr in ("summary", "text", "content", "body"):
+            val = getattr(summary, attr, None)
+            if isinstance(val, str) and val.strip():
+                source_text = val
+                break
+
+        if source_text:
+            result = compute_readability(source_text)
+        else:
+            # Return a zeroed result rather than fail
+            result = ReadabilityResult(
+                flesch_reading_ease=0.0,
+                flesch_kincaid_grade=0.0,
+                word_count=0,
+                sentence_count=0,
+                syllable_count=0,
+                avg_words_per_sentence=0.0,
+                avg_syllables_per_word=0.0,
+                interpretation="N/A",
+            )
+
+        try:
+            summary.readability = result
+        except AttributeError:
+            object.__setattr__(summary, "readability", result)
 
         return summary
