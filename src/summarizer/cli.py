@@ -1,261 +1,119 @@
 """
-CLI entry point for the summarizer package.
-
-Commands
---------
-summarize run        – Summarise one or more URLs / files
-summarize batch      – Batch processing from a file of URLs
-summarize plugins    – Plugin management subcommands
-  plugins list       – List all discovered plugins
+Command-line interface for the summarizer package.
 """
-
 from __future__ import annotations
 
 import json
-import logging
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 import click
 
-from summarizer.config import Config
-from summarizer.exceptions import SummarizerError
-from summarizer.logger import configure_logging
-
-logger = logging.getLogger(__name__)
+from .plugins import registry as plugin_registry
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-
-def _get_registry():
-    """Lazy-import the plugin registry to avoid circular imports at module load."""
-    from summarizer.plugins import registry
-    return registry
-
-
-def _apply_postprocessors(summary, article_text: str = ""):
-    """
-    Run all registered post-processors against a Summary object in order.
-
-    Args:
-        summary: A Summary instance returned by the LLM pipeline.
-        article_text: The original article plain text (may be empty).
-
-    Returns:
-        The (potentially modified) Summary object.
-    """
-    reg = _get_registry()
-    postprocessors = reg.get_postprocessors()
-    if not postprocessors:
-        return summary
-
-    for pp in postprocessors:
+def _apply_postprocessors(summary, article_text: str = "", config: dict | None = None):
+    """Run all registered post-processors against *summary* in registration order."""
+    for pp_cls in plugin_registry.postprocessors.values():
         try:
-            summary = pp.process(summary, article_text=article_text)
-            logger.debug("Post-processor '%s' applied successfully.", pp.name)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Post-processor '%s' raised an exception and was skipped: %s",
-                getattr(pp, "name", repr(pp)),
-                exc,
+            pp = pp_cls()
+            summary = pp.process(summary, article_text=article_text, config=config)
+        except Exception as exc:  # pragma: no cover
+            click.echo(
+                click.style(f"[warn] Post-processor '{pp_cls.name}' failed: {exc}", fg="yellow"),
+                err=True,
             )
     return summary
 
 
 # ---------------------------------------------------------------------------
-# Root command group
+# CLI group
 # ---------------------------------------------------------------------------
-
 
 @click.group()
-@click.option(
-    "--config",
-    "-c",
-    "config_path",
-    default=None,
-    type=click.Path(exists=False),
-    help="Path to a TOML configuration file.",
-)
-@click.option(
-    "--verbose", "-v", is_flag=True, default=False, help="Enable verbose/debug logging."
-)
+@click.version_option()
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Enable verbose logging.")
 @click.pass_context
-def cli(ctx: click.Context, config_path: Optional[str], verbose: bool) -> None:
-    """Summarizer – AI-powered article summarisation tool."""
+def cli(ctx: click.Context, verbose: bool) -> None:
+    """Summarizer — AI-powered article summarisation tool."""
     ctx.ensure_object(dict)
-    configure_logging(debug=verbose)
-
-    cfg = Config.load(config_path) if config_path else Config()
-    ctx.obj["config"] = cfg
     ctx.obj["verbose"] = verbose
 
+    # Discover plugins once at startup
+    plugin_registry.discover()
+
+    if verbose:
+        import logging
+        logging.basicConfig(level=logging.DEBUG)
+
 
 # ---------------------------------------------------------------------------
-# `summarize run` command
+# summarize  (core command)
 # ---------------------------------------------------------------------------
 
-
-@cli.command("run")
-@click.argument("sources", nargs=-1, required=True)
+@cli.command("summarize")
+@click.argument("source")
 @click.option(
     "--format",
     "-f",
     "output_format",
     default="text",
+    type=click.Choice(["text", "json", "markdown"], case_sensitive=False),
+    help="Output format.",
+)
+@click.option("--no-postprocess", is_flag=True, default=False, help="Skip post-processors.")
+@click.option(
+    "--keyword-top-n",
+    default=10,
+    type=int,
     show_default=True,
-    help="Output format. Use a registered formatter name or 'text' / 'json'.",
-)
-@click.option(
-    "--output",
-    "-o",
-    "output_file",
-    default=None,
-    type=click.Path(),
-    help="Write output to this file instead of stdout.",
-)
-@click.option(
-    "--style",
-    "-s",
-    default=None,
-    help="Summary style (e.g. 'brief', 'detailed', 'bullet').",
-)
-@click.option(
-    "--no-postprocess",
-    is_flag=True,
-    default=False,
-    help="Skip all registered post-processors.",
+    help="Number of keywords to extract (keyword_extractor plugin).",
 )
 @click.pass_context
-def run_command(
+def summarize_cmd(
     ctx: click.Context,
-    sources: tuple,
+    source: str,
     output_format: str,
-    output_file: Optional[str],
-    style: Optional[str],
     no_postprocess: bool,
+    keyword_top_n: int,
 ) -> None:
-    """Summarise one or more article URLs or file paths."""
-    from summarizer.summarize import summarize_source
+    """Summarise an article from a URL or file path."""
+    from .summarize import summarize_source
 
-    config: Config = ctx.obj["config"]
-    if style:
-        config.style = style
+    verbose = ctx.obj.get("verbose", False)
 
-    results = []
-    for source in sources:
-        try:
-            click.echo(f"Summarising: {source}", err=True)
-            summary, article_text = summarize_source(source, config=config)
-
-            if not no_postprocess:
-                summary = _apply_postprocessors(summary, article_text=article_text)
-
-            results.append(summary)
-        except SummarizerError as exc:
-            click.echo(f"Error summarising '{source}': {exc}", err=True)
-            sys.exit(1)
-
-    # Determine output formatter
-    reg = _get_registry()
-    fmt = reg.get_formatter(output_format)
-
-    if fmt is not None:
-        output_text = fmt.format_many(results)
-    elif output_format == "json":
-        output_text = json.dumps(
-            [s.model_dump() if hasattr(s, "model_dump") else vars(s) for s in results],
-            indent=2,
-            default=str,
-        )
-    else:
-        # Default plain-text rendering
-        parts = []
-        for s in results:
-            title = getattr(s, "title", "") or ""
-            summary_text = getattr(s, "summary", "") or ""
-            parts.append(f"# {title}\n\n{summary_text}" if title else summary_text)
-        output_text = "\n\n---\n\n".join(parts)
-
-    if output_file:
-        Path(output_file).write_text(output_text, encoding="utf-8")
-        click.echo(f"Output written to {output_file}", err=True)
-    else:
-        click.echo(output_text)
-
-
-# ---------------------------------------------------------------------------
-# `summarize batch` command
-# ---------------------------------------------------------------------------
-
-
-@cli.command("batch")
-@click.argument("url_file", type=click.Path(exists=True))
-@click.option("--format", "-f", "output_format", default="text", show_default=True)
-@click.option("--output", "-o", "output_file", default=None, type=click.Path())
-@click.option("--no-postprocess", is_flag=True, default=False)
-@click.pass_context
-def batch_command(
-    ctx: click.Context,
-    url_file: str,
-    output_format: str,
-    output_file: Optional[str],
-    no_postprocess: bool,
-) -> None:
-    """Batch summarise URLs listed one-per-line in URL_FILE."""
-    from summarizer.batch import run_batch
-
-    config: Config = ctx.obj["config"]
-    sources = Path(url_file).read_text(encoding="utf-8").splitlines()
-    sources = [s.strip() for s in sources if s.strip() and not s.startswith("#")]
-
-    if not sources:
-        click.echo("No sources found in file.", err=True)
+    try:
+        result = summarize_source(source, verbose=verbose)
+    except Exception as exc:
+        click.echo(click.style(f"Error: {exc}", fg="red"), err=True)
         sys.exit(1)
 
-    click.echo(f"Batch processing {len(sources)} sources…", err=True)
-    summaries = run_batch(sources, config=config)
-
     if not no_postprocess:
-        summaries = [_apply_postprocessors(s) for s in summaries]
+        article_text = getattr(result, "article_text", "") or ""
+        pp_config = {"keyword_top_n": keyword_top_n}
+        result = _apply_postprocessors(result, article_text=article_text, config=pp_config)
 
-    reg = _get_registry()
-    fmt = reg.get_formatter(output_format)
-
-    if fmt is not None:
-        output_text = fmt.format_many(summaries)
-    elif output_format == "json":
-        output_text = json.dumps(
-            [s.model_dump() if hasattr(s, "model_dump") else vars(s) for s in summaries],
-            indent=2,
-            default=str,
-        )
+    # Output
+    if output_format == "json":
+        click.echo(json.dumps(_to_dict(result), indent=2, ensure_ascii=False))
+    elif output_format == "markdown":
+        click.echo(_to_markdown(result))
     else:
-        parts = []
-        for s in summaries:
-            title = getattr(s, "title", "") or ""
-            summary_text = getattr(s, "summary", "") or ""
-            parts.append(f"# {title}\n\n{summary_text}" if title else summary_text)
-        output_text = "\n\n---\n\n".join(parts)
-
-    if output_file:
-        Path(output_file).write_text(output_text, encoding="utf-8")
-        click.echo(f"Output written to {output_file}", err=True)
-    else:
-        click.echo(output_text)
+        click.echo(_to_text(result))
 
 
 # ---------------------------------------------------------------------------
-# `summarize plugins` command group
+# plugins  (sub-group)
 # ---------------------------------------------------------------------------
-
 
 @cli.group("plugins")
 def plugins_group() -> None:
-    """Manage and inspect summarizer plugins."""
+    """Commands for inspecting the plugin registry."""
 
 
 @plugins_group.command("list")
@@ -264,53 +122,82 @@ def plugins_group() -> None:
     "as_json",
     is_flag=True,
     default=False,
-    help="Output plugin list as JSON.",
+    help="Output as JSON.",
 )
 def plugins_list(as_json: bool) -> None:
     """List all discovered plugins (extractors, post-processors, formatters)."""
-    reg = _get_registry()
-    all_plugins = reg.list_all()
+    # Discovery is triggered by the root cli() callback, but call again to be safe
+    plugin_registry.discover()
+    data = plugin_registry.all_plugins()
 
     if as_json:
-        click.echo(json.dumps(all_plugins, indent=2))
+        click.echo(json.dumps(data, indent=2))
         return
 
-    # Human-readable output
+    total = sum(len(v) for v in data.values())
+    click.echo(click.style(f"Discovered {total} plugin(s)\n", bold=True))
+
     sections = [
-        ("Extractors", all_plugins.get("extractors", [])),
-        ("Post-Processors", all_plugins.get("postprocessors", [])),
-        ("Formatters", all_plugins.get("formatters", [])),
+        ("Extractors", "extractors", "cyan"),
+        ("Post-Processors", "postprocessors", "green"),
+        ("Formatters", "formatters", "magenta"),
     ]
 
-    total = sum(len(v) for _, v in sections)
-    click.echo(f"\nDiscovered {total} plugin(s):\n")
-
-    for section_name, plugins in sections:
-        click.echo(click.style(f"  {section_name}:", bold=True))
-        if not plugins:
-            click.echo("    (none)")
+    for title, key, colour in sections:
+        items = data[key]
+        click.echo(click.style(f"  {title} ({len(items)})", fg=colour, bold=True))
+        if items:
+            for item in items:
+                click.echo(f"    • {item['name']:<30} {item['description']}")
         else:
-            for p in plugins:
-                name = p.get("name", "?")
-                desc = p.get("description", "")
-                cls = p.get("class", "")
-                click.echo(f"    • {click.style(name, fg='green')}")
-                if desc:
-                    click.echo(f"      {desc}")
-                if cls:
-                    click.echo(f"      class: {click.style(cls, dim=True)}")
+            click.echo("    (none)")
         click.echo()
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
+
+def _to_dict(summary) -> dict:
+    if hasattr(summary, "__dict__"):
+        return summary.__dict__
+    if hasattr(summary, "_asdict"):
+        return summary._asdict()
+    return {"summary": str(summary)}
+
+
+def _to_text(summary) -> str:
+    lines = []
+    d = _to_dict(summary)
+    for key, val in d.items():
+        if isinstance(val, list):
+            lines.append(f"{key.upper()}: {', '.join(str(v) for v in val)}")
+        elif val:
+            lines.append(f"{key.upper()}: {val}")
+    return "\n".join(lines)
+
+
+def _to_markdown(summary) -> str:
+    d = _to_dict(summary)
+    title = d.get("title", "Summary")
+    lines = [f"# {title}", ""]
+    for key, val in d.items():
+        if key == "title":
+            continue
+        if isinstance(val, list):
+            lines.append(f"**{key}**: {', '.join(str(v) for v in val)}")
+        elif val:
+            lines.append(f"**{key}**: {val}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-
-def main() -> None:
-    """Package entry point called by the console_scripts setup."""
+def main() -> None:  # pragma: no cover
     cli(obj={})
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

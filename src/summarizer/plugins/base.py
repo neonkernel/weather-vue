@@ -1,144 +1,110 @@
 """
-Base ABCs for all plugin types: BaseExtractor, BasePostProcessor, BaseFormatter.
-
-Plugin authors should subclass one of these abstract base classes and implement
-the required methods. Plugins are discovered via Python entry points defined in
-pyproject.toml.
+Base ABCs for all plugin types.
 """
+from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
-
-from summarizer.models import Summary
+import abc
+from typing import Any, Dict, List, Optional
 
 
-class BaseExtractor(ABC):
+class BaseExtractor(abc.ABC):
     """
-    Abstract base class for custom article extractors.
+    Base class for custom article extractors.
 
-    Extractors are responsible for fetching and parsing raw article content
-    from a given URL or file path. Implement this to support custom sources
-    or extraction logic.
+    Plugin authors subclass this to provide alternative article extraction
+    logic (e.g. extracting from PDFs, custom CMS APIs, etc.).
     """
 
-    #: Human-readable name for this extractor (used in plugin listings).
+    # Human-readable name shown in `summarize plugins list`
     name: str = "unnamed_extractor"
-
-    #: Short description shown in `summarize plugins list`.
     description: str = ""
 
-    @abstractmethod
+    @abc.abstractmethod
     def can_handle(self, source: str) -> bool:
         """
-        Return True if this extractor can process the given source URL/path.
-
-        Args:
-            source: A URL string or file path to potentially extract from.
-
-        Returns:
-            True if this extractor should be used for the given source.
+        Return True if this extractor can handle the given source string
+        (URL, file path, or other identifier).
         """
-        ...
 
-    @abstractmethod
+    @abc.abstractmethod
     def extract(self, source: str) -> Dict[str, Any]:
         """
-        Extract article content from the given source.
+        Extract article content from *source*.
 
-        Args:
-            source: A URL string or file path to extract content from.
-
-        Returns:
-            A dictionary with at minimum:
-                - ``text`` (str): The plain text content of the article.
-                - ``title`` (str, optional): The article title.
-                - ``url`` (str, optional): Canonical URL.
-                - ``metadata`` (dict, optional): Any extra metadata.
+        Must return a dict with at least:
+            {
+                "title": str,
+                "text":  str,
+                "url":   str,   # or empty string
+                "html":  str,   # or empty string
+            }
         """
-        ...
 
 
-class BasePostProcessor(ABC):
+class BasePostProcessor(abc.ABC):
     """
-    Abstract base class for post-processors that transform Summary objects
-    after the LLM response has been received.
+    Base class for summary post-processors.
 
-    Post-processors can enrich summaries with additional computed fields,
-    annotations, scores, or any other transformations.
+    A post-processor receives the raw ``Summary`` object produced by the LLM
+    and may enrich or mutate it before it reaches the formatter / output layer.
     """
 
-    #: Human-readable name for this post-processor (used in plugin listings).
     name: str = "unnamed_postprocessor"
-
-    #: Short description shown in `summarize plugins list`.
     description: str = ""
 
-    @abstractmethod
-    def process(self, summary: Summary, article_text: str = "") -> Summary:
+    @abc.abstractmethod
+    def process(
+        self,
+        summary: Any,
+        *,
+        article_text: str = "",
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Any:
         """
-        Transform or enrich a Summary object.
+        Process and return the (possibly mutated) summary.
 
-        This method receives the Summary produced by the LLM and the original
-        article text (if available), and returns a (potentially modified) Summary.
+        Parameters
+        ----------
+        summary:
+            The ``Summary`` dataclass / object returned by the LLM layer.
+        article_text:
+            The original article plain-text (useful for keyword extraction,
+            readability scoring, etc.).
+        config:
+            Optional per-invocation config dict passed from the CLI / API.
 
-        Implementations should not mutate the input summary in place; instead,
-        return a new or updated Summary instance (or the same instance if mutation
-        is intentional and documented).
-
-        Args:
-            summary: The Summary object produced by the LLM pipeline.
-            article_text: The original article plain text (may be empty string).
-
-        Returns:
-            A Summary object (the same or a modified copy).
+        Returns
+        -------
+        The (optionally mutated) summary object.
         """
-        ...
 
 
-class BaseFormatter(ABC):
+class BaseFormatter(abc.ABC):
     """
-    Abstract base class for custom output formatters.
+    Base class for custom output formatters.
 
-    Formatters convert a Summary (or list of summaries) into a string
-    representation for display or file output.
+    Plugin authors subclass this to add new output formats beyond the built-in
+    plain-text, JSON, and Markdown renderers.
     """
 
-    #: Human-readable name for this formatter (used in plugin listings).
     name: str = "unnamed_formatter"
-
-    #: Short description shown in `summarize plugins list`.
     description: str = ""
-
-    #: File extension hint (e.g. ".md", ".html", ".csv") — used when writing to file.
+    #: File extension hint, e.g. ".html"
     extension: str = ".txt"
 
-    @abstractmethod
-    def format(self, summary: Summary, **kwargs: Any) -> str:
+    @abc.abstractmethod
+    def format(self, summary: Any, config: Optional[Dict[str, Any]] = None) -> str:
         """
-        Format a single Summary as a string.
+        Render *summary* to a string in the desired output format.
 
-        Args:
-            summary: The Summary object to format.
-            **kwargs: Additional formatter-specific options.
+        Parameters
+        ----------
+        summary:
+            The ``Summary`` dataclass / object returned by the LLM layer.
+        config:
+            Optional per-invocation config dict.
 
-        Returns:
-            A string representation of the summary.
+        Returns
+        -------
+        Formatted string representation.
         """
-        ...
-
-    def format_many(self, summaries: list, **kwargs: Any) -> str:
-        """
-        Format multiple summaries as a single string.
-
-        The default implementation joins individual formatted summaries with
-        a double newline separator. Override for custom multi-summary layouts.
-
-        Args:
-            summaries: A list of Summary objects.
-            **kwargs: Additional formatter-specific options.
-
-        Returns:
-            A combined string representation.
-        """
-        parts = [self.format(s, **kwargs) for s in summaries]
-        return "\n\n".join(parts)

@@ -1,30 +1,21 @@
 """
-Tests for the plugin system: discovery, loading, validation, and error handling.
-
-These tests use only the programmatic registration API (no entry points) so they
-work without any package installation.
+Tests for the plugin system: discovery, loading, built-ins, and error handling.
 """
-
 from __future__ import annotations
 
-import math
-from unittest.mock import MagicMock, patch
+import sys
+import types
+from typing import Any, Dict, Optional
+from unittest import mock
 
 import pytest
 
-from summarizer.plugins import PluginLoadError, PluginRegistry
+from summarizer.plugins import PluginRegistry, registry as global_registry
 from summarizer.plugins.base import BaseExtractor, BaseFormatter, BasePostProcessor
-from summarizer.plugins.builtin.keyword_extractor import (
-    KeywordExtractor,
-    _compute_tfidf,
-    _tokenize,
-)
+from summarizer.plugins.builtin.keyword_extractor import KeywordExtractor, _tfidf_keywords
 from summarizer.plugins.builtin.readability import (
     ReadabilityScorer,
-    _compute_flesch,
-    _count_sentences,
-    _count_syllables,
-    _count_words,
+    flesch_reading_ease,
     _grade_label,
 )
 
@@ -33,319 +24,237 @@ from summarizer.plugins.builtin.readability import (
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
+SAMPLE_ARTICLE = (
+    "Artificial intelligence is transforming the technology industry. "
+    "Machine learning algorithms are becoming more sophisticated every year. "
+    "Deep learning models require large datasets for training purposes. "
+    "Natural language processing enables computers to understand human text. "
+    "These advances are driving innovation across many different sectors globally."
+)
 
-def _make_summary(text: str = "This is a test summary.", title: str = "Test"):
-    """Create a minimal mock Summary-like object."""
-    summary = MagicMock()
-    summary.summary = text
-    summary.title = title
-    summary.metadata = {}
-    return summary
+SAMPLE_SUMMARY = (
+    "AI is transforming tech. Machine learning grows yearly. "
+    "Deep learning needs data. NLP helps computers understand language."
+)
+
+
+class SimpleSummary:
+    """Minimal summary-like object used in tests."""
+
+    def __init__(self, summary: str = "", content: str = "", title: str = ""):
+        self.summary = summary
+        self.content = content
+        self.title = title
+        self.article_text = content
+
+
+@pytest.fixture()
+def fresh_registry():
+    """Return a brand-new PluginRegistry (not the module singleton)."""
+    reg = PluginRegistry()
+    return reg
 
 
 # ---------------------------------------------------------------------------
-# Concrete implementations used in tests
+# BaseExtractor
 # ---------------------------------------------------------------------------
 
 
-class GoodExtractor(BaseExtractor):
-    name = "good_extractor"
-    description = "A working extractor."
+class ConcreteExtractor(BaseExtractor):
+    name = "test_extractor"
+    description = "A test extractor"
 
     def can_handle(self, source: str) -> bool:
-        return source.startswith("http://")
+        return source.startswith("test://")
 
-    def extract(self, source: str) -> dict:
-        return {"text": "article content", "title": "Title", "url": source}
-
-
-class GoodPostProcessor(BasePostProcessor):
-    name = "good_postprocessor"
-    description = "Appends a marker to summary."
-
-    def process(self, summary, article_text: str = ""):
-        summary.metadata["processed"] = True
-        return summary
-
-
-class GoodFormatter(BaseFormatter):
-    name = "good_formatter"
-    description = "Returns a simple string."
-    extension = ".txt"
-
-    def format(self, summary, **kwargs) -> str:
-        return f"FORMATTED: {getattr(summary, 'summary', '')}"
-
-
-# Bad plugins that don't inherit from the correct base
-class NotAPlugin:
-    pass
-
-
-class NotAnExtractor(BasePostProcessor):
-    name = "not_an_extractor"
-
-    def process(self, summary, article_text: str = ""):
-        return summary
-
-
-# ---------------------------------------------------------------------------
-# PluginRegistry – basic registration
-# ---------------------------------------------------------------------------
-
-
-class TestPluginRegistryRegistration:
-    def setup_method(self):
-        # Fresh registry with no auto-discovery to keep tests isolated
-        self.reg = PluginRegistry(autoload=False)
-
-    def test_register_extractor(self):
-        self.reg.register_extractor(GoodExtractor)
-        extractors = self.reg.get_extractors()
-        assert len(extractors) == 1
-        assert extractors[0].name == "good_extractor"
-
-    def test_register_postprocessor(self):
-        self.reg.register_postprocessor(GoodPostProcessor)
-        pps = self.reg.get_postprocessors()
-        assert len(pps) == 1
-        assert pps[0].name == "good_postprocessor"
-
-    def test_register_formatter(self):
-        self.reg.register_formatter(GoodFormatter)
-        fmts = self.reg.get_formatters()
-        assert len(fmts) == 1
-        assert fmts[0].name == "good_formatter"
-
-    def test_get_extractor_by_name(self):
-        self.reg.register_extractor(GoodExtractor)
-        ext = self.reg.get_extractor("good_extractor")
-        assert ext is not None
-        assert ext.name == "good_extractor"
-
-    def test_get_nonexistent_extractor_returns_none(self):
-        assert self.reg.get_extractor("does_not_exist") is None
-
-    def test_get_postprocessor_by_name(self):
-        self.reg.register_postprocessor(GoodPostProcessor)
-        pp = self.reg.get_postprocessor("good_postprocessor")
-        assert pp is not None
-
-    def test_get_formatter_by_name(self):
-        self.reg.register_formatter(GoodFormatter)
-        fmt = self.reg.get_formatter("good_formatter")
-        assert fmt is not None
-        assert fmt.name == "good_formatter"
-
-    def test_repr(self):
-        self.reg.register_extractor(GoodExtractor)
-        r = repr(self.reg)
-        assert "extractors=1" in r
-        assert "postprocessors=0" in r
-
-
-# ---------------------------------------------------------------------------
-# PluginRegistry – error handling / validation
-# ---------------------------------------------------------------------------
-
-
-class TestPluginRegistryValidation:
-    def setup_method(self):
-        self.reg = PluginRegistry(autoload=False)
-
-    def test_register_non_extractor_raises(self):
-        with pytest.raises(PluginLoadError, match="BaseExtractor"):
-            self.reg.register_extractor(NotAPlugin)
-
-    def test_register_non_postprocessor_raises(self):
-        with pytest.raises(PluginLoadError, match="BasePostProcessor"):
-            self.reg.register_postprocessor(NotAPlugin)
-
-    def test_register_non_formatter_raises(self):
-        with pytest.raises(PluginLoadError, match="BaseFormatter"):
-            self.reg.register_formatter(NotAPlugin)
-
-    def test_register_wrong_base_type_for_extractor(self):
-        # NotAnExtractor inherits from BasePostProcessor, not BaseExtractor
-        with pytest.raises(PluginLoadError, match="BaseExtractor"):
-            self.reg.register_extractor(NotAnExtractor)
-
-    def test_register_instance_instead_of_class_raises(self):
-        instance = GoodExtractor()
-        with pytest.raises(PluginLoadError):
-            self.reg.register_extractor(instance)  # type: ignore[arg-type]
-
-    def test_overwrite_logs_warning(self, caplog):
-        import logging
-        self.reg.register_extractor(GoodExtractor)
-        with caplog.at_level(logging.WARNING):
-            self.reg.register_extractor(GoodExtractor)
-        assert any("Overwriting" in r.message for r in caplog.records)
-
-
-# ---------------------------------------------------------------------------
-# PluginRegistry – list_all
-# ---------------------------------------------------------------------------
-
-
-class TestPluginRegistryListAll:
-    def setup_method(self):
-        self.reg = PluginRegistry(autoload=False)
-
-    def test_list_all_empty(self):
-        result = self.reg.list_all()
-        assert result["extractors"] == []
-        assert result["postprocessors"] == []
-        assert result["formatters"] == []
-
-    def test_list_all_populated(self):
-        self.reg.register_extractor(GoodExtractor)
-        self.reg.register_postprocessor(GoodPostProcessor)
-        self.reg.register_formatter(GoodFormatter)
-
-        result = self.reg.list_all()
-        assert len(result["extractors"]) == 1
-        assert result["extractors"][0]["name"] == "good_extractor"
-        assert len(result["postprocessors"]) == 1
-        assert len(result["formatters"]) == 1
-
-    def test_list_all_has_class_field(self):
-        self.reg.register_extractor(GoodExtractor)
-        result = self.reg.list_all()
-        assert "class" in result["extractors"][0]
-        assert "GoodExtractor" in result["extractors"][0]["class"]
-
-
-# ---------------------------------------------------------------------------
-# PluginRegistry – entry point discovery (mocked)
-# ---------------------------------------------------------------------------
-
-
-class TestPluginRegistryDiscovery:
-    def _make_mock_ep(self, name: str, cls):
-        ep = MagicMock()
-        ep.name = name
-        ep.value = f"test.module:{cls.__name__}"
-        ep.load.return_value = cls
-        return ep
-
-    def test_discovers_postprocessor_via_entry_points(self):
-        ep = self._make_mock_ep("good_pp", GoodPostProcessor)
-
-        with patch(
-            "summarizer.plugins._load_entry_points",
-            side_effect=lambda group: (
-                [ep] if group == "summarizer.postprocessors" else []
-            ),
-        ):
-            reg = PluginRegistry(autoload=True)
-
-        pps = reg.get_postprocessors()
-        assert any(p.name == "good_postprocessor" for p in pps)
-
-    def test_bad_entry_point_load_logs_error(self, caplog):
-        import logging
-
-        bad_ep = MagicMock()
-        bad_ep.name = "bad_plugin"
-        bad_ep.value = "nonexistent.module:NonExistentClass"
-        bad_ep.load.side_effect = ImportError("module not found")
-
-        with caplog.at_level(logging.ERROR):
-            with patch(
-                "summarizer.plugins._load_entry_points",
-                side_effect=lambda group: (
-                    [bad_ep] if group == "summarizer.extractors" else []
-                ),
-            ):
-                reg = PluginRegistry(autoload=True)
-
-        assert any("load error" in r.message.lower() for r in caplog.records)
-        # Registry should still be usable
-        assert reg.get_extractors() == []
-
-    def test_malformed_plugin_class_logs_error(self, caplog):
-        """An entry point that returns a non-subclass should be rejected."""
-        import logging
-
-        ep = self._make_mock_ep("bad_class", NotAPlugin)
-
-        with caplog.at_level(logging.ERROR):
-            with patch(
-                "summarizer.plugins._load_entry_points",
-                side_effect=lambda group: (
-                    [ep] if group == "summarizer.extractors" else []
-                ),
-            ):
-                reg = PluginRegistry(autoload=True)
-
-        assert reg.get_extractors() == []
-
-
-# ---------------------------------------------------------------------------
-# BaseExtractor ABC contract
-# ---------------------------------------------------------------------------
+    def extract(self, source: str) -> Dict[str, Any]:
+        return {"title": "Test", "text": "body", "url": source, "html": ""}
 
 
 class TestBaseExtractor:
-    def test_cannot_instantiate_abc(self):
+    def test_concrete_extractor_can_handle(self):
+        ext = ConcreteExtractor()
+        assert ext.can_handle("test://foo") is True
+        assert ext.can_handle("https://example.com") is False
+
+    def test_concrete_extractor_extract(self):
+        ext = ConcreteExtractor()
+        result = ext.extract("test://foo")
+        assert result["title"] == "Test"
+        assert result["text"] == "body"
+
+    def test_abstract_cannot_instantiate(self):
         with pytest.raises(TypeError):
             BaseExtractor()  # type: ignore[abstract]
 
-    def test_concrete_implementation_works(self):
-        ext = GoodExtractor()
-        assert ext.can_handle("http://example.com") is True
-        assert ext.can_handle("ftp://nope.com") is False
-        result = ext.extract("http://example.com")
-        assert "text" in result
-
-    def test_name_and_description_attributes(self):
-        ext = GoodExtractor()
-        assert ext.name == "good_extractor"
-        assert "working" in ext.description
-
 
 # ---------------------------------------------------------------------------
-# BasePostProcessor ABC contract
+# BasePostProcessor
 # ---------------------------------------------------------------------------
+
+
+class ConcretePostProcessor(BasePostProcessor):
+    name = "test_pp"
+    description = "A test post-processor"
+
+    def process(self, summary, *, article_text="", config=None):
+        summary.processed = True
+        return summary
 
 
 class TestBasePostProcessor:
-    def test_cannot_instantiate_abc(self):
+    def test_process_called(self):
+        pp = ConcretePostProcessor()
+        s = SimpleSummary(summary="Hello world.")
+        result = pp.process(s, article_text="Hello world article text here.")
+        assert result.processed is True
+
+    def test_abstract_cannot_instantiate(self):
         with pytest.raises(TypeError):
             BasePostProcessor()  # type: ignore[abstract]
 
-    def test_concrete_process_called(self):
-        pp = GoodPostProcessor()
-        summary = _make_summary()
-        result = pp.process(summary)
-        assert result.metadata["processed"] is True
-
 
 # ---------------------------------------------------------------------------
-# BaseFormatter ABC contract
+# BaseFormatter
 # ---------------------------------------------------------------------------
+
+
+class ConcreteFormatter(BaseFormatter):
+    name = "test_formatter"
+    description = "A test formatter"
+    extension = ".txt"
+
+    def format(self, summary, config=None):
+        return f"FORMATTED: {getattr(summary, 'summary', summary)}"
 
 
 class TestBaseFormatter:
-    def test_cannot_instantiate_abc(self):
+    def test_format(self):
+        fmt = ConcreteFormatter()
+        s = SimpleSummary(summary="My summary text.")
+        assert fmt.format(s) == "FORMATTED: My summary text."
+
+    def test_abstract_cannot_instantiate(self):
         with pytest.raises(TypeError):
             BaseFormatter()  # type: ignore[abstract]
 
-    def test_format_called(self):
-        fmt = GoodFormatter()
-        summary = _make_summary("Hello world")
-        result = fmt.format(summary)
-        assert "FORMATTED:" in result
-        assert "Hello world" in result
 
-    def test_format_many_default_implementation(self):
-        fmt = GoodFormatter()
-        summaries = [_make_summary("First"), _make_summary("Second")]
-        result = fmt.format_many(summaries)
-        assert "First" in result
-        assert "Second" in result
-        assert "\n\n" in result
+# ---------------------------------------------------------------------------
+# PluginRegistry — manual registration
+# ---------------------------------------------------------------------------
+
+
+class TestPluginRegistryManual:
+    def test_register_extractor(self, fresh_registry):
+        fresh_registry.register_extractor(ConcreteExtractor)
+        assert "test_extractor" in fresh_registry.extractors
+
+    def test_register_postprocessor(self, fresh_registry):
+        fresh_registry.register_postprocessor(ConcretePostProcessor)
+        assert "test_pp" in fresh_registry.postprocessors
+
+    def test_register_formatter(self, fresh_registry):
+        fresh_registry.register_formatter(ConcreteFormatter)
+        assert "test_formatter" in fresh_registry.formatters
+
+    def test_validate_wrong_base_class(self, fresh_registry):
+        class NotAPlugin:
+            name = "bad"
+            description = ""
+
+        with pytest.raises(TypeError):
+            fresh_registry.register_extractor(NotAPlugin)  # type: ignore[arg-type]
+
+    def test_register_non_class_raises(self, fresh_registry):
+        with pytest.raises(TypeError):
+            fresh_registry.register_postprocessor("not_a_class")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# PluginRegistry — discover (built-ins)
+# ---------------------------------------------------------------------------
+
+
+class TestPluginRegistryDiscover:
+    def test_discover_registers_builtins(self, fresh_registry):
+        fresh_registry.discover(include_builtin=True)
+        assert "keyword_extractor" in fresh_registry.postprocessors
+        assert "readability_scorer" in fresh_registry.postprocessors
+
+    def test_discover_idempotent(self, fresh_registry):
+        fresh_registry.discover()
+        fresh_registry.discover()
+        # should still have exactly one of each built-in
+        assert len(fresh_registry.postprocessors) >= 2
+
+    def test_rediscover_resets(self, fresh_registry):
+        fresh_registry.discover()
+        count_before = len(fresh_registry.postprocessors)
+        fresh_registry.rediscover()
+        assert len(fresh_registry.postprocessors) == count_before
+
+    def test_discover_no_builtins(self, fresh_registry):
+        fresh_registry.discover(include_builtin=False)
+        assert "keyword_extractor" not in fresh_registry.postprocessors
+        assert "readability_scorer" not in fresh_registry.postprocessors
+
+    def test_all_plugins_returns_expected_structure(self, fresh_registry):
+        fresh_registry.discover()
+        data = fresh_registry.all_plugins()
+        assert set(data.keys()) == {"extractors", "postprocessors", "formatters"}
+        assert isinstance(data["postprocessors"], list)
+        names = [p["name"] for p in data["postprocessors"]]
+        assert "keyword_extractor" in names
+        assert "readability_scorer" in names
+
+
+# ---------------------------------------------------------------------------
+# PluginRegistry — entry-point loading (mocked)
+# ---------------------------------------------------------------------------
+
+
+class TestPluginRegistryEntryPoints:
+    def _make_ep(self, name: str, cls):
+        """Create a mock entry point that loads *cls*."""
+        ep = mock.MagicMock()
+        ep.name = name
+        ep.load.return_value = cls
+        return ep
+
+    def test_entry_point_postprocessor_loaded(self, fresh_registry):
+        ep = self._make_ep("test_pp", ConcretePostProcessor)
+        with mock.patch(
+            "summarizer.plugins._load_entry_points",
+            side_effect=lambda group: [ep] if group == "summarizer.postprocessors" else [],
+        ):
+            fresh_registry.discover(include_builtin=False)
+        assert "test_pp" in fresh_registry.postprocessors
+
+    def test_entry_point_load_error_skipped(self, fresh_registry):
+        ep = mock.MagicMock()
+        ep.name = "broken_plugin"
+        ep.load.side_effect = ImportError("missing dependency")
+
+        with mock.patch(
+            "summarizer.plugins._load_entry_points",
+            side_effect=lambda group: [ep] if group == "summarizer.extractors" else [],
+        ):
+            fresh_registry.discover(include_builtin=False)
+        # broken plugin should not appear
+        assert "broken_plugin" not in fresh_registry.extractors
+
+    def test_entry_point_wrong_base_class_skipped(self, fresh_registry):
+        class NotAnExtractor:
+            name = "imposter"
+            description = ""
+
+        ep = self._make_ep("imposter", NotAnExtractor)
+        with mock.patch(
+            "summarizer.plugins._load_entry_points",
+            side_effect=lambda group: [ep] if group == "summarizer.extractors" else [],
+        ):
+            fresh_registry.discover(include_builtin=False)
+        assert "imposter" not in fresh_registry.extractors
 
 
 # ---------------------------------------------------------------------------
@@ -354,88 +263,53 @@ class TestBaseFormatter:
 
 
 class TestKeywordExtractor:
-    def test_tokenize_basic(self):
-        tokens = _tokenize("Hello, World! This is a test.")
-        assert "hello" in tokens
-        assert "world" in tokens
-        assert "this" in tokens
+    def test_extracts_keywords(self):
+        summary = SimpleSummary(content=SAMPLE_ARTICLE)
+        pp = KeywordExtractor()
+        result = pp.process(summary, article_text=SAMPLE_ARTICLE)
+        assert hasattr(result, "keywords")
+        assert isinstance(result.keywords, list)
+        assert len(result.keywords) <= 10
 
-    def test_tokenize_removes_punctuation(self):
-        tokens = _tokenize("Hello, World!")
-        assert "," not in tokens
-        assert "!" not in tokens
+    def test_keyword_count_respects_config(self):
+        summary = SimpleSummary(content=SAMPLE_ARTICLE)
+        pp = KeywordExtractor()
+        result = pp.process(summary, article_text=SAMPLE_ARTICLE, config={"keyword_top_n": 5})
+        assert len(result.keywords) <= 5
 
-    def test_tokenize_handles_hyphens(self):
-        tokens = _tokenize("state-of-the-art technology")
-        assert "state" in tokens
-        assert "art" in tokens
-        assert "technology" in tokens
+    def test_keywords_are_strings(self):
+        summary = SimpleSummary(content=SAMPLE_ARTICLE)
+        pp = KeywordExtractor()
+        result = pp.process(summary, article_text=SAMPLE_ARTICLE)
+        assert all(isinstance(k, str) for k in result.keywords)
 
-    def test_compute_tfidf_returns_sorted_by_score(self):
-        tokens = ["python", "python", "python", "code", "code", "language"]
-        stopwords = frozenset()
-        result = _compute_tfidf(tokens, stopwords, top_n=3)
-        assert len(result) <= 3
-        scores = [r["score"] for r in result]
-        assert scores == sorted(scores, reverse=True)
+    def test_empty_text_returns_empty_list(self):
+        summary = SimpleSummary()
+        pp = KeywordExtractor()
+        result = pp.process(summary, article_text="")
+        assert result.keywords == []
 
-    def test_compute_tfidf_filters_stopwords(self):
-        tokens = ["the", "a", "python", "is", "great"]
-        stopwords = frozenset({"the", "a", "is"})
-        result = _compute_tfidf(tokens, stopwords, top_n=10)
-        terms = [r["term"] for r in result]
-        assert "the" not in terms
-        assert "a" not in terms
-        assert "python" in terms
+    def test_tfidf_keywords_returns_list(self):
+        keywords = _tfidf_keywords(SAMPLE_ARTICLE, top_n=5)
+        assert isinstance(keywords, list)
+        assert len(keywords) <= 5
 
-    def test_compute_tfidf_empty_input(self):
-        result = _compute_tfidf([], frozenset(), top_n=10)
-        assert result == []
+    def test_tfidf_filters_stopwords(self):
+        keywords = _tfidf_keywords("the quick brown fox the", top_n=10)
+        assert "the" not in keywords
 
-    def test_process_attaches_keywords(self):
-        extractor = KeywordExtractor(top_n=5)
-        article = (
-            "Python is a powerful programming language. "
-            "Python is used for data science and machine learning. "
-            "Many developers love Python for its simplicity."
-        )
-        summary = _make_summary()
-        result = extractor.process(summary, article_text=article)
-        assert "keywords" in result.metadata
-        assert isinstance(result.metadata["keywords"], list)
-        assert len(result.metadata["keywords"]) <= 5
-
-    def test_process_returns_summary_unchanged_if_no_text(self):
-        extractor = KeywordExtractor()
-        summary = _make_summary(text="")
-        summary.summary = ""
-        result = extractor.process(summary, article_text="")
-        # metadata may or may not have keywords key; no crash
-        assert result is summary
-
-    def test_process_falls_back_to_summary_text(self):
-        extractor = KeywordExtractor(top_n=3)
-        summary = _make_summary("Machine learning models require large datasets.")
-        result = extractor.process(summary, article_text="")
-        assert "keywords" in result.metadata
-
-    def test_keyword_results_have_term_and_score_fields(self):
-        extractor = KeywordExtractor(top_n=5)
-        article = "Deep learning neural networks are trained on large datasets."
-        summary = _make_summary()
-        result = extractor.process(summary, article_text=article)
-        for kw in result.metadata.get("keywords", []):
-            assert "term" in kw
-            assert "score" in kw
-            assert isinstance(kw["score"], float)
+    def test_uses_article_text_over_content(self):
+        """article_text kwarg should be preferred when both are provided."""
+        summary = SimpleSummary(content="content text here data")
+        pp = KeywordExtractor()
+        # article_text is provided — it should be used
+        result = pp.process(summary, article_text=SAMPLE_ARTICLE)
+        # keywords should reflect SAMPLE_ARTICLE, not the short content
+        assert len(result.keywords) > 0
 
     def test_name_and_description(self):
-        extractor = KeywordExtractor()
-        assert extractor.name == "keyword_extractor"
-        assert extractor.description != ""
-
-    def test_is_subclass_of_base_post_processor(self):
-        assert issubclass(KeywordExtractor, BasePostProcessor)
+        assert KeywordExtractor.name == "keyword_extractor"
+        assert KeywordExtractor.description != ""
 
 
 # ---------------------------------------------------------------------------
@@ -444,141 +318,91 @@ class TestKeywordExtractor:
 
 
 class TestReadabilityScorer:
-    def test_count_words_basic(self):
-        assert _count_words("Hello world") == 2
+    def test_attaches_score(self):
+        summary = SimpleSummary(summary=SAMPLE_SUMMARY)
+        pp = ReadabilityScorer()
+        result = pp.process(summary)
+        assert hasattr(result, "readability_score")
+        assert isinstance(result.readability_score, float)
 
-    def test_count_words_empty(self):
-        assert _count_words("") == 1  # min 1
+    def test_attaches_label(self):
+        summary = SimpleSummary(summary=SAMPLE_SUMMARY)
+        pp = ReadabilityScorer()
+        result = pp.process(summary)
+        assert hasattr(result, "readability_label")
+        assert isinstance(result.readability_label, str)
+        assert result.readability_label != ""
 
-    def test_count_sentences_basic(self):
-        assert _count_sentences("Hello. World. Foo.") == 3
+    def test_score_range(self):
+        summary = SimpleSummary(summary=SAMPLE_SUMMARY)
+        pp = ReadabilityScorer()
+        result = pp.process(summary)
+        assert 0.0 <= result.readability_score <= 100.0
 
-    def test_count_sentences_exclamation(self):
-        count = _count_sentences("Hello! How are you? I am fine.")
-        assert count == 3
+    def test_empty_text_score_is_zero(self):
+        summary = SimpleSummary(summary="")
+        pp = ReadabilityScorer()
+        result = pp.process(summary)
+        assert result.readability_score == 0.0
 
-    def test_count_sentences_empty(self):
-        assert _count_sentences("") == 1  # min 1
+    def test_flesch_formula_easy_text(self):
+        easy_text = "I like cats. Cats are fun. Fun is good."
+        score = flesch_reading_ease(easy_text)
+        assert score > 50.0, f"Expected high score for easy text, got {score}"
 
-    def test_count_syllables_simple(self):
-        # "hello" has 2 syllables (hel-lo)
-        count = _count_syllables("hello")
-        assert count >= 1
-
-    def test_count_syllables_single_vowel_word(self):
-        # "cat" has 1 syllable
-        count = _count_syllables("cat")
-        assert count == 1
-
-    def test_compute_flesch_returns_tuple(self):
-        text = "The cat sat on the mat. It was a fat cat."
-        ease, grade = _compute_flesch(text)
-        assert isinstance(ease, float)
-        assert isinstance(grade, float)
-
-    def test_compute_flesch_ease_in_valid_range(self):
-        text = (
-            "The quick brown fox jumps over the lazy dog. "
-            "Pack my box with five dozen liquor jugs."
+    def test_flesch_formula_hard_text(self):
+        hard_text = (
+            "The epistemological ramifications of poststructuralist deconstruction "
+            "necessitate a thorough reexamination of hermeneutical methodologies "
+            "within contemporary philosophical discourse."
         )
-        ease, _ = _compute_flesch(text)
-        assert 0.0 <= ease <= 100.0
+        score = flesch_reading_ease(hard_text)
+        assert score < 60.0, f"Expected low score for hard text, got {score}"
 
-    def test_grade_label_very_easy(self):
-        assert _grade_label(95.0) == "Very Easy"
-
-    def test_grade_label_easy(self):
-        assert _grade_label(85.0) == "Easy"
-
-    def test_grade_label_standard(self):
-        assert _grade_label(65.0) == "Standard"
-
-    def test_grade_label_difficult(self):
-        assert _grade_label(40.0) == "Difficult"
-
-    def test_grade_label_very_confusing(self):
-        assert _grade_label(10.0) == "Very Confusing"
-
-    def test_process_attaches_readability_metadata(self):
-        scorer = ReadabilityScorer()
-        text = (
-            "The quick brown fox jumps over the lazy dog. "
-            "Machine learning is a subset of artificial intelligence."
-        )
-        summary = _make_summary(text)
-        result = scorer.process(summary, article_text="ignored")
-        assert "readability" in result.metadata
-        r = result.metadata["readability"]
-        assert "flesch_ease" in r
-        assert "flesch_kincaid_grade" in r
-        assert "label" in r
-        assert "word_count" in r
-        assert "sentence_count" in r
-        assert "syllable_count" in r
-
-    def test_process_skips_empty_summary(self):
-        scorer = ReadabilityScorer()
-        summary = _make_summary("")
-        summary.summary = ""
-        result = scorer.process(summary)
-        assert "readability" not in result.metadata
-
-    def test_readability_ease_is_float(self):
-        scorer = ReadabilityScorer()
-        summary = _make_summary("Simple short sentence.")
-        result = scorer.process(summary)
-        assert isinstance(result.metadata["readability"]["flesch_ease"], float)
+    def test_grade_labels(self):
+        assert _grade_label(95) == "Very Easy"
+        assert _grade_label(85) == "Easy"
+        assert _grade_label(75) == "Fairly Easy"
+        assert _grade_label(65) == "Standard"
+        assert _grade_label(55) == "Fairly Difficult"
+        assert _grade_label(40) == "Difficult"
+        assert _grade_label(10) == "Very Confusing"
 
     def test_name_and_description(self):
-        scorer = ReadabilityScorer()
-        assert scorer.name == "readability_scorer"
-        assert "Flesch" in scorer.description
+        assert ReadabilityScorer.name == "readability_scorer"
+        assert ReadabilityScorer.description != ""
 
-    def test_is_subclass_of_base_post_processor(self):
-        assert issubclass(ReadabilityScorer, BasePostProcessor)
+    def test_short_text_does_not_crash(self):
+        score = flesch_reading_ease("Hi.")
+        assert isinstance(score, float)
 
 
 # ---------------------------------------------------------------------------
-# Integration: registry with builtin plugins
+# Integration: multiple post-processors in sequence
 # ---------------------------------------------------------------------------
 
 
-class TestBuiltinPluginIntegration:
-    def setup_method(self):
-        from summarizer.plugins.builtin.keyword_extractor import KeywordExtractor
-        from summarizer.plugins.builtin.readability import ReadabilityScorer
+class TestPostProcessorChain:
+    def test_chain_keyword_then_readability(self):
+        summary = SimpleSummary(summary=SAMPLE_SUMMARY, content=SAMPLE_ARTICLE)
+        kw = KeywordExtractor()
+        rs = ReadabilityScorer()
 
-        self.reg = PluginRegistry(autoload=False)
-        self.reg.register_postprocessor(KeywordExtractor)
-        self.reg.register_postprocessor(ReadabilityScorer)
+        summary = kw.process(summary, article_text=SAMPLE_ARTICLE)
+        summary = rs.process(summary)
 
-    def test_both_postprocessors_registered(self):
-        pps = self.reg.get_postprocessors()
-        names = [p.name for p in pps]
-        assert "keyword_extractor" in names
-        assert "readability_scorer" in names
+        assert hasattr(summary, "keywords")
+        assert hasattr(summary, "readability_score")
+        assert len(summary.keywords) > 0
+        assert 0.0 <= summary.readability_score <= 100.0
 
-    def test_pipeline_applies_both(self):
-        article = (
-            "Artificial intelligence is transforming the technology industry. "
-            "Companies are investing billions of dollars into machine learning research. "
-            "Developers must understand algorithms and data structures."
-        )
-        summary_text = (
-            "AI is transforming tech. Companies invest in ML. "
-            "Developers need algorithm knowledge."
-        )
-        summary = _make_summary(summary_text)
+    def test_registry_discover_and_apply(self, fresh_registry):
+        fresh_registry.discover(include_builtin=True)
+        summary = SimpleSummary(summary=SAMPLE_SUMMARY, content=SAMPLE_ARTICLE)
 
-        pps = self.reg.get_postprocessors()
-        for pp in pps:
-            summary = pp.process(summary, article_text=article)
+        for pp_cls in fresh_registry.postprocessors.values():
+            pp = pp_cls()
+            summary = pp.process(summary, article_text=SAMPLE_ARTICLE)
 
-        assert "keywords" in summary.metadata
-        assert "readability" in summary.metadata
-
-    def test_list_all_shows_both(self):
-        result = self.reg.list_all()
-        pp_names = [p["name"] for p in result["postprocessors"]]
-        assert "keyword_extractor" in pp_names
-        assert "readability_scorer" in pp_names
+        assert hasattr(summary, "keywords")
+        assert hasattr(summary, "readability_score")

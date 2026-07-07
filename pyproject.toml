@@ -1,120 +1,85 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "summarizer"
 version = "0.1.0"
-description = "AI-powered article summarisation tool with plugin support"
+description = "AI-powered article summarisation tool with a plugin system."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [
-    { name = "Summarizer Contributors" },
-]
-keywords = ["summarization", "nlp", "ai", "llm"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Text Processing :: Linguistic",
-]
 dependencies = [
     "click>=8.0",
     "httpx>=0.24",
-    "pydantic>=2.0",
-    "rich>=13.0",
-    "tomli>=2.0; python_version < '3.11'",
+    "beautifulsoup4>=4.12",
+    "lxml>=4.9",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
-    "pytest-asyncio>=0.21",
-    "pytest-cov>=4.0",
-    "ruff>=0.1",
-    "mypy>=1.0",
-]
-nlp = [
-    # Optional: richer stopword lists for KeywordExtractor
-    "nltk>=3.8",
+    "pytest-cov",
+    "ruff",
+    "mypy",
 ]
 
-[project.urls]
-Homepage = "https://github.com/example/summarizer"
-Documentation = "https://github.com/example/summarizer/blob/main/docs/plugin_development.md"
-Repository = "https://github.com/example/summarizer"
-"Bug Tracker" = "https://github.com/example/summarizer/issues"
-
 # ---------------------------------------------------------------------------
-# Console Scripts
+# CLI entry point
 # ---------------------------------------------------------------------------
-
 [project.scripts]
 summarize = "summarizer.cli:main"
 
 # ---------------------------------------------------------------------------
-# Plugin Entry Points
+# Plugin entry points
 #
-# This section documents the three plugin hook groups that third-party
-# packages can use to extend summarizer without modifying its source.
+# Third-party packages announce their plugins by declaring entry points under
+# one of the three groups below in their own pyproject.toml.  The summarizer
+# PluginRegistry discovers them automatically at startup via importlib.metadata.
 #
-# Group: summarizer.extractors
-#   Register a custom article extractor (subclass of BaseExtractor).
-#   Entry point value: "your_package.module:YourExtractorClass"
+# Group                      | Base class           | Purpose
+# -------------------------- | -------------------- | -----------------------
+# summarizer.extractors      | BaseExtractor        | Custom content fetching
+# summarizer.postprocessors  | BasePostProcessor    | Enrich/mutate summaries
+# summarizer.formatters      | BaseFormatter        | Custom output formats
 #
-# Group: summarizer.postprocessors
-#   Register a custom post-processor (subclass of BasePostProcessor).
-#   Entry point value: "your_package.module:YourPostProcessorClass"
-#
-# Group: summarizer.formatters
-#   Register a custom output formatter (subclass of BaseFormatter).
-#   Entry point value: "your_package.module:YourFormatterClass"
-#
-# Built-in plugins are registered here so they are auto-discovered
-# when the package is installed.
+# Built-in plugins are registered programmatically inside PluginRegistry so
+# they don't need entry-point declarations.  The stubs below are left as
+# commented examples for plugin authors to reference.
 # ---------------------------------------------------------------------------
 
-[project.entry-points."summarizer.postprocessors"]
-keyword_extractor = "summarizer.plugins.builtin.keyword_extractor:KeywordExtractor"
-readability_scorer = "summarizer.plugins.builtin.readability:ReadabilityScorer"
-
-# Uncomment to register built-in extractors or formatters in the future:
 # [project.entry-points."summarizer.extractors"]
-# default_extractor = "summarizer.ingestion.extractor:DefaultExtractor"
+# my_extractor = "my_package.extractors:MyExtractor"
+
+# [project.entry-points."summarizer.postprocessors"]
+# my_postprocessor = "my_package.postprocessors:MyPostProcessor"
 
 # [project.entry-points."summarizer.formatters"]
-# markdown_formatter = "summarizer.formatter:MarkdownFormatter"
+# my_formatter = "my_package.formatters:MyFormatter"
 
 # ---------------------------------------------------------------------------
-# Tool Configuration
+# Setuptools configuration
 # ---------------------------------------------------------------------------
+[tool.setuptools.packages.find]
+where = ["src"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/summarizer"]
+[tool.setuptools.package-dir]
+"" = "src"
 
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
 addopts = "--tb=short -q"
 
+# ---------------------------------------------------------------------------
+# Ruff (linting)
+# ---------------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
 target-version = "py39"
-src = ["src"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+select = ["E", "F", "I", "UP"]
 ignore = ["E501"]
-
-[tool.mypy]
-python_version = "3.9"
-strict = false
-ignore_missing_imports = true
