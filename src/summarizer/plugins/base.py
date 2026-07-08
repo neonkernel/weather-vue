@@ -1,144 +1,139 @@
 """
-Base ABCs for all plugin types.
-
-Plugin authors should subclass one of these ABCs and implement the required
-abstract methods, then register their class via the appropriate entry point
-group in their package's pyproject.toml.
+Base ABCs for all plugin types: BaseExtractor, BasePostProcessor, BaseFormatter.
+Plugin authors must subclass these and implement the required methods.
 """
-
 from __future__ import annotations
 
-import abc
+from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-from ..models import Summary
+from summarizer.models import Summary
 
 
-class BaseExtractor(abc.ABC):
+class BaseExtractor(ABC):
     """
     Base class for custom article extractors.
 
-    Extractors are responsible for fetching and parsing raw text content
-    from a source (URL, file path, etc.).
-
-    Entry point group: ``summarizer.extractors``
+    Extractors are responsible for fetching and parsing content from a URL
+    or other source into plain text suitable for summarization.
     """
 
-    #: Human-readable name shown in ``summarize plugins list``
-    name: str = ""
-    #: Short description of what this extractor does
+    #: Human-readable name for this extractor (used in CLI listing)
+    name: str = "unnamed_extractor"
+    #: Short description shown in `summarize plugins list`
     description: str = ""
-    #: Version string for the extractor
-    version: str = "0.1.0"
 
-    @abc.abstractmethod
-    def can_handle(self, source: str) -> bool:
+    @abstractmethod
+    def can_handle(self, url: str) -> bool:
         """
-        Return True if this extractor can handle the given source string.
-
-        The plugin registry calls this method to determine which extractor
-        should be used for a given source.  The first extractor that returns
-        True wins.
+        Return True if this extractor can handle the given URL/source.
 
         Args:
-            source: A URL, file path, or other identifier for the content.
+            url: The URL or source identifier to check.
 
         Returns:
-            True if this extractor is able to process *source*.
+            True if this extractor should be used for the given source.
         """
+        ...
 
-    @abc.abstractmethod
-    def extract(self, source: str, **kwargs: Any) -> str:
+    @abstractmethod
+    def extract(self, url: str, **kwargs: Any) -> str:
         """
-        Extract and return the raw text content from *source*.
+        Extract and return the plain-text content from the given source.
 
         Args:
-            source: A URL, file path, or other identifier for the content.
-            **kwargs: Optional extractor-specific parameters.
+            url: The URL or source identifier to extract from.
+            **kwargs: Additional options (e.g., timeout, headers).
 
         Returns:
-            The plain-text body of the article.
+            Plain-text content of the article.
 
         Raises:
-            ExtractionError: If the content cannot be retrieved or parsed.
+            ExtractionError: If extraction fails.
         """
+        ...
 
     def __repr__(self) -> str:
-        return f"<{self.__class__.__name__} name={self.name!r} version={self.version!r}>"
+        return f"<Extractor name={self.name!r}>"
 
 
-class BasePostProcessor(abc.ABC):
+class BasePostProcessor(ABC):
     """
-    Base class for post-processors that transform a :class:`~summarizer.models.Summary`
-    after the LLM has produced it.
+    Base class for post-processors that transform a Summary after LLM response.
 
-    Post-processors can enrich the summary with additional metadata fields
-    (e.g. keywords, readability scores) or mutate the text in-place.
-
-    Entry point group: ``summarizer.postprocessors``
+    Post-processors receive the Summary object and the original article text,
+    and may add metadata, annotations, or modify the summary fields.
     """
 
-    #: Human-readable name shown in ``summarize plugins list``
-    name: str = ""
-    #: Short description of what this post-processor does
+    #: Human-readable name for this post-processor
+    name: str = "unnamed_postprocessor"
+    #: Short description shown in `summarize plugins list`
     description: str = ""
-    #: Version string for the post-processor
-    version: str = "0.1.0"
 
-    @abc.abstractmethod
-    def process(self, summary: Summary, original_text: str, **kwargs: Any) -> Summary:
+    @abstractmethod
+    def process(self, summary: Summary, article_text: str, **kwargs: Any) -> Summary:
         """
-        Process *summary* and return the (possibly mutated) result.
-
-        Implementations should avoid replacing the Summary object wholesale;
-        instead, update ``summary.metadata`` or ``summary.text`` in-place and
-        return *summary*.
+        Process the summary and return a (potentially modified) Summary.
 
         Args:
-            summary: The :class:`~summarizer.models.Summary` produced by the LLM.
-            original_text: The raw article text that was summarised.
-            **kwargs: Optional processor-specific parameters.
+            summary: The Summary object produced by the LLM.
+            article_text: The original article text that was summarized.
+            **kwargs: Additional options passed from configuration.
 
         Returns:
-            The enriched / transformed :class:`~summarizer.models.Summary`.
+            A Summary object (may be the same instance, mutated, or a new one).
         """
+        ...
 
     def __repr__(self) -> str:
-        return f"<{self.__class__.__name__} name={self.name!r} version={self.version!r}>"
+        return f"<PostProcessor name={self.name!r}>"
 
 
-class BaseFormatter(abc.ABC):
+class BaseFormatter(ABC):
     """
     Base class for custom output formatters.
 
-    Formatters convert a :class:`~summarizer.models.Summary` object into a
-    string (or bytes) representation suitable for a particular output target
-    (terminal, Markdown file, JSON API response, etc.).
-
-    Entry point group: ``summarizer.formatters``
+    Formatters convert a Summary (or list of Summaries) into a string
+    representation in a custom format (e.g., HTML, CSV, custom JSON schema).
     """
 
-    #: Human-readable name shown in ``summarize plugins list``
-    name: str = ""
-    #: Short description of what this formatter produces
+    #: Human-readable name for this formatter
+    name: str = "unnamed_formatter"
+    #: Short description shown in `summarize plugins list`
     description: str = ""
-    #: Version string for the formatter
-    version: str = "0.1.0"
-    #: File extension hint, e.g. ``".md"`` or ``".json"``
-    extension: str = ".txt"
+    #: File extension hint for output files (e.g., "html", "csv")
+    extension: str = "txt"
 
-    @abc.abstractmethod
-    def format(self, summary: Summary, **kwargs: Any) -> str:
+    @abstractmethod
+    def format_summary(self, summary: Summary, **kwargs: Any) -> str:
         """
-        Render *summary* to a string.
+        Format a single Summary into a string.
 
         Args:
-            summary: The :class:`~summarizer.models.Summary` to render.
-            **kwargs: Optional formatter-specific parameters.
+            summary: The Summary to format.
+            **kwargs: Additional formatting options.
 
         Returns:
-            A string representation of the summary.
+            String representation of the summary.
         """
+        ...
+
+    def format_batch(self, summaries: List[Summary], **kwargs: Any) -> str:
+        """
+        Format a list of Summaries into a single string.
+
+        Default implementation joins individual formatted summaries with
+        a separator. Override for custom batch behaviour.
+
+        Args:
+            summaries: List of Summary objects to format.
+            **kwargs: Additional formatting options.
+
+        Returns:
+            String representation of all summaries.
+        """
+        separator = "\n" + "=" * 80 + "\n"
+        return separator.join(self.format_summary(s, **kwargs) for s in summaries)
 
     def __repr__(self) -> str:
-        return f"<{self.__class__.__name__} name={self.name!r} version={self.version!r}>"
+        return f"<Formatter name={self.name!r}>"

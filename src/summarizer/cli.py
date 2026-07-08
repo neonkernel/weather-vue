@@ -1,201 +1,392 @@
 """
 Command-line interface for the summarizer package.
 
-Commands
---------
-summarize run        – Summarise one or more articles
-summarize plugins    – Inspect registered plugins
-  summarize plugins list
+Usage examples:
+    summarize url https://example.com/article
+    summarize file article.txt
+    summarize batch urls.txt
+    summarize plugins list
 """
-
 from __future__ import annotations
 
 import argparse
+import json
+import logging
 import sys
-import textwrap
-from typing import List, Optional, Sequence
+from typing import List, Optional
 
-from .plugins import registry
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-_PLUGIN_TYPE_ORDER = ("extractor", "postprocessor", "formatter")
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="summarize",
+        description="Summarize articles from URLs or files using an LLM backend.",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose/debug logging.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["text", "json", "markdown"],
+        default="text",
+        help="Output format for summaries (default: text).",
+    )
+    parser.add_argument(
+        "--no-plugins",
+        action="store_true",
+        dest="no_plugins",
+        help="Disable all post-processors and plugin loading.",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    # -- url subcommand
+    url_parser = subparsers.add_parser("url", help="Summarize an article from a URL.")
+    url_parser.add_argument("url", help="URL of the article to summarize.")
+    url_parser.add_argument(
+        "--keywords", type=int, default=0, metavar="N",
+        help="Extract top-N keywords (0 = disabled).",
+    )
+    url_parser.add_argument(
+        "--readability", action="store_true",
+        help="Compute readability scores for the summary.",
+    )
+
+    # -- file subcommand
+    file_parser = subparsers.add_parser("file", help="Summarize an article from a local file.")
+    file_parser.add_argument("path", help="Path to the text file.")
+    file_parser.add_argument(
+        "--keywords", type=int, default=0, metavar="N",
+        help="Extract top-N keywords (0 = disabled).",
+    )
+    file_parser.add_argument(
+        "--readability", action="store_true",
+        help="Compute readability scores for the summary.",
+    )
+
+    # -- batch subcommand
+    batch_parser = subparsers.add_parser(
+        "batch", help="Summarize multiple URLs listed in a file (one per line)."
+    )
+    batch_parser.add_argument("url_file", help="Path to a file containing URLs.")
+    batch_parser.add_argument(
+        "--keywords", type=int, default=0, metavar="N",
+        help="Extract top-N keywords per article (0 = disabled).",
+    )
+    batch_parser.add_argument(
+        "--readability", action="store_true",
+        help="Compute readability scores for each summary.",
+    )
+
+    # -- plugins subcommand
+    plugins_parser = subparsers.add_parser(
+        "plugins", help="Manage and inspect plugins."
+    )
+    plugins_sub = plugins_parser.add_subparsers(dest="plugins_command", metavar="SUBCOMMAND")
+    plugins_sub.add_parser(
+        "list", help="List all discovered extractors, post-processors, and formatters."
+    )
+
+    return parser
 
 
-def _print_plugin_table(rows: List[dict]) -> None:
-    """Pretty-print a table of plugin rows."""
-    if not rows:
-        print("No plugins discovered.")
+def _configure_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(
+        format="%(levelname)s %(name)s: %(message)s",
+        level=level,
+        stream=sys.stderr,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Plugin listing
+# ---------------------------------------------------------------------------
+
+def _cmd_plugins_list() -> None:
+    """Print all discovered plugins grouped by type."""
+    from summarizer.plugins import get_registry
+
+    registry = get_registry()
+
+    sections = [
+        ("Extractors", registry.all_extractors()),
+        ("Post-Processors", registry.all_postprocessors()),
+        ("Formatters", registry.all_formatters()),
+    ]
+
+    any_found = False
+    for section_name, plugins in sections:
+        if not plugins:
+            print(f"\n[{section_name}]")
+            print("  (none discovered)")
+            continue
+
+        any_found = True
+        print(f"\n[{section_name}]")
+        for cls in plugins:
+            name = getattr(cls, "name", cls.__name__)
+            description = getattr(cls, "description", "")
+            module = cls.__module__
+            builtin_tag = " [built-in]" if module.startswith("summarizer.plugins.builtin") else ""
+            print(f"  • {name}{builtin_tag}")
+            if description:
+                print(f"    {description}")
+            print(f"    Module: {module}")
+
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Post-processor application
+# ---------------------------------------------------------------------------
+
+def _apply_postprocessors(
+    summary,
+    article_text: str,
+    *,
+    enable_keywords: int = 0,
+    enable_readability: bool = False,
+    no_plugins: bool = False,
+) -> None:
+    """
+    Apply registered post-processors to *summary* in-place.
+
+    Args:
+        summary: The Summary object to enrich.
+        article_text: The original article text.
+        enable_keywords: If > 0, run the keyword extractor with this many keywords.
+        enable_readability: If True, run the readability scorer.
+        no_plugins: If True, skip all post-processing.
+    """
+    if no_plugins:
         return
 
-    # Column widths
-    col_type_w = max(len("TYPE"), max(len(r["type"]) for r in rows))
-    col_name_w = max(len("NAME"), max(len(r["name"]) for r in rows))
-    col_ver_w = max(len("VERSION"), max(len(r["version"]) for r in rows))
-    # description gets the rest – cap at 60 chars for terminal friendliness
-    col_desc_w = 60
+    from summarizer.plugins import get_registry
 
-    sep = (
-        f"+-{'-' * col_type_w}-+-{'-' * col_name_w}-+-{'-' * col_ver_w}-+"
-        f"-{'-' * col_desc_w}-+"
-    )
-    header = (
-        f"| {'TYPE':<{col_type_w}} | {'NAME':<{col_name_w}} "
-        f"| {'VERSION':<{col_ver_w}} | {'DESCRIPTION':<{col_desc_w}} |"
-    )
+    registry = get_registry()
 
-    print(sep)
-    print(header)
-    print(sep)
+    if enable_keywords > 0:
+        kw_cls = registry.get_postprocessor("keyword_extractor")
+        if kw_cls:
+            try:
+                processor = kw_cls(top_n=enable_keywords)
+                processor.process(summary, article_text, top_n=enable_keywords)
+                logger.debug("keyword_extractor applied (top_n=%d)", enable_keywords)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("keyword_extractor failed: %s", exc)
+        else:
+            logger.warning("keyword_extractor plugin not found in registry.")
 
-    current_type: Optional[str] = None
-    for row in rows:
-        if row["type"] != current_type:
-            current_type = row["type"]
-        desc = row["description"]
-        if len(desc) > col_desc_w:
-            desc = desc[: col_desc_w - 3] + "..."
-        print(
-            f"| {row['type']:<{col_type_w}} | {row['name']:<{col_name_w}} "
-            f"| {row['version']:<{col_ver_w}} | {desc:<{col_desc_w}} |"
-        )
+    if enable_readability:
+        rd_cls = registry.get_postprocessor("readability_scorer")
+        if rd_cls:
+            try:
+                processor = rd_cls()
+                processor.process(summary, article_text)
+                logger.debug("readability_scorer applied")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("readability_scorer failed: %s", exc)
+        else:
+            logger.warning("readability_scorer plugin not found in registry.")
 
-    print(sep)
-    print(f"\n{len(rows)} plugin(s) loaded.")
+
+# ---------------------------------------------------------------------------
+# Output rendering
+# ---------------------------------------------------------------------------
+
+def _render_summary(summary, fmt: str = "text") -> str:
+    """Render a Summary to a string in the requested format."""
+    if fmt == "json":
+        data: dict = {}
+        for field in ("url", "title", "summary", "model", "metadata"):
+            val = getattr(summary, field, None)
+            if val is not None:
+                data[field] = val
+        return json.dumps(data, indent=2, default=str)
+
+    if fmt == "markdown":
+        lines = []
+        title = getattr(summary, "title", None)
+        url = getattr(summary, "url", None)
+        if title:
+            lines.append(f"# {title}")
+        if url:
+            lines.append(f"*Source: {url}*\n")
+        summary_text = getattr(summary, "summary", str(summary))
+        lines.append(summary_text)
+        metadata = getattr(summary, "metadata", None)
+        if metadata:
+            lines.append("\n---")
+            if "keywords" in metadata:
+                lines.append(f"**Keywords:** {', '.join(metadata['keywords'])}")
+            if "readability" in metadata:
+                rd = metadata["readability"]
+                lines.append(
+                    f"**Readability:** {rd['flesch_reading_ease_label']} "
+                    f"(Flesch {rd['flesch_reading_ease']}, "
+                    f"FK Grade {rd['flesch_kincaid_grade']})"
+                )
+        return "\n".join(lines)
+
+    # Default: plain text
+    lines = []
+    title = getattr(summary, "title", None)
+    url = getattr(summary, "url", None)
+    if title:
+        lines.append(f"Title: {title}")
+    if url:
+        lines.append(f"URL:   {url}")
+    summary_text = getattr(summary, "summary", str(summary))
+    lines.append(f"\n{summary_text}")
+    metadata = getattr(summary, "metadata", None)
+    if metadata:
+        if "keywords" in metadata:
+            lines.append(f"\nKeywords: {', '.join(metadata['keywords'])}")
+        if "readability" in metadata:
+            rd = metadata["readability"]
+            lines.append(
+                f"Readability: {rd['flesch_reading_ease_label']} "
+                f"(Flesch Reading Ease: {rd['flesch_reading_ease']}, "
+                f"FK Grade: {rd['flesch_kincaid_grade']})"
+            )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
 # Sub-command handlers
 # ---------------------------------------------------------------------------
 
+def _cmd_url(args) -> int:
+    """Handle the `summarize url` subcommand."""
+    try:
+        from summarizer.summarize import summarize_url
+    except ImportError:
+        print("ERROR: summarize_url not available. Check your installation.", file=sys.stderr)
+        return 1
 
-def cmd_plugins_list(_args: argparse.Namespace) -> int:
-    """Handle ``summarize plugins list``."""
-    # Force (re-)discovery every time the CLI is invoked so the output is fresh
-    registry.discover()
-    rows = registry.summary_table()
-    _print_plugin_table(rows)
+    try:
+        summary, article_text = summarize_url(args.url, return_article_text=True)
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    _apply_postprocessors(
+        summary,
+        article_text,
+        enable_keywords=args.keywords,
+        enable_readability=args.readability,
+        no_plugins=args.no_plugins,
+    )
+    print(_render_summary(summary, fmt=args.format))
     return 0
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    """
-    Handle ``summarize run``.
+def _cmd_file(args) -> int:
+    """Handle the `summarize file` subcommand."""
+    try:
+        from summarizer.summarize import summarize_text
+    except ImportError:
+        print("ERROR: summarize_text not available. Check your installation.", file=sys.stderr)
+        return 1
 
-    This is a thin demonstration that wires up post-processors after a
-    (simulated) summarisation step.  In a real integration you would call
-    the actual summarisation pipeline here.
-    """
-    from .models import Summary
+    try:
+        with open(args.path, "r", encoding="utf-8") as fh:
+            article_text = fh.read()
+        summary = summarize_text(article_text)
+    except FileNotFoundError:
+        print(f"ERROR: File not found: {args.path}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
-    # ------------------------------------------------------------------
-    # Simulate summarisation (replace with real pipeline call)
-    # ------------------------------------------------------------------
-    original_text: str = args.text or ""
-    summary_text: str = f"[Summary of: {original_text[:80]}...]" if original_text else ""
-
-    summary = Summary(
-        text=summary_text,
-        source=args.source or "<stdin>",
-        model=getattr(args, "model", "gpt-4o"),
-        style=getattr(args, "style", "brief"),
+    _apply_postprocessors(
+        summary,
+        article_text,
+        enable_keywords=args.keywords,
+        enable_readability=args.readability,
+        no_plugins=args.no_plugins,
     )
+    print(_render_summary(summary, fmt=args.format))
+    return 0
 
-    # ------------------------------------------------------------------
-    # Apply registered post-processors
-    # ------------------------------------------------------------------
-    registry.discover()
-    for pp in registry.postprocessors:
-        try:
-            summary = pp.process(summary, original_text)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[warning] Post-processor {pp.name!r} failed: {exc}", file=sys.stderr)
 
-    # ------------------------------------------------------------------
-    # Output
-    # ------------------------------------------------------------------
-    fmt_name: Optional[str] = getattr(args, "formatter", None)
-    if fmt_name:
-        fmt = registry.get_formatter(fmt_name)
-        if fmt is None:
-            print(
-                f"[error] Formatter {fmt_name!r} not found. "
-                f"Available: {[f.name for f in registry.formatters]}",
-                file=sys.stderr,
-            )
-            return 1
-        output = fmt.format(summary)
-    else:
-        # Default plain-text output
-        output = summary.text
-        if summary.metadata:
-            output += "\n\n--- Metadata ---"
-            for key, value in summary.metadata.items():
-                output += f"\n  {key}: {value}"
+def _cmd_batch(args) -> int:
+    """Handle the `summarize batch` subcommand."""
+    try:
+        from summarizer.batch import batch_summarize
+    except ImportError:
+        print("ERROR: batch_summarize not available. Check your installation.", file=sys.stderr)
+        return 1
 
-    print(output)
+    try:
+        with open(args.url_file, "r", encoding="utf-8") as fh:
+            urls = [line.strip() for line in fh if line.strip()]
+    except FileNotFoundError:
+        print(f"ERROR: File not found: {args.url_file}", file=sys.stderr)
+        return 1
+
+    try:
+        results = batch_summarize(urls)
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    for url, (summary, article_text) in zip(urls, results):
+        _apply_postprocessors(
+            summary,
+            article_text,
+            enable_keywords=args.keywords,
+            enable_readability=args.readability,
+            no_plugins=args.no_plugins,
+        )
+        print(_render_summary(summary, fmt=args.format))
+        print("\n" + "=" * 80 + "\n")
+
     return 0
 
 
 # ---------------------------------------------------------------------------
-# Argument parser
+# Entry point
 # ---------------------------------------------------------------------------
 
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="summarize",
-        description="AI-powered article summariser with plugin support.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
-    subparsers.required = True
-
-    # ---- run ----------------------------------------------------------------
-    run_parser = subparsers.add_parser("run", help="Summarise one or more articles.")
-    run_parser.add_argument("--source", metavar="URL_OR_PATH", help="Source URL or file path.")
-    run_parser.add_argument(
-        "--text", metavar="TEXT", help="Raw article text (for testing)."
-    )
-    run_parser.add_argument(
-        "--model", metavar="MODEL", default="gpt-4o", help="LLM model to use."
-    )
-    run_parser.add_argument(
-        "--style",
-        metavar="STYLE",
-        default="brief",
-        choices=["brief", "detailed", "bullet"],
-        help="Summarisation style.",
-    )
-    run_parser.add_argument(
-        "--formatter",
-        metavar="NAME",
-        default=None,
-        help="Name of a registered formatter plugin to use for output.",
-    )
-    run_parser.set_defaults(func=cmd_run)
-
-    # ---- plugins ------------------------------------------------------------
-    plugins_parser = subparsers.add_parser("plugins", help="Inspect registered plugins.")
-    plugins_subparsers = plugins_parser.add_subparsers(
-        dest="plugins_command", metavar="PLUGINS_COMMAND"
-    )
-    plugins_subparsers.required = True
-
-    list_parser = plugins_subparsers.add_parser("list", help="List all discovered plugins.")
-    list_parser.set_defaults(func=cmd_plugins_list)
-
-    return parser
-
-
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Entry point for the ``summarize`` CLI command."""
-    parser = build_parser()
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = _build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    _configure_logging(getattr(args, "verbose", False))
+
+    if args.command is None:
+        parser.print_help()
+        return 0
+
+    if args.command == "plugins":
+        if args.plugins_command == "list":
+            _cmd_plugins_list()
+            return 0
+        else:
+            # Show help for the plugins subcommand
+            parser.parse_args(["plugins", "--help"])
+            return 0
+
+    if args.command == "url":
+        return _cmd_url(args)
+
+    if args.command == "file":
+        return _cmd_file(args)
+
+    if args.command == "batch":
+        return _cmd_batch(args)
+
+    parser.print_help()
+    return 0
 
 
 if __name__ == "__main__":

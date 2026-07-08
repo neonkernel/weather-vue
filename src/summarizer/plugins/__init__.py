@@ -1,40 +1,24 @@
 """
-Plugin subsystem for the summarizer package.
+PluginRegistry: discovers and loads plugins via importlib.metadata entry_points().
 
-The :class:`PluginRegistry` discovers plugins via Python entry points and
-exposes them to the rest of the application.  Three entry-point groups are
-supported:
-
-* ``summarizer.extractors``   – subclasses of :class:`~.base.BaseExtractor`
-* ``summarizer.postprocessors`` – subclasses of :class:`~.base.BasePostProcessor`
-* ``summarizer.formatters``   – subclasses of :class:`~.base.BaseFormatter`
-
-Usage::
-
-    from summarizer.plugins import registry
-
-    # Access all discovered post-processors
-    for pp in registry.postprocessors:
-        summary = pp.process(summary, original_text)
+Supports three entry-point groups:
+  - summarizer.extractors
+  - summarizer.postprocessors
+  - summarizer.formatters
 """
-
 from __future__ import annotations
 
 import logging
-from importlib.metadata import entry_points
 from typing import Dict, List, Optional, Type
 
-from .base import BaseExtractor, BaseFormatter, BasePostProcessor
+from summarizer.plugins.base import BaseExtractor, BaseFormatter, BasePostProcessor
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
 # Entry-point group names
-# ---------------------------------------------------------------------------
-
-_EP_EXTRACTORS = "summarizer.extractors"
-_EP_POSTPROCESSORS = "summarizer.postprocessors"
-_EP_FORMATTERS = "summarizer.formatters"
+EXTRACTOR_GROUP = "summarizer.extractors"
+POSTPROCESSOR_GROUP = "summarizer.postprocessors"
+FORMATTER_GROUP = "summarizer.formatters"
 
 
 class PluginLoadError(Exception):
@@ -43,220 +27,186 @@ class PluginLoadError(Exception):
 
 class PluginRegistry:
     """
-    Discovers, loads, and exposes plugins for all three hook types.
+    Central registry for all discovered plugins.
 
-    The registry is **lazy**: plugins are not discovered until
-    :meth:`discover` is called (or you access one of the public list
-    properties, which call :meth:`discover` automatically).
-
-    Attributes:
-        extractors: List of instantiated :class:`~.base.BaseExtractor` plugins.
-        postprocessors: List of instantiated :class:`~.base.BasePostProcessor` plugins.
-        formatters: List of instantiated :class:`~.base.BaseFormatter` plugins.
+    Plugins are discovered at instantiation time via importlib.metadata
+    entry_points(). Built-in plugins are registered explicitly so they
+    are always available even when not installed as separate packages.
     """
 
-    def __init__(self) -> None:
-        self._extractors: List[BaseExtractor] = []
-        self._postprocessors: List[BasePostProcessor] = []
-        self._formatters: List[BaseFormatter] = []
-        self._discovered: bool = False
+    def __init__(self, load_builtins: bool = True) -> None:
+        self._extractors: Dict[str, Type[BaseExtractor]] = {}
+        self._postprocessors: Dict[str, Type[BasePostProcessor]] = {}
+        self._formatters: Dict[str, Type[BaseFormatter]] = {}
+
+        if load_builtins:
+            self._register_builtins()
+
+        self._discover_entry_points()
 
     # ------------------------------------------------------------------
-    # Public API
+    # Registration helpers
     # ------------------------------------------------------------------
 
-    @property
-    def extractors(self) -> List[BaseExtractor]:
-        """Return all loaded extractor plugins."""
-        if not self._discovered:
-            self.discover()
-        return list(self._extractors)
+    def register_extractor(self, cls: Type[BaseExtractor], *, override: bool = False) -> None:
+        """Register an extractor class."""
+        self._validate_plugin(cls, BaseExtractor, "extractor")
+        name = getattr(cls, "name", None) or cls.__name__
+        if name in self._extractors and not override:
+            logger.warning("Extractor %r already registered; skipping duplicate.", name)
+            return
+        self._extractors[name] = cls
+        logger.debug("Registered extractor: %s", name)
 
-    @property
-    def postprocessors(self) -> List[BasePostProcessor]:
-        """Return all loaded post-processor plugins."""
-        if not self._discovered:
-            self.discover()
-        return list(self._postprocessors)
+    def register_postprocessor(
+        self, cls: Type[BasePostProcessor], *, override: bool = False
+    ) -> None:
+        """Register a post-processor class."""
+        self._validate_plugin(cls, BasePostProcessor, "post-processor")
+        name = getattr(cls, "name", None) or cls.__name__
+        if name in self._postprocessors and not override:
+            logger.warning("PostProcessor %r already registered; skipping duplicate.", name)
+            return
+        self._postprocessors[name] = cls
+        logger.debug("Registered post-processor: %s", name)
 
-    @property
-    def formatters(self) -> List[BaseFormatter]:
-        """Return all loaded formatter plugins."""
-        if not self._discovered:
-            self.discover()
-        return list(self._formatters)
+    def register_formatter(self, cls: Type[BaseFormatter], *, override: bool = False) -> None:
+        """Register a formatter class."""
+        self._validate_plugin(cls, BaseFormatter, "formatter")
+        name = getattr(cls, "name", None) or cls.__name__
+        if name in self._formatters and not override:
+            logger.warning("Formatter %r already registered; skipping duplicate.", name)
+            return
+        self._formatters[name] = cls
+        logger.debug("Registered formatter: %s", name)
 
-    def discover(self) -> None:
-        """
-        Discover and load all plugins from installed entry points.
+    # ------------------------------------------------------------------
+    # Accessors
+    # ------------------------------------------------------------------
 
-        This method is idempotent; calling it multiple times reloads plugins.
-        Errors in individual plugins are logged and skipped so that a single
-        bad plugin does not break the whole application.
-        """
-        self._extractors = self._load_group(_EP_EXTRACTORS, BaseExtractor)  # type: ignore[assignment]
-        self._postprocessors = self._load_group(_EP_POSTPROCESSORS, BasePostProcessor)  # type: ignore[assignment]
-        self._formatters = self._load_group(_EP_FORMATTERS, BaseFormatter)  # type: ignore[assignment]
-        self._discovered = True
-        logger.debug(
-            "Plugin discovery complete: %d extractors, %d postprocessors, %d formatters",
-            len(self._extractors),
-            len(self._postprocessors),
-            len(self._formatters),
+    def get_extractor(self, name: str) -> Optional[Type[BaseExtractor]]:
+        return self._extractors.get(name)
+
+    def get_postprocessor(self, name: str) -> Optional[Type[BasePostProcessor]]:
+        return self._postprocessors.get(name)
+
+    def get_formatter(self, name: str) -> Optional[Type[BaseFormatter]]:
+        return self._formatters.get(name)
+
+    def all_extractors(self) -> List[Type[BaseExtractor]]:
+        return list(self._extractors.values())
+
+    def all_postprocessors(self) -> List[Type[BasePostProcessor]]:
+        return list(self._postprocessors.values())
+
+    def all_formatters(self) -> List[Type[BaseFormatter]]:
+        return list(self._formatters.values())
+
+    # ------------------------------------------------------------------
+    # Discovery
+    # ------------------------------------------------------------------
+
+    def _discover_entry_points(self) -> None:
+        """Load plugins declared via importlib.metadata entry_points."""
+        try:
+            from importlib.metadata import entry_points
+        except ImportError:  # Python < 3.9 fallback
+            try:
+                from importlib_metadata import entry_points  # type: ignore
+            except ImportError:
+                logger.warning(
+                    "importlib.metadata not available; skipping entry-point discovery."
+                )
+                return
+
+        self._load_group(entry_points, EXTRACTOR_GROUP, BaseExtractor, self.register_extractor)
+        self._load_group(
+            entry_points, POSTPROCESSOR_GROUP, BasePostProcessor, self.register_postprocessor
         )
+        self._load_group(entry_points, FORMATTER_GROUP, BaseFormatter, self.register_formatter)
 
-    def get_extractor(self, name: str) -> Optional[BaseExtractor]:
-        """Return the first extractor whose :attr:`~.base.BaseExtractor.name` matches *name*."""
-        for ext in self.extractors:
-            if ext.name == name:
-                return ext
-        return None
+    def _load_group(self, entry_points_fn, group: str, base_cls, register_fn) -> None:
+        """Discover and register all entry points in a given group."""
+        try:
+            # Python 3.9+ supports group= keyword; 3.8 returns a dict
+            eps = entry_points(group=group)
+        except TypeError:
+            eps = entry_points().get(group, [])  # type: ignore
 
-    def get_postprocessor(self, name: str) -> Optional[BasePostProcessor]:
-        """Return the first post-processor whose :attr:`~.base.BasePostProcessor.name` matches *name*."""
-        for pp in self.postprocessors:
-            if pp.name == name:
-                return pp
-        return None
-
-    def get_formatter(self, name: str) -> Optional[BaseFormatter]:
-        """Return the first formatter whose :attr:`~.base.BaseFormatter.name` matches *name*."""
-        for fmt in self.formatters:
-            if fmt.name == name:
-                return fmt
-        return None
-
-    def register_extractor(self, extractor: BaseExtractor) -> None:
-        """Programmatically register an extractor instance (useful for tests)."""
-        _validate_plugin(extractor, BaseExtractor)
-        if not self._discovered:
-            self.discover()
-        self._extractors.append(extractor)
-
-    def register_postprocessor(self, postprocessor: BasePostProcessor) -> None:
-        """Programmatically register a post-processor instance (useful for tests)."""
-        _validate_plugin(postprocessor, BasePostProcessor)
-        if not self._discovered:
-            self.discover()
-        self._postprocessors.append(postprocessor)
-
-    def register_formatter(self, formatter: BaseFormatter) -> None:
-        """Programmatically register a formatter instance (useful for tests)."""
-        _validate_plugin(formatter, BaseFormatter)
-        if not self._discovered:
-            self.discover()
-        self._formatters.append(formatter)
-
-    def summary_table(self) -> List[Dict[str, str]]:
-        """
-        Return a list of dicts suitable for tabular display in the CLI.
-
-        Each dict has keys: ``type``, ``name``, ``version``, ``description``.
-        """
-        if not self._discovered:
-            self.discover()
-
-        rows: List[Dict[str, str]] = []
-        for plugin in self._extractors:
-            rows.append(_plugin_row("extractor", plugin))
-        for plugin in self._postprocessors:
-            rows.append(_plugin_row("postprocessor", plugin))
-        for plugin in self._formatters:
-            rows.append(_plugin_row("formatter", plugin))
-        return rows
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _load_group(self, group: str, base_cls: type) -> list:
-        loaded: list = []
-        eps = _get_entry_points(group)
         for ep in eps:
             try:
-                cls = ep.load()
-            except Exception as exc:
-                logger.warning("Failed to load plugin %r from group %r: %s", ep.name, group, exc)
-                continue
+                plugin_cls = ep.load()
+                register_fn(plugin_cls)
+                logger.info("Loaded plugin %r from entry point %r", ep.name, group)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Failed to load plugin %r from group %r: %s", ep.name, group, exc
+                )
 
-            try:
-                instance = _instantiate_and_validate(cls, base_cls, ep.name)
-            except PluginLoadError as exc:
-                logger.warning(str(exc))
-                continue
+    # ------------------------------------------------------------------
+    # Built-in registration
+    # ------------------------------------------------------------------
 
-            loaded.append(instance)
-            logger.debug("Loaded plugin %r (%s)", ep.name, cls.__qualname__)
+    def _register_builtins(self) -> None:
+        """Register built-in plugins bundled with the package."""
+        try:
+            from summarizer.plugins.builtin.keyword_extractor import KeywordExtractor
 
-        return loaded
+            self.register_postprocessor(KeywordExtractor)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not load built-in KeywordExtractor: %s", exc)
+
+        try:
+            from summarizer.plugins.builtin.readability import ReadabilityScorer
+
+            self.register_postprocessor(ReadabilityScorer)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not load built-in ReadabilityScorer: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_plugin(cls, base_cls, kind: str) -> None:
+        """Validate that *cls* is a proper subclass of *base_cls*."""
+        if not isinstance(cls, type):
+            raise PluginLoadError(
+                f"Plugin {cls!r} is not a class; expected a {kind} subclass of {base_cls.__name__}."
+            )
+        if not issubclass(cls, base_cls):
+            raise PluginLoadError(
+                f"Plugin {cls.__name__!r} does not subclass {base_cls.__name__}. "
+                f"All {kind} plugins must inherit from {base_cls.__name__}."
+            )
+        # Ensure abstract methods are implemented
+        abstract_methods = getattr(cls, "__abstractmethods__", frozenset())
+        if abstract_methods:
+            raise PluginLoadError(
+                f"Plugin {cls.__name__!r} has unimplemented abstract methods: "
+                f"{', '.join(sorted(abstract_methods))}. "
+                f"Please implement all required methods."
+            )
 
 
 # ---------------------------------------------------------------------------
-# Module-level singleton registry
+# Module-level singleton – lazily created so import is cheap
 # ---------------------------------------------------------------------------
 
-#: The global plugin registry.  Import this object to access plugins.
-registry = PluginRegistry()
+_registry: Optional[PluginRegistry] = None
 
 
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
-
-
-def _get_entry_points(group: str):
+def get_registry(*, reload: bool = False) -> PluginRegistry:
     """
-    Return entry points for *group*, compatible with Python 3.9+.
+    Return the global PluginRegistry singleton.
 
-    ``importlib.metadata.entry_points`` accepts a ``group`` keyword argument
-    in Python 3.12+ and also in 3.9 via the ``select`` method.
+    Args:
+        reload: If True, discard the cached registry and rebuild it.
+
+    Returns:
+        The global PluginRegistry instance.
     """
-    try:
-        # Python 3.12+ / importlib_metadata 3.6+
-        return entry_points(group=group)
-    except TypeError:
-        # Older stdlib fallback
-        return entry_points().get(group, [])
-
-
-def _validate_plugin(instance: object, base_cls: type) -> None:
-    """Raise :class:`PluginLoadError` if *instance* is not a valid plugin."""
-    if not isinstance(instance, base_cls):
-        raise PluginLoadError(
-            f"Plugin {instance!r} must be an instance of {base_cls.__name__}."
-        )
-    if not getattr(instance, "name", ""):
-        raise PluginLoadError(
-            f"Plugin {instance!r} must define a non-empty 'name' attribute."
-        )
-
-
-def _instantiate_and_validate(cls: type, base_cls: type, ep_name: str) -> object:
-    """Instantiate *cls* and validate it against *base_cls*."""
-    if not isinstance(cls, type):
-        raise PluginLoadError(
-            f"Entry point {ep_name!r} must point to a class, got {type(cls).__name__}."
-        )
-    if not issubclass(cls, base_cls):
-        raise PluginLoadError(
-            f"Plugin class {cls.__qualname__!r} (entry point {ep_name!r}) must subclass "
-            f"{base_cls.__name__}."
-        )
-    try:
-        instance = cls()
-    except Exception as exc:
-        raise PluginLoadError(
-            f"Failed to instantiate plugin {cls.__qualname__!r}: {exc}"
-        ) from exc
-
-    _validate_plugin(instance, base_cls)
-    return instance
-
-
-def _plugin_row(type_label: str, plugin: object) -> Dict[str, str]:
-    return {
-        "type": type_label,
-        "name": getattr(plugin, "name", ""),
-        "version": getattr(plugin, "version", ""),
-        "description": getattr(plugin, "description", ""),
-    }
+    global _registry
+    if _registry is None or reload:
+        _registry = PluginRegistry()
+    return _registry

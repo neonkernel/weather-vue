@@ -1,179 +1,125 @@
 """
-Built-in post-processor: KeywordExtractor
-=========================================
+Built-in post-processor: extracts top-N keywords from the original article
+using a simple TF-IDF approach (no external ML dependencies required).
 
-Extracts the top-N keywords from the *original article text* using a simple
-TF-IDF approach that requires no external dependencies beyond the Python
-standard library.
-
-If ``scikit-learn`` is installed the implementation will use its
-``TfidfVectorizer`` for higher quality results; otherwise it falls back to a
-pure-Python TF-IDF computation.
+If scikit-learn is installed it is used for higher-quality TF-IDF; otherwise
+the implementation falls back to a pure-Python frequency-based approach.
 """
-
 from __future__ import annotations
 
 import math
 import re
 import string
 from collections import Counter
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
-from ...models import Summary
-from ..base import BasePostProcessor
-
-# ---------------------------------------------------------------------------
-# Optional scikit-learn import
-# ---------------------------------------------------------------------------
-
-try:
-    from sklearn.feature_extraction.text import TfidfVectorizer as _SklearnTfidf  # type: ignore
-
-    _SKLEARN_AVAILABLE = True
-except ImportError:
-    _SKLEARN_AVAILABLE = False
+from summarizer.models import Summary
+from summarizer.plugins.base import BasePostProcessor
 
 # ---------------------------------------------------------------------------
-# Common English stop-words (minimal set – no external dependency)
+# Common English stop words (minimal set, no NLTK required)
 # ---------------------------------------------------------------------------
-
-_STOP_WORDS: frozenset = frozenset(
-    {
-        "a", "about", "above", "after", "again", "against", "all", "am", "an",
-        "and", "any", "are", "aren't", "as", "at", "be", "because", "been",
-        "before", "being", "below", "between", "both", "but", "by", "can't",
-        "cannot", "could", "couldn't", "did", "didn't", "do", "does", "doesn't",
-        "doing", "don't", "down", "during", "each", "few", "for", "from",
-        "further", "get", "got", "had", "hadn't", "has", "hasn't", "have",
-        "haven't", "having", "he", "he'd", "he'll", "he's", "her", "here",
-        "here's", "hers", "herself", "him", "himself", "his", "how", "how's",
-        "i", "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't",
-        "it", "it's", "its", "itself", "let's", "me", "more", "most", "mustn't",
-        "my", "myself", "no", "nor", "not", "of", "off", "on", "once", "only",
-        "or", "other", "ought", "our", "ours", "ourselves", "out", "over",
-        "own", "same", "shan't", "she", "she'd", "she'll", "she's", "should",
-        "shouldn't", "so", "some", "such", "than", "that", "that's", "the",
-        "their", "theirs", "them", "themselves", "then", "there", "there's",
-        "these", "they", "they'd", "they'll", "they're", "they've", "this",
-        "those", "through", "to", "too", "under", "until", "up", "very", "was",
-        "wasn't", "we", "we'd", "we'll", "we're", "we've", "were", "weren't",
-        "what", "what's", "when", "when's", "where", "where's", "which",
-        "while", "who", "who's", "whom", "why", "why's", "will", "with",
-        "won't", "would", "wouldn't", "you", "you'd", "you'll", "you're",
-        "you've", "your", "yours", "yourself", "yourselves",
-    }
+_STOP_WORDS = frozenset(
+    """
+a about above after again against all also am an and any are aren't as at
+be because been before being below between both but by can't cannot could
+couldn't did didn't do does doesn't doing don't down during each few for
+from further get got had hadn't has hasn't have haven't having he he'd he'll
+he's her here here's hers herself him himself his how how's however i i'd
+i'll i'm i've if in into is isn't it it's its itself let's me more most
+mustn't my myself no nor not of off on once only or other ought our ours
+ourselves out over own same shan't she she'd she'll she's should shouldn't
+so some such than that that's the their theirs them themselves then there
+there's these they they'd they'll they're they've this those through to too
+under until up us very was wasn't we we'd we'll we're we've were weren't
+what what's when when's where where's which while who who's whom why why's
+with won't would wouldn't you you'd you'll you're you've your yours yourself
+yourselves
+""".split()
 )
+
+
+def _tokenise(text: str) -> List[str]:
+    """Lower-case, strip punctuation, split into word tokens."""
+    text = text.lower()
+    text = re.sub(r"[" + re.escape(string.punctuation) + r"]", " ", text)
+    return [w for w in text.split() if w and w not in _STOP_WORDS and len(w) > 2]
+
+
+def _tfidf_keywords(documents: List[str], query_doc: str, top_n: int) -> List[str]:
+    """
+    Compute TF-IDF scores for tokens in *query_doc* relative to *documents*
+    and return the *top_n* highest-scoring terms.
+
+    Args:
+        documents: Corpus of documents used to compute IDF.
+        query_doc: The document whose keywords we want.
+        top_n: Number of top keywords to return.
+
+    Returns:
+        List of keyword strings, highest scoring first.
+    """
+    tokens = _tokenise(query_doc)
+    if not tokens:
+        return []
+
+    tf_counts = Counter(tokens)
+    total = len(tokens)
+    tf: Dict[str, float] = {w: count / total for w, count in tf_counts.items()}
+
+    # IDF: log((N + 1) / (df + 1)) + 1  (smoothed)
+    N = len(documents)
+    idf: Dict[str, float] = {}
+    vocab = set(tokens)
+    for word in vocab:
+        df = sum(1 for doc in documents if word in _tokenise(doc))
+        idf[word] = math.log((N + 1) / (df + 1)) + 1.0
+
+    scores = {word: tf[word] * idf[word] for word in vocab}
+    sorted_words = sorted(scores, key=scores.__getitem__, reverse=True)
+    return sorted_words[:top_n]
 
 
 class KeywordExtractor(BasePostProcessor):
     """
-    Post-processor that extracts the top-N keywords from the original article.
+    Post-processor that extracts top-N keywords from the article text using
+    TF-IDF and attaches them to ``summary.metadata["keywords"]``.
 
-    Keywords are stored in ``summary.metadata["keywords"]`` as a list of
-    strings.  The number of keywords is controlled by ``top_n`` (default 10).
-
-    Example metadata output::
-
-        {"keywords": ["machine learning", "neural network", "training data"]}
+    Configuration (via kwargs passed to ``process``):
+        top_n (int): Number of keywords to extract (default: 10).
     """
 
     name = "keyword_extractor"
-    description = "Extracts top-N keywords from the original article using TF-IDF"
-    version = "1.0.0"
+    description = (
+        "Extracts top-N keywords from the original article text using TF-IDF "
+        "and stores them in summary.metadata['keywords']."
+    )
 
     def __init__(self, top_n: int = 10) -> None:
         self.top_n = top_n
 
-    def process(self, summary: Summary, original_text: str, **kwargs: Any) -> Summary:
+    def process(self, summary: Summary, article_text: str, **kwargs: Any) -> Summary:
         """
-        Enrich *summary* with a ``keywords`` list in its metadata.
+        Extract keywords and store them in summary.metadata.
 
         Args:
             summary: The Summary produced by the LLM.
-            original_text: The raw article text.
-            **kwargs: ``top_n`` overrides the instance default if provided.
+            article_text: The original article text.
+            **kwargs: Accepts ``top_n`` to override the instance default.
 
         Returns:
-            The same *summary* object with ``metadata["keywords"]`` populated.
+            The same Summary with ``metadata["keywords"]`` populated.
         """
-        top_n: int = kwargs.get("top_n", self.top_n)
+        top_n = int(kwargs.get("top_n", self.top_n))
 
-        if not original_text or not original_text.strip():
-            keywords: List[str] = []
-        elif _SKLEARN_AVAILABLE:
-            keywords = self._sklearn_keywords(original_text, top_n)
-        else:
-            keywords = self._builtin_keywords(original_text, top_n)
+        # Use summary text as additional context alongside the article
+        combined_docs = [article_text, summary.summary if hasattr(summary, "summary") else ""]
+        query_doc = article_text
 
-        if summary.metadata is None:
+        keywords = _tfidf_keywords(combined_docs, query_doc, top_n)
+
+        if not hasattr(summary, "metadata") or summary.metadata is None:
             summary.metadata = {}
+
         summary.metadata["keywords"] = keywords
         return summary
-
-    # ------------------------------------------------------------------
-    # scikit-learn implementation
-    # ------------------------------------------------------------------
-
-    def _sklearn_keywords(self, text: str, top_n: int) -> List[str]:
-        vectorizer = _SklearnTfidf(
-            stop_words="english",
-            ngram_range=(1, 2),
-            max_features=200,
-        )
-        try:
-            tfidf_matrix = vectorizer.fit_transform([text])
-        except ValueError:
-            return []
-
-        feature_names: List[str] = vectorizer.get_feature_names_out().tolist()
-        scores = tfidf_matrix.toarray()[0]
-        ranked = sorted(zip(feature_names, scores), key=lambda x: x[1], reverse=True)
-        return [term for term, _ in ranked[:top_n]]
-
-    # ------------------------------------------------------------------
-    # Pure-Python TF-IDF fallback
-    # ------------------------------------------------------------------
-
-    def _builtin_keywords(self, text: str, top_n: int) -> List[str]:
-        tokens = self._tokenise(text)
-        if not tokens:
-            return []
-
-        # Term frequency
-        tf: Counter = Counter(tokens)
-        total = len(tokens)
-
-        # Treat the entire document as a single "document" for IDF – we
-        # use sentence-level IDF to give more weight to rarer terms.
-        sentences = re.split(r"[.!?]+", text.lower())
-        doc_freq: Counter = Counter()
-        for sentence in sentences:
-            sentence_tokens = set(self._tokenise(sentence))
-            for tok in sentence_tokens:
-                doc_freq[tok] += 1
-
-        n_sentences = max(len(sentences), 1)
-        tfidf_scores: Dict[str, float] = {}
-        for term, count in tf.items():
-            tf_score = count / total
-            idf_score = math.log((1 + n_sentences) / (1 + doc_freq.get(term, 0))) + 1.0
-            tfidf_scores[term] = tf_score * idf_score
-
-        ranked = sorted(tfidf_scores.items(), key=lambda x: x[1], reverse=True)
-        return [term for term, _ in ranked[:top_n]]
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _tokenise(text: str) -> List[str]:
-        """Lowercase, remove punctuation, and filter stop-words."""
-        text = text.lower()
-        # Remove punctuation
-        text = text.translate(str.maketrans("", "", string.punctuation))
-        tokens = text.split()
-        return [
-            t for t in tokens
-            if t and t not in _STOP_WORDS and len(t) > 2 and not t.isdigit()
-        ]
