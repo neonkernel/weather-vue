@@ -1,114 +1,165 @@
-"""Built-in post-processor: extracts top-N keywords from the article using TF-IDF."""
+"""
+Built-in post-processor: KeywordExtractor
+
+Extracts the top N keywords from the original article text using a simple
+TF-IDF-inspired approach (no external ML dependencies required).
+
+If the `nltk` package is available it will be used for stop-word filtering;
+otherwise a small built-in stop-word list is used as a fallback.
+"""
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import string
 from collections import Counter
-from typing import List
+from typing import Any
 
 from summarizer.plugins.base import BasePostProcessor
 
-# ---------------------------------------------------------------------------
-# Stop-words (minimal English set; avoids an NLTK dependency)
-# ---------------------------------------------------------------------------
-_STOP_WORDS = frozenset(
+logger = logging.getLogger(__name__)
+
+# -------------------------------------------------------------------------
+# Stop-word list (fallback when NLTK is not installed)
+# -------------------------------------------------------------------------
+_BUILTIN_STOPWORDS: frozenset[str] = frozenset(
     {
         "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-        "of", "with", "by", "from", "is", "it", "its", "this", "that", "was",
-        "are", "be", "been", "being", "have", "has", "had", "do", "does", "did",
+        "of", "with", "by", "from", "is", "it", "its", "was", "are", "were",
+        "be", "been", "being", "have", "has", "had", "do", "does", "did",
         "will", "would", "could", "should", "may", "might", "shall", "can",
-        "not", "as", "if", "so", "then", "than", "also", "more", "most",
-        "about", "up", "out", "into", "through", "during", "before", "after",
-        "each", "which", "who", "whom", "there", "their", "they", "we", "you",
-        "he", "she", "i", "me", "my", "your", "our", "us", "him", "her", "his",
-        "just", "some", "any", "all", "both", "few", "no", "nor", "only", "own",
-        "same", "other", "such", "s", "t", "re", "ve", "ll", "d", "m",
+        "not", "no", "nor", "so", "yet", "both", "either", "neither",
+        "each", "few", "more", "most", "other", "some", "such", "than",
+        "too", "very", "just", "that", "this", "these", "those", "which",
+        "who", "whom", "what", "when", "where", "why", "how", "all", "any",
+        "because", "as", "until", "while", "although", "though", "if",
+        "then", "than", "into", "through", "during", "before", "after",
+        "above", "below", "between", "out", "off", "over", "under", "again",
+        "further", "once", "here", "there", "s", "t", "re", "ve", "ll",
+        "d", "m", "their", "they", "them", "he", "she", "we", "you", "i",
+        "me", "him", "her", "us", "my", "your", "his", "our", "its",
+        "about", "up", "also", "said", "says", "like", "use", "used", "using",
     }
 )
 
 
-def _tokenize(text: str) -> List[str]:
-    """Lower-case, strip punctuation, split on whitespace."""
+def _get_stopwords() -> frozenset[str]:
+    """Return NLTK English stop-words if available, else the built-in set."""
+    try:
+        import nltk  # type: ignore
+
+        try:
+            from nltk.corpus import stopwords as sw
+
+            return frozenset(sw.words("english"))
+        except LookupError:
+            nltk.download("stopwords", quiet=True)
+            from nltk.corpus import stopwords as sw
+
+            return frozenset(sw.words("english"))
+    except ImportError:
+        logger.debug("NLTK not available; using built-in stop-word list.")
+        return _BUILTIN_STOPWORDS
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase, remove punctuation, split into tokens."""
     text = text.lower()
     text = re.sub(r"[" + re.escape(string.punctuation) + r"]", " ", text)
-    return [w for w in text.split() if w and w not in _STOP_WORDS and len(w) > 2]
+    return [tok for tok in text.split() if tok.isalpha() and len(tok) > 1]
 
 
-def _tf(tokens: List[str]) -> Counter:
-    counts = Counter(tokens)
-    total = len(tokens) or 1
-    return Counter({w: c / total for w, c in counts.items()})
-
-
-def _idf(word: str, documents: List[List[str]]) -> float:
-    n_docs = len(documents)
-    n_containing = sum(1 for doc in documents if word in doc)
-    return math.log((n_docs + 1) / (n_containing + 1)) + 1.0
-
-
-def extract_keywords(texts: List[str], top_n: int = 10) -> List[str]:
-    """Return the top *top_n* keywords across the provided *texts* using TF-IDF.
-
-    Parameters
-    ----------
-    texts:
-        List of text documents (e.g. article text + summary text).
-    top_n:
-        Number of keywords to return.
+def _tf_idf_keywords(
+    tokens: list[str],
+    stopwords: frozenset[str],
+    top_n: int = 10,
+) -> list[tuple[str, float]]:
     """
-    tokenized = [_tokenize(t) for t in texts]
-    if not any(tokenized):
+    Compute a simple single-document TF score (we treat each sentence as a
+    "document" for the IDF component to penalise very common terms).
+
+    Returns a sorted list of (keyword, score) pairs.
+    """
+    filtered = [t for t in tokens if t not in stopwords and len(t) > 2]
+    if not filtered:
         return []
 
-    # Score each unique word by its average TF-IDF across documents
-    vocab = set(w for doc in tokenized for w in doc)
-    scores: dict[str, float] = {}
-    for word in vocab:
-        tf_scores = [_tf(doc).get(word, 0.0) for doc in tokenized]
-        idf_score = _idf(word, tokenized)
-        scores[word] = (sum(tf_scores) / len(tf_scores)) * idf_score
+    total = len(filtered)
+    tf: Counter = Counter(filtered)
 
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return [w for w, _ in ranked[:top_n]]
+    # For IDF we use a simple heuristic: penalise tokens that appear in
+    # more than 20 % of the tokens (acts like a high-df penalty).
+    scores: dict[str, float] = {}
+    for word, count in tf.items():
+        term_freq = count / total
+        # Inverse weighting: rarer words score higher
+        idf = math.log((total + 1) / (count + 1)) + 1.0
+        scores[word] = term_freq * idf
+
+    sorted_keywords = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    return sorted_keywords[:top_n]
 
 
 class KeywordExtractor(BasePostProcessor):
-    """Extracts the top N keywords from the article text and attaches them to the summary.
+    """
+    Extracts the top-N keywords from the article text and attaches them
+    to the summary's metadata dict as ``keywords``.
 
-    The keywords are stored in ``summary.metadata["keywords"]`` as a list of strings.
+    Configuration (passed via process() kwargs):
+        top_n (int): Number of keywords to extract (default 10).
     """
 
     name = "keyword_extractor"
     description = (
-        "Extracts top-N keywords from the article using TF-IDF "
-        "and stores them in summary.metadata['keywords']."
+        "Extracts top-N keywords from the article text using TF-IDF "
+        "(NLTK-enhanced when available)."
     )
+    enabled_by_default = True
 
     def __init__(self, top_n: int = 10) -> None:
         self.top_n = top_n
+        self._stopwords: frozenset[str] | None = None
 
-    def process(self, summary, article_text: str):  # type: ignore[override]
-        """Attach keywords to *summary*.metadata and return the summary."""
-        texts = [article_text]
-        # Also include the summary text itself if available
-        summary_text = getattr(summary, "summary", "") or ""
-        if summary_text:
-            texts.append(summary_text)
+    @property
+    def stopwords(self) -> frozenset[str]:
+        if self._stopwords is None:
+            self._stopwords = _get_stopwords()
+        return self._stopwords
 
-        keywords = extract_keywords(texts, top_n=self.top_n)
+    def process(self, summary: Any, article_text: str = "", **kwargs: Any) -> Any:
+        """
+        Attach a 'keywords' list to summary.metadata.
 
-        # Attach to metadata dict (create if absent)
-        if not hasattr(summary, "metadata") or summary.metadata is None:
-            try:
-                summary.metadata = {}
-            except AttributeError:
-                pass
+        Args:
+            summary: A Summary-like object with a .metadata dict attribute,
+                     or any object (keywords are attached as an attribute).
+            article_text: The original article text.
+            **kwargs:
+                top_n (int): Override the number of keywords to return.
 
-        try:
+        Returns:
+            The enriched summary object.
+        """
+        top_n = int(kwargs.get("top_n", self.top_n))
+        text = article_text or ""
+
+        tokens = _tokenize(text)
+        keyword_scores = _tf_idf_keywords(tokens, self.stopwords, top_n=top_n)
+        keywords = [kw for kw, _ in keyword_scores]
+
+        # Attach to summary.metadata if available, otherwise as attribute
+        if hasattr(summary, "metadata") and isinstance(summary.metadata, dict):
             summary.metadata["keywords"] = keywords
-        except (AttributeError, TypeError):
-            pass  # Model doesn't support metadata mutation; skip silently
+        else:
+            try:
+                summary.keywords = keywords
+            except AttributeError:
+                logger.warning(
+                    "Cannot attach keywords to summary of type %r",
+                    type(summary).__name__,
+                )
 
+        logger.debug("KeywordExtractor extracted %d keywords.", len(keywords))
         return summary

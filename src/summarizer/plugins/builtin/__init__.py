@@ -1,1 +1,1 @@
-"""Built-in plugins bundled with the summarizer package."""
+"""Built-in plugins that ship with the summarizer package."""

@@ -1,99 +1,134 @@
-"""Base ABCs for all plugin types."""
+"""
+Base ABCs for all plugin types in the summarizer plugin system.
+
+Plugin authors should subclass one of these ABCs to create custom plugins:
+- BaseExtractor: custom article extraction logic
+- BasePostProcessor: transforms the Summary after LLM response
+- BaseFormatter: custom output formats
+"""
 
 from __future__ import annotations
 
 import abc
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 
 class BaseExtractor(abc.ABC):
-    """Base class for custom article extractors.
+    """
+    Abstract base class for custom article extractors.
 
-    Plugin authors should subclass this and implement `extract`.
-    Register via the `summarizer.extractors` entry point group.
+    Subclass this to provide custom extraction logic for specific
+    content sources (e.g., paywalled sites, custom CMSes, PDFs).
     """
 
-    #: Human-readable name for this extractor
-    name: str = "base_extractor"
-    #: Short description shown in `plugins list`
+    # Human-readable name for this extractor
+    name: str = "unnamed_extractor"
+
+    # Description shown in `plugins list`
     description: str = ""
 
     @abc.abstractmethod
-    def extract(self, url: str, raw_html: str) -> Dict[str, Any]:
-        """Extract structured content from raw HTML.
-
-        Parameters
-        ----------
-        url:
-            The URL the HTML was fetched from.
-        raw_html:
-            The raw HTML string of the page.
-
-        Returns
-        -------
-        dict with at least the key ``"text"`` containing the main article text.
-        Additional optional keys: ``"title"``, ``"author"``, ``"published_date"``.
+    def can_handle(self, url: str) -> bool:
         """
+        Return True if this extractor can handle the given URL.
 
-    def supports(self, url: str) -> bool:  # noqa: ARG002
-        """Return True if this extractor can handle the given URL.
+        Args:
+            url: The URL to check.
 
-        Override to restrict the extractor to specific domains / URL patterns.
-        The registry uses the first extractor whose ``supports()`` returns True.
+        Returns:
+            True if this extractor should be used for the given URL.
         """
-        return True
+        ...
+
+    @abc.abstractmethod
+    def extract(self, url: str, **kwargs: Any) -> dict[str, Any]:
+        """
+        Extract article content from the given URL.
+
+        Args:
+            url: The URL to extract content from.
+            **kwargs: Additional options passed by the caller.
+
+        Returns:
+            A dict with at least 'text' (str) and optionally
+            'title' (str), 'author' (str), 'date' (str), 'html' (str).
+
+        Raises:
+            ExtractionError: if content cannot be extracted.
+        """
+        ...
+
+    def __repr__(self) -> str:
+        return f"<Extractor: {self.name}>"
 
 
 class BasePostProcessor(abc.ABC):
-    """Base class for summary post-processors.
+    """
+    Abstract base class for post-processors.
 
-    Plugin authors should subclass this and implement `process`.
-    Register via the `summarizer.postprocessors` entry point group.
+    Subclass this to transform or enrich a Summary object after
+    the LLM has generated the summary text.
     """
 
-    name: str = "base_postprocessor"
+    # Human-readable name for this post-processor
+    name: str = "unnamed_postprocessor"
+
+    # Description shown in `plugins list`
     description: str = ""
 
+    # Whether this processor is enabled by default
+    enabled_by_default: bool = False
+
     @abc.abstractmethod
-    def process(self, summary: "Summary", article_text: str) -> "Summary":  # type: ignore[name-defined]  # noqa: F821
-        """Transform or annotate a Summary object.
-
-        Parameters
-        ----------
-        summary:
-            The :class:`~summarizer.models.Summary` produced by the LLM step.
-        article_text:
-            The original (pre-LLM) article text, useful for keyword extraction
-            and readability scoring on the source material.
-
-        Returns
-        -------
-        The (possibly mutated) Summary object.
+    def process(self, summary: Any, article_text: str = "", **kwargs: Any) -> Any:
         """
+        Process and enrich a Summary object.
+
+        Args:
+            summary: The Summary object produced by the LLM pipeline.
+            article_text: The original article text (for analysis).
+            **kwargs: Additional options.
+
+        Returns:
+            The (potentially modified) Summary object. Processors should
+            add their results to summary.metadata or a dedicated field.
+        """
+        ...
+
+    def __repr__(self) -> str:
+        return f"<PostProcessor: {self.name}>"
 
 
 class BaseFormatter(abc.ABC):
-    """Base class for custom output formatters.
+    """
+    Abstract base class for custom output formatters.
 
-    Plugin authors should subclass this and implement `format`.
-    Register via the `summarizer.formatters` entry point group.
+    Subclass this to produce custom output formats (e.g., HTML,
+    Slack messages, database inserts) from a Summary object.
     """
 
-    name: str = "base_formatter"
+    # Human-readable name for this formatter
+    name: str = "unnamed_formatter"
+
+    # Description shown in `plugins list`
     description: str = ""
-    #: File extension produced by this formatter, e.g. ``"html"``
-    extension: str = "txt"
+
+    # File extension hint (e.g., ".html", ".json")
+    extension: str = ".txt"
 
     @abc.abstractmethod
-    def format(self, summary: "Summary") -> str:  # type: ignore[name-defined]  # noqa: F821
-        """Render a Summary to a string in this formatter's output format.
-
-        Parameters
-        ----------
-        summary:
-            The :class:`~summarizer.models.Summary` to render.
-
-        Returns
-        -------
-        A string representation of the summary.
+    def format(self, summary: Any, **kwargs: Any) -> str:
         """
+        Format a Summary object into a string representation.
+
+        Args:
+            summary: The Summary object to format.
+            **kwargs: Additional options.
+
+        Returns:
+            A string representation of the summary.
+        """
+        ...
+
+    def __repr__(self) -> str:
+        return f"<Formatter: {self.name}>"
