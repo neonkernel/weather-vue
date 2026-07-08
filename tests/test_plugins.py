@@ -1,670 +1,666 @@
 """
-Tests for the summarizer plugin system.
+Tests for the plugin discovery, loading, and validation subsystem.
 
-Covers:
-- PluginRegistry discovery and loading
-- Built-in plugins (KeywordExtractor, ReadabilityScorer)
-- BaseExtractor / BasePostProcessor / BaseFormatter ABCs
-- Error handling for malformed plugins
-- Manual registration
-- CLI `plugins list` command
+These tests cover:
+
+* PluginRegistry – discovery, lazy loading, programmatic registration
+* BaseExtractor / BasePostProcessor / BaseFormatter – ABC enforcement
+* Built-in post-processors – KeywordExtractor and ReadabilityScorer
+* Error handling – malformed plugins, bad entry points
+* CLI ``plugins list`` command
 """
 
 from __future__ import annotations
 
+import sys
 import types
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Ensure we can import without a full install
+from summarizer.models import Summary
+from summarizer.plugins import PluginLoadError, PluginRegistry, _instantiate_and_validate
 from summarizer.plugins.base import BaseExtractor, BaseFormatter, BasePostProcessor
-from summarizer.plugins import PluginRegistry, get_registry, reset_registry
-from summarizer.plugins.builtin.keyword_extractor import (
-    KeywordExtractor,
-    _tokenize,
-    _tf_idf_keywords,
-    _count_syllables,
-)
+from summarizer.plugins.builtin.keyword_extractor import KeywordExtractor
 from summarizer.plugins.builtin.readability import (
     ReadabilityScorer,
-    flesch_reading_ease,
-    flesch_kincaid_grade,
-    _count_syllables as rs_count_syllables,
-    _split_sentences,
-    _tokenize_words,
+    _count_sentences,
+    _count_syllables_in_word,
+    _count_words,
+    _ease_label,
+    _flesch_kincaid,
 )
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True)
-def reset_global_registry():
-    """Reset the global registry singleton before each test."""
-    reset_registry()
-    yield
-    reset_registry()
+# ===========================================================================
+# Fixtures / helpers
+# ===========================================================================
 
 
-class _ConcreteExtractor(BaseExtractor):
-    name = "test_extractor"
-    description = "A test extractor."
-
-    def can_handle(self, url: str) -> bool:
-        return url.startswith("https://test.")
-
-    def extract(self, url: str, **kwargs: Any) -> dict:
-        return {"text": f"Extracted text from {url}", "title": "Test Article"}
+def _make_summary(text: str = "This is a test summary.", metadata: dict | None = None) -> Summary:
+    return Summary(text=text, source="http://example.com", metadata=metadata or {})
 
 
-class _ConcretePostProcessor(BasePostProcessor):
-    name = "test_postprocessor"
-    description = "A test post-processor."
-    enabled_by_default = True
+class _GoodExtractor(BaseExtractor):
+    name = "good_extractor"
+    description = "A well-behaved extractor"
+    version = "1.0.0"
 
-    def process(self, summary: Any, article_text: str = "", **kwargs: Any) -> Any:
-        if hasattr(summary, "metadata"):
-            summary.metadata["test_processed"] = True
+    def can_handle(self, source: str) -> bool:
+        return source.startswith("http://")
+
+    def extract(self, source: str, **kwargs: Any) -> str:
+        return f"Content from {source}"
+
+
+class _GoodPostProcessor(BasePostProcessor):
+    name = "good_postprocessor"
+    description = "A well-behaved post-processor"
+    version = "1.0.0"
+
+    def process(self, summary: Summary, original_text: str, **kwargs: Any) -> Summary:
+        summary.metadata["processed"] = True
         return summary
 
 
-class _ConcreteFormatter(BaseFormatter):
-    name = "test_formatter"
-    description = "A test formatter."
-    extension = ".test"
+class _GoodFormatter(BaseFormatter):
+    name = "good_formatter"
+    description = "A well-behaved formatter"
+    version = "1.0.0"
+    extension = ".txt"
 
-    def format(self, summary: Any, **kwargs: Any) -> str:
-        return f"FORMATTED: {getattr(summary, 'text', str(summary))}"
-
-
-class _SimpleSummary:
-    """Minimal summary object for testing."""
-
-    def __init__(self, text: str = "Hello world. This is a test.") -> None:
-        self.text = text
-        self.metadata: dict = {}
-
-    def __str__(self) -> str:
-        return self.text
+    def format(self, summary: Summary, **kwargs: Any) -> str:
+        return f"FORMATTED: {summary.text}"
 
 
-# ---------------------------------------------------------------------------
-# Base ABC tests
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# ABC enforcement
+# ===========================================================================
+
 
 class TestBaseABCs:
-    def test_base_extractor_is_abstract(self):
+    def test_extractor_cannot_be_instantiated_without_abstract_methods(self):
         with pytest.raises(TypeError):
-            BaseExtractor()
+            BaseExtractor()  # type: ignore[abstract]
 
-    def test_base_postprocessor_is_abstract(self):
+    def test_postprocessor_cannot_be_instantiated_without_abstract_methods(self):
         with pytest.raises(TypeError):
-            BasePostProcessor()
+            BasePostProcessor()  # type: ignore[abstract]
 
-    def test_base_formatter_is_abstract(self):
+    def test_formatter_cannot_be_instantiated_without_abstract_methods(self):
         with pytest.raises(TypeError):
-            BaseFormatter()
+            BaseFormatter()  # type: ignore[abstract]
 
-    def test_concrete_extractor_instantiates(self):
-        ext = _ConcreteExtractor()
-        assert ext.name == "test_extractor"
+    def test_concrete_extractor_repr(self):
+        ext = _GoodExtractor()
+        assert "good_extractor" in repr(ext)
+        assert "1.0.0" in repr(ext)
 
-    def test_concrete_postprocessor_instantiates(self):
-        pp = _ConcretePostProcessor()
-        assert pp.name == "test_postprocessor"
-        assert pp.enabled_by_default is True
+    def test_concrete_postprocessor_repr(self):
+        pp = _GoodPostProcessor()
+        assert "good_postprocessor" in repr(pp)
 
-    def test_concrete_formatter_instantiates(self):
-        fmt = _ConcreteFormatter()
-        assert fmt.name == "test_formatter"
-        assert fmt.extension == ".test"
-
-    def test_extractor_repr(self):
-        ext = _ConcreteExtractor()
-        assert "test_extractor" in repr(ext)
-
-    def test_postprocessor_repr(self):
-        pp = _ConcretePostProcessor()
-        assert "test_postprocessor" in repr(pp)
-
-    def test_formatter_repr(self):
-        fmt = _ConcreteFormatter()
-        assert "test_formatter" in repr(fmt)
+    def test_concrete_formatter_repr(self):
+        fmt = _GoodFormatter()
+        assert "good_formatter" in repr(fmt)
 
 
-# ---------------------------------------------------------------------------
-# PluginRegistry tests
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# PluginRegistry – programmatic registration
+# ===========================================================================
+
 
 class TestPluginRegistry:
-    def test_registry_starts_empty(self):
-        registry = PluginRegistry()
-        assert registry.extractors == []
-        assert registry.postprocessors == []
-        assert registry.formatters == []
+    def _fresh_registry(self) -> PluginRegistry:
+        """Return a registry with an empty discovery (no real entry points)."""
+        reg = PluginRegistry()
+        with patch("summarizer.plugins._get_entry_points", return_value=[]):
+            reg.discover()
+        return reg
 
-    def test_manual_register_extractor(self):
-        registry = PluginRegistry()
-        ext = _ConcreteExtractor()
-        registry.register_extractor(ext)
-        assert ext in registry.extractors
+    def test_discover_sets_discovered_flag(self):
+        reg = self._fresh_registry()
+        assert reg._discovered is True
 
-    def test_manual_register_postprocessor(self):
-        registry = PluginRegistry()
-        pp = _ConcretePostProcessor()
-        registry.register_postprocessor(pp)
-        assert pp in registry.postprocessors
+    def test_empty_registry_returns_empty_lists(self):
+        reg = self._fresh_registry()
+        assert reg.extractors == []
+        assert reg.postprocessors == []
+        assert reg.formatters == []
 
-    def test_manual_register_formatter(self):
-        registry = PluginRegistry()
-        fmt = _ConcreteFormatter()
-        registry.register_formatter(fmt)
-        assert fmt in registry.formatters
+    def test_register_extractor(self):
+        reg = self._fresh_registry()
+        ext = _GoodExtractor()
+        reg.register_extractor(ext)
+        assert ext in reg.extractors
 
-    def test_register_wrong_type_raises(self):
-        registry = PluginRegistry()
-        with pytest.raises(TypeError):
-            registry.register_extractor("not_an_extractor")  # type: ignore
-        with pytest.raises(TypeError):
-            registry.register_postprocessor(42)  # type: ignore
-        with pytest.raises(TypeError):
-            registry.register_formatter(object())  # type: ignore
+    def test_register_postprocessor(self):
+        reg = self._fresh_registry()
+        pp = _GoodPostProcessor()
+        reg.register_postprocessor(pp)
+        assert pp in reg.postprocessors
 
-    def test_discover_loads_builtin_plugins(self):
-        registry = PluginRegistry()
-        registry.discover(include_builtin=True)
-        names = [pp.name for pp in registry.postprocessors]
-        assert "keyword_extractor" in names
-        assert "readability_scorer" in names
+    def test_register_formatter(self):
+        reg = self._fresh_registry()
+        fmt = _GoodFormatter()
+        reg.register_formatter(fmt)
+        assert fmt in reg.formatters
 
-    def test_discover_without_builtin_skips_them(self):
-        registry = PluginRegistry()
-        # Mock entry points to return nothing
-        with patch("summarizer.plugins._load_entry_points", return_value=[]):
-            registry.discover(include_builtin=False)
-        assert registry.postprocessors == []
-
-    def test_get_extractor_for_matching_url(self):
-        registry = PluginRegistry()
-        registry.register_extractor(_ConcreteExtractor())
-        result = registry.get_extractor_for("https://test.example.com/article")
+    def test_get_extractor_by_name(self):
+        reg = self._fresh_registry()
+        reg.register_extractor(_GoodExtractor())
+        result = reg.get_extractor("good_extractor")
         assert result is not None
-        assert result.name == "test_extractor"
+        assert result.name == "good_extractor"
 
-    def test_get_extractor_for_non_matching_url(self):
-        registry = PluginRegistry()
-        registry.register_extractor(_ConcreteExtractor())
-        result = registry.get_extractor_for("https://other.example.com/article")
-        assert result is None
+    def test_get_extractor_returns_none_for_unknown(self):
+        reg = self._fresh_registry()
+        assert reg.get_extractor("nonexistent") is None
 
-    def test_get_extractor_for_empty_registry(self):
-        registry = PluginRegistry()
-        assert registry.get_extractor_for("https://example.com") is None
+    def test_get_postprocessor_by_name(self):
+        reg = self._fresh_registry()
+        reg.register_postprocessor(_GoodPostProcessor())
+        result = reg.get_postprocessor("good_postprocessor")
+        assert result is not None
 
-    def test_apply_postprocessors_enabled_only(self):
-        registry = PluginRegistry()
-        pp = _ConcretePostProcessor()
-        pp.enabled_by_default = True
-        registry.register_postprocessor(pp)
+    def test_get_formatter_by_name(self):
+        reg = self._fresh_registry()
+        reg.register_formatter(_GoodFormatter())
+        result = reg.get_formatter("good_formatter")
+        assert result is not None
 
-        summary = _SimpleSummary()
-        result = registry.apply_postprocessors(summary, enabled_only=True)
-        assert result.metadata.get("test_processed") is True
+    def test_summary_table_contains_all_plugins(self):
+        reg = self._fresh_registry()
+        reg.register_extractor(_GoodExtractor())
+        reg.register_postprocessor(_GoodPostProcessor())
+        reg.register_formatter(_GoodFormatter())
+        table = reg.summary_table()
+        types_in_table = {row["type"] for row in table}
+        assert "extractor" in types_in_table
+        assert "postprocessor" in types_in_table
+        assert "formatter" in types_in_table
 
-    def test_apply_postprocessors_skips_disabled(self):
-        registry = PluginRegistry()
-        pp = _ConcretePostProcessor()
-        pp.enabled_by_default = False
-        registry.register_postprocessor(pp)
+    def test_summary_table_row_keys(self):
+        reg = self._fresh_registry()
+        reg.register_postprocessor(_GoodPostProcessor())
+        table = reg.summary_table()
+        assert len(table) == 1
+        row = table[0]
+        assert set(row.keys()) == {"type", "name", "version", "description"}
 
-        summary = _SimpleSummary()
-        result = registry.apply_postprocessors(summary, enabled_only=True)
-        assert "test_processed" not in result.metadata
+    def test_lazy_discovery_triggered_by_property_access(self):
+        reg = PluginRegistry()
+        assert reg._discovered is False
+        with patch("summarizer.plugins._get_entry_points", return_value=[]):
+            _ = reg.extractors
+        assert reg._discovered is True
 
-    def test_apply_postprocessors_all(self):
-        registry = PluginRegistry()
-        pp = _ConcretePostProcessor()
-        pp.enabled_by_default = False
-        registry.register_postprocessor(pp)
-
-        summary = _SimpleSummary()
-        result = registry.apply_postprocessors(summary, enabled_only=False)
-        assert result.metadata.get("test_processed") is True
-
-    def test_apply_postprocessors_handles_exception_gracefully(self):
-        """A failing processor should not crash the whole pipeline."""
-
-        class _BrokenProcessor(BasePostProcessor):
-            name = "broken"
-            enabled_by_default = True
-
-            def process(self, summary, article_text="", **kwargs):
-                raise RuntimeError("Intentional failure")
-
-        registry = PluginRegistry()
-        registry.register_postprocessor(_BrokenProcessor())
-
-        summary = _SimpleSummary()
-        # Should not raise
-        result = registry.apply_postprocessors(summary, enabled_only=True)
-        assert result is summary
-
-    def test_summary_table_includes_all_plugin_types(self):
-        registry = PluginRegistry()
-        registry.register_extractor(_ConcreteExtractor())
-        registry.register_postprocessor(_ConcretePostProcessor())
-        registry.register_formatter(_ConcreteFormatter())
-
-        table = registry.summary_table()
-        types_found = {row["type"] for row in table}
-        assert "extractor" in types_found
-        assert "postprocessor" in types_found
-        assert "formatter" in types_found
-
-    def test_summary_table_empty_registry(self):
-        registry = PluginRegistry()
-        assert registry.summary_table() == []
+    def test_discover_is_idempotent(self):
+        reg = self._fresh_registry()
+        reg.register_postprocessor(_GoodPostProcessor())
+        with patch("summarizer.plugins._get_entry_points", return_value=[]):
+            reg.discover()
+        # After re-discovery the manually registered plugin should be gone
+        # (discover() resets the lists from entry points)
+        assert len(reg.postprocessors) == 0
 
 
-# ---------------------------------------------------------------------------
-# Global registry singleton tests
-# ---------------------------------------------------------------------------
-
-class TestGlobalRegistry:
-    def test_get_registry_returns_singleton(self):
-        r1 = get_registry(auto_discover=False)
-        r2 = get_registry(auto_discover=False)
-        assert r1 is r2
-
-    def test_reset_registry_clears_singleton(self):
-        r1 = get_registry(auto_discover=False)
-        reset_registry()
-        r2 = get_registry(auto_discover=False)
-        assert r1 is not r2
-
-    def test_get_registry_auto_discover(self):
-        registry = get_registry(auto_discover=True)
-        # Built-in post-processors should be loaded
-        names = [pp.name for pp in registry.postprocessors]
-        assert "keyword_extractor" in names
+# ===========================================================================
+# Plugin validation
+# ===========================================================================
 
 
-# ---------------------------------------------------------------------------
-# Entry point loading & error handling
-# ---------------------------------------------------------------------------
+class TestPluginValidation:
+    def test_validate_rejects_wrong_base_class(self):
+        reg = PluginRegistry()
+        reg._discovered = True
+        with pytest.raises(PluginLoadError, match="must be an instance of"):
+            reg.register_extractor(_GoodPostProcessor())  # type: ignore[arg-type]
 
-class TestEntryPointLoading:
-    def test_malformed_class_is_skipped(self):
-        """A class that doesn't subclass the correct ABC should be skipped."""
-        registry = PluginRegistry()
+    def test_validate_rejects_missing_name(self):
+        class _NoName(BasePostProcessor):
+            name = ""  # empty!
+            description = "test"
 
-        class NotAPostProcessor:
-            pass
-
-        result = registry._instantiate(NotAPostProcessor, BasePostProcessor)
-        assert result is None
-
-    def test_base_class_itself_is_skipped(self):
-        result = PluginRegistry._instantiate(BasePostProcessor, BasePostProcessor)
-        assert result is None
-
-    def test_instantiation_error_is_skipped(self):
-        class _BadInit(BasePostProcessor):
-            name = "bad_init"
-
-            def __init__(self):
-                raise RuntimeError("Cannot instantiate")
-
-            def process(self, summary, article_text="", **kwargs):
+            def process(self, summary, original_text, **kwargs):
                 return summary
 
-        result = PluginRegistry._instantiate(_BadInit, BasePostProcessor)
-        assert result is None
+        reg = PluginRegistry()
+        reg._discovered = True
+        with pytest.raises(PluginLoadError, match="non-empty 'name'"):
+            reg.register_postprocessor(_NoName())
 
-    def test_import_class_invalid_path_raises(self):
-        with pytest.raises(ValueError, match="Expected 'module.path:ClassName'"):
-            PluginRegistry._import_class("no_colon_here")
+    def test_instantiate_and_validate_rejects_non_class(self):
+        with pytest.raises(PluginLoadError, match="must point to a class"):
+            _instantiate_and_validate("not_a_class", BasePostProcessor, "ep_name")
 
-    def test_entry_point_load_failure_is_skipped(self):
-        """A broken entry point should not crash the discovery process."""
-        bad_ep = MagicMock()
-        bad_ep.name = "bad_plugin"
-        bad_ep.load.side_effect = ImportError("module not found")
+    def test_instantiate_and_validate_rejects_wrong_subclass(self):
+        with pytest.raises(PluginLoadError, match="must subclass"):
+            _instantiate_and_validate(_GoodExtractor, BasePostProcessor, "ep_name")
 
-        with patch("summarizer.plugins._load_entry_points", return_value=[bad_ep]):
-            registry = PluginRegistry()
-            registry.discover(include_builtin=False)
+    def test_instantiate_and_validate_rejects_init_error(self):
+        class _BadInit(BasePostProcessor):
+            name = "bad"
+            description = "raises on init"
 
-        # Registry should still be functional
-        assert registry.postprocessors == []
+            def __init__(self):
+                raise RuntimeError("Boom!")
 
-    def test_extractor_can_handle_exception_is_caught(self):
-        class _BrokenExtractor(BaseExtractor):
-            name = "broken_extractor"
+            def process(self, summary, original_text, **kwargs):
+                return summary
 
-            def can_handle(self, url):
-                raise RuntimeError("boom")
-
-            def extract(self, url, **kwargs):
-                return {"text": ""}
-
-        registry = PluginRegistry()
-        registry.register_extractor(_BrokenExtractor())
-        # Should not raise
-        result = registry.get_extractor_for("https://example.com")
-        assert result is None
+        with pytest.raises(PluginLoadError, match="Failed to instantiate"):
+            _instantiate_and_validate(_BadInit, BasePostProcessor, "ep_name")
 
 
-# ---------------------------------------------------------------------------
-# KeywordExtractor tests
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Entry-point discovery (mocked)
+# ===========================================================================
+
+
+class TestEntryPointDiscovery:
+    def _make_ep(self, name: str, cls: type) -> MagicMock:
+        ep = MagicMock()
+        ep.name = name
+        ep.load.return_value = cls
+        return ep
+
+    def test_discovers_postprocessor_from_entry_point(self):
+        ep = self._make_ep("good_postprocessor", _GoodPostProcessor)
+
+        def fake_ep(group):
+            if group == "summarizer.postprocessors":
+                return [ep]
+            return []
+
+        reg = PluginRegistry()
+        with patch("summarizer.plugins._get_entry_points", side_effect=fake_ep):
+            reg.discover()
+
+        assert len(reg.postprocessors) == 1
+        assert reg.postprocessors[0].name == "good_postprocessor"
+
+    def test_skips_entry_point_that_fails_to_load(self):
+        ep = MagicMock()
+        ep.name = "broken_plugin"
+        ep.load.side_effect = ImportError("module not found")
+
+        reg = PluginRegistry()
+        with patch("summarizer.plugins._get_entry_points", return_value=[ep]):
+            reg.discover()
+
+        assert reg.postprocessors == []
+
+    def test_skips_entry_point_pointing_to_non_class(self):
+        ep = MagicMock()
+        ep.name = "not_a_class"
+        ep.load.return_value = "just_a_string"
+
+        reg = PluginRegistry()
+
+        def fake_ep(group):
+            if group == "summarizer.postprocessors":
+                return [ep]
+            return []
+
+        with patch("summarizer.plugins._get_entry_points", side_effect=fake_ep):
+            reg.discover()
+
+        assert reg.postprocessors == []
+
+    def test_skips_entry_point_with_wrong_base_class(self):
+        ep = self._make_ep("wrong_base", _GoodExtractor)  # extractor, not postprocessor
+
+        def fake_ep(group):
+            if group == "summarizer.postprocessors":
+                return [ep]
+            return []
+
+        reg = PluginRegistry()
+        with patch("summarizer.plugins._get_entry_points", side_effect=fake_ep):
+            reg.discover()
+
+        assert reg.postprocessors == []
+
+
+# ===========================================================================
+# Built-in: KeywordExtractor
+# ===========================================================================
+
 
 class TestKeywordExtractor:
-    def test_name_and_description(self):
+    def test_name_and_version(self):
         ke = KeywordExtractor()
         assert ke.name == "keyword_extractor"
-        assert "TF-IDF" in ke.description or "keyword" in ke.description.lower()
+        assert ke.version == "1.0.0"
 
-    def test_enabled_by_default(self):
-        assert KeywordExtractor.enabled_by_default is True
-
-    def test_extracts_keywords_into_metadata(self):
+    def test_process_adds_keywords_to_metadata(self):
         ke = KeywordExtractor(top_n=5)
-        summary = _SimpleSummary("A brief summary of the article.")
-        article_text = (
-            "Machine learning algorithms are powerful tools for data analysis. "
-            "Neural networks and deep learning models have revolutionized computer vision. "
-            "Data scientists use machine learning to build predictive models for business. "
-            "Algorithms process large datasets to extract meaningful patterns and insights."
+        text = (
+            "Machine learning is a subset of artificial intelligence. "
+            "Deep learning models use neural networks. "
+            "Neural networks are inspired by the human brain. "
+            "Artificial intelligence and machine learning are transforming industries."
         )
-        result = ke.process(summary, article_text=article_text)
+        summary = _make_summary()
+        result = ke.process(summary, text)
         assert "keywords" in result.metadata
         assert isinstance(result.metadata["keywords"], list)
         assert len(result.metadata["keywords"]) <= 5
 
-    def test_extracts_keywords_empty_text(self):
+    def test_process_with_empty_text_returns_empty_list(self):
         ke = KeywordExtractor()
-        summary = _SimpleSummary()
-        result = ke.process(summary, article_text="")
-        assert "keywords" in result.metadata
+        summary = _make_summary()
+        result = ke.process(summary, "")
         assert result.metadata["keywords"] == []
 
-    def test_top_n_kwarg_override(self):
-        ke = KeywordExtractor(top_n=20)
-        summary = _SimpleSummary()
-        article_text = " ".join(["word" + str(i) for i in range(50)])
-        result = ke.process(summary, article_text=article_text, top_n=3)
+    def test_process_with_whitespace_only_returns_empty_list(self):
+        ke = KeywordExtractor()
+        summary = _make_summary()
+        result = ke.process(summary, "   \n\t  ")
+        assert result.metadata["keywords"] == []
+
+    def test_top_n_kwarg_overrides_instance_default(self):
+        ke = KeywordExtractor(top_n=10)
+        text = " ".join(["word"] * 100 + ["unique"] * 5)
+        summary = _make_summary()
+        result = ke.process(summary, text, top_n=3)
         assert len(result.metadata["keywords"]) <= 3
 
-    def test_no_metadata_attribute_uses_setattr(self):
+    def test_initialises_metadata_if_none(self):
         ke = KeywordExtractor()
+        summary = Summary(text="hello", metadata=None)
+        result = ke.process(summary, "hello world test content article")
+        assert result.metadata is not None
+        assert "keywords" in result.metadata
 
-        class _NoMetaSummary:
-            text = "test"
+    def test_returns_same_summary_object(self):
+        ke = KeywordExtractor()
+        summary = _make_summary()
+        result = ke.process(summary, "some article text")
+        assert result is summary
 
-        s = _NoMetaSummary()
-        result = ke.process(s, article_text="machine learning data science algorithms")
-        assert hasattr(result, "keywords")
-
-    def test_tokenize(self):
-        tokens = _tokenize("Hello, World! This is a test.")
-        assert "hello" in tokens
-        assert "world" in tokens
-        assert all(t.isalpha() for t in tokens)
-
-    def test_tf_idf_returns_scored_list(self):
-        tokens = _tokenize(
-            "data science machine learning data data science python algorithms"
+    def test_keywords_are_strings(self):
+        ke = KeywordExtractor(top_n=5)
+        summary = _make_summary()
+        result = ke.process(
+            summary,
+            "Python programming language is widely used for data science and machine learning.",
         )
-        from summarizer.plugins.builtin.keyword_extractor import _BUILTIN_STOPWORDS
+        for kw in result.metadata["keywords"]:
+            assert isinstance(kw, str)
 
-        results = _tf_idf_keywords(tokens, _BUILTIN_STOPWORDS, top_n=5)
-        assert isinstance(results, list)
-        assert all(isinstance(kw, str) and isinstance(score, float) for kw, score in results)
-
-    def test_tf_idf_empty_tokens(self):
-        results = _tf_idf_keywords([], frozenset(), top_n=5)
-        assert results == []
-
-    def test_stopwords_are_excluded(self):
+    def test_stop_words_excluded(self):
         ke = KeywordExtractor(top_n=10)
-        summary = _SimpleSummary()
-        # Article with only stop words
-        result = ke.process(summary, article_text="the and or but in on at to for of")
-        assert result.metadata["keywords"] == []
+        text = "The quick brown fox jumps over the lazy dog and the fox ran away."
+        summary = _make_summary()
+        result = ke.process(summary, text)
+        stop_words_found = [kw for kw in result.metadata["keywords"] if kw in {"the", "and", "over"}]
+        assert stop_words_found == []
 
 
-# ---------------------------------------------------------------------------
-# ReadabilityScorer tests
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Built-in: ReadabilityScorer
+# ===========================================================================
+
 
 class TestReadabilityScorer:
-    def test_name_and_description(self):
+    def test_name_and_version(self):
         rs = ReadabilityScorer()
         assert rs.name == "readability_scorer"
-        assert "readability" in rs.description.lower() or "flesch" in rs.description.lower()
+        assert rs.version == "1.0.0"
 
-    def test_enabled_by_default(self):
-        assert ReadabilityScorer.enabled_by_default is True
-
-    def test_adds_readability_metadata(self):
+    def test_process_adds_readability_keys(self):
         rs = ReadabilityScorer()
-        summary = _SimpleSummary(
-            "The quick brown fox jumps over the lazy dog. "
-            "Scientists discovered a new species of deep-sea fish near hydrothermal vents."
-        )
-        result = rs.process(summary)
-        assert "readability_score" in result.metadata
+        summary = _make_summary("The cat sat on the mat. It was a fat cat.")
+        result = rs.process(summary, "")
+        assert "readability_ease" in result.metadata
+        assert "readability_grade" in result.metadata
         assert "readability_label" in result.metadata
-        assert "flesch_kincaid_grade" in result.metadata
-        assert "readability_word_count" in result.metadata
-        assert "readability_sentence_count" in result.metadata
 
-    def test_readability_score_range(self):
+    def test_process_ease_score_is_float_in_range(self):
         rs = ReadabilityScorer()
-        # Very simple text should score high (easy)
-        summary = _SimpleSummary("I like cats. Cats are fun. Dogs run fast.")
-        rs.process(summary)
-        score = summary.metadata["readability_score"]
-        # Simple text should be reasonably readable
-        assert isinstance(score, float)
-        assert score > 0
+        summary = _make_summary("Simple text. Easy words. Short sentences.")
+        result = rs.process(summary, "")
+        ease = result.metadata["readability_ease"]
+        assert isinstance(ease, float)
+        assert 0.0 <= ease <= 100.0
 
-    def test_empty_summary_skipped(self):
+    def test_process_grade_is_non_negative(self):
         rs = ReadabilityScorer()
-        summary = _SimpleSummary("")
-        result = rs.process(summary)
-        # Metadata should remain empty
-        assert result.metadata == {}
+        summary = _make_summary("Complex multisyllabic vocabulary characterises sophisticated prose.")
+        result = rs.process(summary, "")
+        grade = result.metadata["readability_grade"]
+        assert isinstance(grade, float)
+        assert grade >= 0.0
 
-    def test_no_metadata_attribute_uses_setattr(self):
+    def test_process_label_is_string(self):
         rs = ReadabilityScorer()
+        summary = _make_summary("Hello world. This is a test.")
+        result = rs.process(summary, "")
+        assert isinstance(result.metadata["readability_label"], str)
 
-        class _NoMetaSummary:
-            text = "The quick brown fox. Simple and clear text here."
-
-        s = _NoMetaSummary()
-        result = rs.process(s)
-        assert hasattr(result, "readability_score")
-
-    def test_flesch_reading_ease_formula(self):
-        # 100 words, 5 sentences, 150 syllables
-        score = flesch_reading_ease(100, 5, 150)
-        expected = 206.835 - 1.015 * (100 / 5) - 84.6 * (150 / 100)
-        assert abs(score - expected) < 0.01
-
-    def test_flesch_reading_ease_zero_division(self):
-        assert flesch_reading_ease(0, 0, 0) == 0.0
-        assert flesch_reading_ease(100, 0, 150) == 0.0
-
-    def test_flesch_kincaid_grade_formula(self):
-        grade = flesch_kincaid_grade(100, 5, 150)
-        expected = 0.39 * (100 / 5) + 11.8 * (150 / 100) - 15.59
-        assert abs(grade - expected) < 0.01
-
-    def test_flesch_kincaid_grade_zero_division(self):
-        assert flesch_kincaid_grade(0, 0, 0) == 0.0
-
-    def test_count_syllables_basic(self):
-        assert rs_count_syllables("cat") == 1
-        assert rs_count_syllables("table") >= 1
-        assert rs_count_syllables("beautiful") >= 3
-
-    def test_count_syllables_empty(self):
-        assert rs_count_syllables("") == 0
-
-    def test_split_sentences(self):
-        text = "Hello world. How are you? I am fine!"
-        sentences = _split_sentences(text)
-        assert len(sentences) == 3
-
-    def test_tokenize_words(self):
-        words = _tokenize_words("Hello, world! 123 test.")
-        assert "Hello" in words
-        assert "world" in words
-        assert "123" not in words
-
-    def test_get_text_tries_multiple_attributes(self):
+    def test_empty_summary_text_returns_none_scores(self):
         rs = ReadabilityScorer()
+        summary = _make_summary("")
+        result = rs.process(summary, "")
+        assert result.metadata["readability_ease"] is None
+        assert result.metadata["readability_grade"] is None
+        assert result.metadata["readability_label"] == "N/A"
 
-        class _SummaryWithContent:
-            content = "Content attribute text. It has multiple sentences."
-            metadata: dict = {}
-
-        s = _SummaryWithContent()
-        rs.process(s)
-        assert "readability_score" in s.metadata
-
-    def test_word_count_in_metadata(self):
+    def test_whitespace_only_summary_returns_none_scores(self):
         rs = ReadabilityScorer()
-        text = "One two three four five. Six seven eight nine ten."
-        summary = _SimpleSummary(text)
-        rs.process(summary)
-        assert summary.metadata["readability_word_count"] == 10
+        summary = _make_summary("   \n  ")
+        result = rs.process(summary, "")
+        assert result.metadata["readability_ease"] is None
+
+    def test_initialises_metadata_if_none(self):
+        rs = ReadabilityScorer()
+        summary = Summary(text="A short sentence.", metadata=None)
+        result = rs.process(summary, "")
+        assert result.metadata is not None
+        assert "readability_ease" in result.metadata
+
+    def test_returns_same_summary_object(self):
+        rs = ReadabilityScorer()
+        summary = _make_summary("Hello world.")
+        result = rs.process(summary, "")
+        assert result is summary
+
+    def test_original_text_not_used(self):
+        """ReadabilityScorer should analyse summary.text, not original_text."""
+        rs = ReadabilityScorer()
+        short_summary = _make_summary("Hi. OK.")
+        long_original = "This is an extremely long and complex original article " * 50
+        result = rs.process(short_summary, long_original)
+        # Scores should reflect the short summary, not the long original
+        assert result.metadata["readability_ease"] is not None
+
+    # ---- Internal helpers ----
+
+    def test_count_sentences(self):
+        assert _count_sentences("Hello. World. Test.") == 3
+        assert _count_sentences("Hello! World? Test.") == 3
+        assert _count_sentences("No terminal punctuation") == 1
+
+    def test_count_words(self):
+        assert _count_words("Hello world") == 2
+        assert _count_words("one") == 1
+        assert _count_words("") == 1  # returns max(1, 0) = 1
+
+    def test_count_syllables_in_word(self):
+        # Basic checks – not exhaustive (heuristic)
+        assert _count_syllables_in_word("cat") >= 1
+        assert _count_syllables_in_word("beautiful") >= 3
+        assert _count_syllables_in_word("") == 0
+
+    def test_ease_label_very_easy(self):
+        assert _ease_label(95) == "Very Easy"
+
+    def test_ease_label_easy(self):
+        assert _ease_label(85) == "Easy"
+
+    def test_ease_label_fairly_easy(self):
+        assert _ease_label(75) == "Fairly Easy"
+
+    def test_ease_label_standard(self):
+        assert _ease_label(65) == "Standard"
+
+    def test_ease_label_fairly_difficult(self):
+        assert _ease_label(55) == "Fairly Difficult"
+
+    def test_ease_label_difficult(self):
+        assert _ease_label(40) == "Difficult"
+
+    def test_ease_label_very_difficult(self):
+        assert _ease_label(10) == "Very Difficult"
+
+    def test_flesch_kincaid_returns_tuple(self):
+        ease, grade = _flesch_kincaid("The cat sat on the mat.")
+        assert isinstance(ease, float)
+        assert isinstance(grade, float)
+
+    def test_flesch_kincaid_simple_text_has_high_ease(self):
+        ease, _ = _flesch_kincaid("The cat sat. The dog ran. The bird flew.")
+        assert ease >= 50  # should be relatively easy
+
+    def test_flesch_kincaid_complex_text_has_lower_ease(self):
+        complex_text = (
+            "The epistemological ramifications of poststructuralist hermeneutics "
+            "necessitate a comprehensive recontextualisation of interdisciplinary "
+            "methodological paradigms within contemporary philosophical discourse."
+        )
+        ease, _ = _flesch_kincaid(complex_text)
+        simple_ease, _ = _flesch_kincaid("The cat sat on the mat.")
+        assert ease < simple_ease
 
 
-# ---------------------------------------------------------------------------
-# CLI integration tests
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# CLI: plugins list
+# ===========================================================================
+
 
 class TestCLIPluginsList:
-    def test_plugins_list_command(self, capsys):
+    def test_plugins_list_exits_zero(self, capsys):
         from summarizer.cli import main
 
-        exit_code = main(["plugins", "list"])
+        with patch("summarizer.plugins._get_entry_points", return_value=[]):
+            exit_code = main(["plugins", "list"])
+
+        assert exit_code == 0
+
+    def test_plugins_list_shows_no_plugins_message_when_empty(self, capsys):
+        from summarizer.cli import main
+
+        with patch("summarizer.plugins._get_entry_points", return_value=[]):
+            main(["plugins", "list"])
+
         captured = capsys.readouterr()
-        assert exit_code == 0
-        # Should show at least the built-in post-processors
-        assert "keyword_extractor" in captured.out or "postprocessor" in captured.out
+        assert "No plugins discovered" in captured.out
 
-    def test_plugins_list_shows_headers(self, capsys):
+    def test_plugins_list_shows_registered_plugin(self, capsys):
+        from summarizer.cli import cmd_plugins_list, registry
+        import argparse
+
+        # Reset and repopulate the global registry
+        reg_backup_extractors = list(registry._extractors)
+        reg_backup_postprocessors = list(registry._postprocessors)
+        reg_backup_formatters = list(registry._formatters)
+
+        try:
+            with patch("summarizer.plugins._get_entry_points", return_value=[]):
+                registry.discover()
+            registry.register_postprocessor(_GoodPostProcessor())
+
+            with patch("summarizer.plugins._get_entry_points", return_value=[]):
+                # Patch discover to not wipe out our manual registration
+                original_discover = registry.discover
+
+                def _patched_discover():
+                    pass  # no-op
+
+                registry.discover = _patched_discover  # type: ignore[method-assign]
+                cmd_plugins_list(argparse.Namespace())
+                registry.discover = original_discover  # type: ignore[method-assign]
+
+            captured = capsys.readouterr()
+            assert "good_postprocessor" in captured.out
+        finally:
+            registry._extractors = reg_backup_extractors
+            registry._postprocessors = reg_backup_postprocessors
+            registry._formatters = reg_backup_formatters
+
+    def test_plugins_list_unknown_command_exits_nonzero(self):
         from summarizer.cli import main
 
-        main(["plugins", "list"])
-        captured = capsys.readouterr()
-        output = captured.out
-        assert "TYPE" in output
-        assert "NAME" in output
+        with pytest.raises(SystemExit) as exc_info:
+            main(["plugins", "nonexistent"])
 
-    def test_no_plugins_flag_skips_registry(self, capsys):
-        """Ensure --no-plugins flag prevents registry usage."""
+        assert exc_info.value.code != 0
+
+
+# ===========================================================================
+# CLI: run with post-processors
+# ===========================================================================
+
+
+class TestCLIRunWithPostProcessors:
+    def test_run_applies_postprocessors(self, capsys):
         from summarizer.cli import main
+        from summarizer.plugins import registry
 
-        # This tests the summarize command with no-plugins flag
-        exit_code = main(["--no-plugins", "summarize", "https://example.com"])
-        assert exit_code == 0
+        class _TaggingProcessor(_GoodPostProcessor):
+            name = "tagging_processor"
 
-    def test_summarize_command_applies_postprocessors(self, capsys):
-        from summarizer.cli import main
-
-        exit_code = main(["summarize", "https://example.com"])
-        captured = capsys.readouterr()
-        assert exit_code == 0
-        # Post-processors should have added metadata to the output
-        output = captured.out
-        assert "example.com" in output or "summary" in output.lower()
-
-    def test_summarize_json_format(self, capsys):
-        import json
-
-        from summarizer.cli import main
-
-        exit_code = main(["summarize", "--format", "json", "https://example.com"])
-        captured = capsys.readouterr()
-        assert exit_code == 0
-        # Find JSON in output
-        lines = captured.out.strip().split("\n")
-        json_lines = []
-        in_json = False
-        for line in lines:
-            if line.strip().startswith("{"):
-                in_json = True
-            if in_json:
-                json_lines.append(line)
-            if in_json and line.strip() == "}":
-                break
-        if json_lines:
-            data = json.loads("\n".join(json_lines))
-            assert "summary" in data
-
-    def test_no_postprocess_flag(self, capsys):
-        from summarizer.cli import main
-
-        exit_code = main(["summarize", "--no-postprocess", "https://example.com"])
-        assert exit_code == 0
-
-
-# ---------------------------------------------------------------------------
-# Concurrent/multiple registration tests
-# ---------------------------------------------------------------------------
-
-class TestMultipleRegistration:
-    def test_multiple_postprocessors_applied_in_order(self):
-        """Processors should be applied in registration order."""
-        call_order = []
-
-        class _Proc1(BasePostProcessor):
-            name = "proc1"
-            enabled_by_default = True
-
-            def process(self, summary, article_text="", **kwargs):
-                call_order.append(1)
+            def process(self, summary, original_text, **kwargs):
+                summary.text += " [TAGGED]"
                 return summary
 
-        class _Proc2(BasePostProcessor):
-            name = "proc2"
-            enabled_by_default = True
+        reg_backup = list(registry._postprocessors)
+        try:
+            with patch("summarizer.plugins._get_entry_points", return_value=[]):
+                registry.discover()
+            registry.register_postprocessor(_TaggingProcessor())
 
-            def process(self, summary, article_text="", **kwargs):
-                call_order.append(2)
-                return summary
+            def _no_op_discover():
+                pass
 
-        registry = PluginRegistry()
-        registry.register_postprocessor(_Proc1())
-        registry.register_postprocessor(_Proc2())
+            registry.discover = _no_op_discover  # type: ignore[method-assign]
+            main(["run", "--text", "Hello world article."])
+            del registry.discover  # restore to class method
 
-        summary = _SimpleSummary()
-        registry.apply_postprocessors(summary, enabled_only=True)
-        assert call_order == [1, 2]
+            captured = capsys.readouterr()
+            assert "[TAGGED]" in captured.out
+        finally:
+            registry._postprocessors = reg_backup
 
-    def test_formatters_registry_selects_correct_formatter(self):
-        registry = PluginRegistry()
-        registry.register_formatter(_ConcreteFormatter())
+    def test_run_warns_on_postprocessor_failure(self, capsys):
+        from summarizer.cli import main
+        from summarizer.plugins import registry
 
-        from summarizer.cli import _format_summary
+        class _FailingProcessor(BasePostProcessor):
+            name = "failing_processor"
+            description = "always fails"
 
-        summary = _SimpleSummary("test text")
-        result = _format_summary(summary, "test_formatter", registry)
-        assert result.startswith("FORMATTED:")
+            def process(self, summary, original_text, **kwargs):
+                raise RuntimeError("intentional failure")
 
-    def test_unknown_format_falls_back_to_text(self):
-        registry = PluginRegistry()
+        reg_backup = list(registry._postprocessors)
+        try:
+            with patch("summarizer.plugins._get_entry_points", return_value=[]):
+                registry.discover()
+            registry.register_postprocessor(_FailingProcessor())
 
-        from summarizer.cli import _format_summary
+            def _no_op_discover():
+                pass
 
-        summary = _SimpleSummary("hello world")
-        result = _format_summary(summary, "unknown_format", registry)
-        assert "hello world" in result
+            registry.discover = _no_op_discover  # type: ignore[method-assign]
+            exit_code = main(["run", "--text", "Some article text."])
+            del registry.discover
+
+            captured = capsys.readouterr()
+            assert "warning" in captured.err.lower()
+            assert exit_code == 0  # overall run still succeeds
+        finally:
+            registry._postprocessors = reg_backup

@@ -1,139 +1,168 @@
 """
 Built-in post-processor: ReadabilityScorer
+==========================================
 
-Computes a Flesch-Kincaid readability score for the generated summary text
-and attaches it to the summary's metadata dict.
+Computes a Flesch-Kincaid readability score for the *summary text* and stores
+it in ``summary.metadata``.
 
-The Flesch Reading Ease formula:
-    206.835 - 1.015 * (words / sentences) - 84.6 * (syllables / words)
-
-The Flesch-Kincaid Grade Level formula:
-    0.39 * (words / sentences) + 11.8 * (syllables / words) - 15.59
-
-No external dependencies are required — syllable counting uses a simple
-heuristic that is accurate enough for informational prose.
+The Flesch Reading Ease formula requires only syllable counts, word counts,
+and sentence counts – no external libraries are needed.  An optional
+Flesch-Kincaid Grade Level score is also computed.
 """
 
 from __future__ import annotations
 
-import logging
 import re
-import string
-from typing import Any
+from typing import Any, Dict, Optional, Tuple
 
-from summarizer.plugins.base import BasePostProcessor
+from ...models import Summary
+from ..base import BasePostProcessor
 
-logger = logging.getLogger(__name__)
+
+class ReadabilityScorer(BasePostProcessor):
+    """
+    Post-processor that adds Flesch-Kincaid readability metrics to a summary.
+
+    The following keys are added to ``summary.metadata``:
+
+    * ``readability_ease`` – Flesch Reading Ease score (0–100).
+      Higher values indicate easier text.
+    * ``readability_grade`` – Flesch-Kincaid Grade Level.
+      Approximates the US school grade needed to comprehend the text.
+    * ``readability_label`` – A human-friendly label such as "Easy" or
+      "Very Difficult".
+
+    Reference:
+        Flesch, R. (1948). A new readability yardstick. *Journal of Applied
+        Psychology*, 32(3), 221–233.
+    """
+
+    name = "readability_scorer"
+    description = "Computes Flesch-Kincaid readability scores for the summary text"
+    version = "1.0.0"
+
+    def process(self, summary: Summary, original_text: str, **kwargs: Any) -> Summary:
+        """
+        Compute readability scores from the summary text.
+
+        Args:
+            summary: The Summary produced by the LLM.
+            original_text: The raw article text (not used by this processor).
+            **kwargs: Unused.
+
+        Returns:
+            The same *summary* with readability metadata populated.
+        """
+        text: str = summary.text or ""
+
+        if not text.strip():
+            scores: Dict[str, object] = {
+                "readability_ease": None,
+                "readability_grade": None,
+                "readability_label": "N/A",
+            }
+        else:
+            ease, grade = _flesch_kincaid(text)
+            scores = {
+                "readability_ease": round(ease, 2),
+                "readability_grade": round(grade, 2),
+                "readability_label": _ease_label(ease),
+            }
+
+        if summary.metadata is None:
+            summary.metadata = {}
+        summary.metadata.update(scores)
+        return summary
 
 
 # ---------------------------------------------------------------------------
-# Syllable counting heuristic
+# Flesch-Kincaid implementation (no external dependencies)
 # ---------------------------------------------------------------------------
 
-_VOWELS = frozenset("aeiouy")
 
-_EXCEPTIONS_ADD: list[str] = [
-    "serious", "crucial", "area", "idea", "ocean", "visual",
-    "actual", "usual", "trivial", "real", "ion",
-]
-
-_EXCEPTIONS_SUBTRACT: list[str] = [
-    "every", "different", "family", "general", "natural",
-    "business", "natural", "different",
-]
+def _count_sentences(text: str) -> int:
+    """Count sentences by splitting on terminal punctuation."""
+    sentences = re.split(r"[.!?]+", text)
+    # Filter out empty strings that result from trailing punctuation
+    return max(1, sum(1 for s in sentences if s.strip()))
 
 
-def _count_syllables(word: str) -> int:
+def _count_words(text: str) -> int:
+    """Count whitespace-delimited tokens."""
+    return max(1, len(text.split()))
+
+
+def _count_syllables_in_word(word: str) -> int:
     """
-    Estimate the number of syllables in a word using a rule-based heuristic.
+    Estimate syllable count using a heuristic approach.
 
-    Accuracy: ~90 % on common English vocabulary.
+    This is not perfect but is acceptable for readability scoring purposes
+    and requires no external dictionary.
     """
-    word = word.lower().strip(string.punctuation)
+    word = word.lower().strip(".,!?;:'\"")
     if not word:
         return 0
+
+    # Special cases
     if len(word) <= 3:
         return 1
 
-    # Remove trailing silent 'e'
-    if word.endswith("e") and not word.endswith("le"):
-        word = word[:-1]
+    # Remove silent trailing 'e'
+    word = re.sub(r"e$", "", word)
 
-    # Count vowel groups
-    count = 0
-    prev_vowel = False
-    for char in word:
-        is_vowel = char in _VOWELS
-        if is_vowel and not prev_vowel:
-            count += 1
-        prev_vowel = is_vowel
+    # Count vowel groups as syllables
+    vowel_groups = re.findall(r"[aeiouy]+", word)
+    count = len(vowel_groups)
 
-    # 'le' at end of word counts as syllable if preceded by consonant
-    if word.endswith("le") and len(word) > 2 and word[-3] not in _VOWELS:
+    # Adjust for common patterns
+    # -le at the end counts as a syllable
+    if word.endswith("le") and len(word) > 2 and word[-3] not in "aeiouy":
         count += 1
 
     return max(1, count)
 
 
-def _split_sentences(text: str) -> list[str]:
-    """Split text into sentences using punctuation heuristics."""
-    # Split on '.', '!', '?' followed by whitespace or end of string
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-    return [s for s in sentences if s.strip()]
+def _count_syllables(text: str) -> int:
+    """Count total syllables across all words in *text*."""
+    words = text.split()
+    return sum(_count_syllables_in_word(w) for w in words)
 
 
-def _tokenize_words(text: str) -> list[str]:
-    """Return list of alphabetic word tokens."""
-    return [w for w in re.findall(r"[a-zA-Z']+", text) if w.isalpha()]
-
-
-# ---------------------------------------------------------------------------
-# Readability formulas
-# ---------------------------------------------------------------------------
-
-def flesch_reading_ease(
-    word_count: int, sentence_count: int, syllable_count: int
-) -> float:
+def _flesch_kincaid(text: str) -> Tuple[float, float]:
     """
-    Compute the Flesch Reading Ease score.
+    Compute Flesch Reading Ease and Flesch-Kincaid Grade Level.
 
-    Interpretation:
-        90–100  Very Easy
-        80–90   Easy
-        70–80   Fairly Easy
-        60–70   Standard
-        50–60   Fairly Difficult
-        30–50   Difficult
-        0–30    Very Confusing
+    Returns:
+        A tuple of ``(reading_ease, grade_level)``.
     """
-    if sentence_count == 0 or word_count == 0:
-        return 0.0
-    return (
+    sentences = _count_sentences(text)
+    words = _count_words(text)
+    syllables = _count_syllables(text)
+
+    # Flesch Reading Ease
+    # RE = 206.835 – 1.015 * (words / sentences) – 84.6 * (syllables / words)
+    reading_ease = (
         206.835
-        - 1.015 * (word_count / sentence_count)
-        - 84.6 * (syllable_count / word_count)
+        - 1.015 * (words / sentences)
+        - 84.6 * (syllables / words)
     )
+    # Clamp to [0, 100]
+    reading_ease = max(0.0, min(100.0, reading_ease))
 
-
-def flesch_kincaid_grade(
-    word_count: int, sentence_count: int, syllable_count: int
-) -> float:
-    """
-    Compute the Flesch-Kincaid Grade Level score.
-
-    The result corresponds roughly to a US school grade level.
-    """
-    if sentence_count == 0 or word_count == 0:
-        return 0.0
-    return (
-        0.39 * (word_count / sentence_count)
-        + 11.8 * (syllable_count / word_count)
+    # Flesch-Kincaid Grade Level
+    # GL = 0.39 * (words / sentences) + 11.8 * (syllables / words) – 15.59
+    grade_level = (
+        0.39 * (words / sentences)
+        + 11.8 * (syllables / words)
         - 15.59
     )
+    grade_level = max(0.0, grade_level)
+
+    return reading_ease, grade_level
 
 
 def _ease_label(score: float) -> str:
-    """Return a human-readable label for a Flesch Reading Ease score."""
+    """Convert a Flesch Reading Ease score to a descriptive label."""
     if score >= 90:
         return "Very Easy"
     elif score >= 80:
@@ -147,98 +176,4 @@ def _ease_label(score: float) -> str:
     elif score >= 30:
         return "Difficult"
     else:
-        return "Very Confusing"
-
-
-# ---------------------------------------------------------------------------
-# Post-processor class
-# ---------------------------------------------------------------------------
-
-class ReadabilityScorer(BasePostProcessor):
-    """
-    Computes Flesch Reading Ease and Flesch-Kincaid Grade Level for
-    the generated summary text and stores them in summary.metadata.
-
-    Metadata keys added:
-        readability_score       (float) Flesch Reading Ease score (0–100)
-        readability_label       (str)   Human-readable ease label
-        flesch_kincaid_grade    (float) FK Grade Level
-        readability_word_count  (int)   Word count of the summary
-        readability_sentence_count (int) Sentence count of the summary
-    """
-
-    name = "readability_scorer"
-    description = (
-        "Computes Flesch-Kincaid readability scores for the generated summary "
-        "(no external dependencies)."
-    )
-    enabled_by_default = True
-
-    def process(self, summary: Any, article_text: str = "", **kwargs: Any) -> Any:
-        """
-        Compute readability metrics for the summary text.
-
-        Args:
-            summary: A Summary-like object. The summary text is read from
-                     summary.text, summary.content, or str(summary).
-            article_text: Unused by this processor (but accepted for API compat).
-            **kwargs: Ignored.
-
-        Returns:
-            The enriched summary object.
-        """
-        text = self._get_text(summary)
-        if not text.strip():
-            logger.debug("ReadabilityScorer: empty summary text — skipping.")
-            return summary
-
-        sentences = _split_sentences(text)
-        words = _tokenize_words(text)
-        syllables = sum(_count_syllables(w) for w in words)
-
-        sentence_count = max(1, len(sentences))
-        word_count = max(1, len(words))
-
-        ease = flesch_reading_ease(word_count, sentence_count, syllables)
-        grade = flesch_kincaid_grade(word_count, sentence_count, syllables)
-        label = _ease_label(ease)
-
-        metrics = {
-            "readability_score": round(ease, 2),
-            "readability_label": label,
-            "flesch_kincaid_grade": round(grade, 2),
-            "readability_word_count": word_count,
-            "readability_sentence_count": sentence_count,
-        }
-
-        if hasattr(summary, "metadata") and isinstance(summary.metadata, dict):
-            summary.metadata.update(metrics)
-        else:
-            for key, value in metrics.items():
-                try:
-                    setattr(summary, key, value)
-                except AttributeError:
-                    logger.warning(
-                        "Cannot set readability attribute %r on %r",
-                        key,
-                        type(summary).__name__,
-                    )
-
-        logger.debug(
-            "ReadabilityScorer: ease=%.1f (%s), grade=%.1f, words=%d, sentences=%d",
-            ease,
-            label,
-            grade,
-            word_count,
-            sentence_count,
-        )
-        return summary
-
-    @staticmethod
-    def _get_text(summary: Any) -> str:
-        """Extract plain text from a Summary-like object."""
-        for attr in ("text", "content", "summary", "body"):
-            val = getattr(summary, attr, None)
-            if isinstance(val, str) and val.strip():
-                return val
-        return str(summary)
+        return "Very Difficult"

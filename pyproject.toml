@@ -1,89 +1,77 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "summarizer"
 version = "0.1.0"
-description = "AI-powered article summarizer with a plugin system"
+description = "AI-powered article summariser with plugin support"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "Summarizer Authors" }]
-
 dependencies = [
-    "httpx>=0.25",
+    "httpx>=0.27",
     "openai>=1.0",
     "rich>=13.0",
-    "typer>=0.9",
-    "pydantic>=2.0",
+    "click>=8.1",
 ]
 
 [project.optional-dependencies]
+sklearn = ["scikit-learn>=1.3"]
 dev = [
-    "pytest>=7.4",
-    "pytest-asyncio>=0.21",
-    "pytest-cov>=4.1",
-    "ruff>=0.1",
-    "mypy>=1.5",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
 ]
-nlp = [
-    "nltk>=3.8",
-]
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
 [project.scripts]
 summarize = "summarizer.cli:main"
 
 # ---------------------------------------------------------------------------
-# Plugin entry points
+# Built-in plugin entry points
 #
-# Third-party packages can register plugins by adding entries in their own
-# pyproject.toml under the appropriate group.  The three supported groups are:
+# Third-party plugin packages should add their own [project.entry-points]
+# tables following the same pattern.
 #
-#   summarizer.extractors
-#       Custom article extraction logic.
-#       Must subclass summarizer.plugins.base.BaseExtractor.
-#
-#   summarizer.postprocessors
-#       Transforms the Summary object after LLM generation.
-#       Must subclass summarizer.plugins.base.BasePostProcessor.
-#
-#   summarizer.formatters
-#       Custom output formats for Summary objects.
-#       Must subclass summarizer.plugins.base.BaseFormatter.
-#
-# Example (in a third-party package's pyproject.toml):
-#
-#   [project.entry-points."summarizer.postprocessors"]
-#   my_sentiment = "my_package.processors:SentimentAnalyser"
-#
-# Built-in plugins are registered here so they appear in entry-point
-# discovery alongside third-party plugins.
+# Groups:
+#   summarizer.extractors      – subclasses of BaseExtractor
+#   summarizer.postprocessors  – subclasses of BasePostProcessor
+#   summarizer.formatters      – subclasses of BaseFormatter
 # ---------------------------------------------------------------------------
 
 [project.entry-points."summarizer.postprocessors"]
 keyword_extractor = "summarizer.plugins.builtin.keyword_extractor:KeywordExtractor"
 readability_scorer = "summarizer.plugins.builtin.readability:ReadabilityScorer"
 
-# If you add built-in extractors or formatters in the future, register them:
+# Extractor and formatter slots are intentionally empty in the base package –
+# they exist to document the entry-point groups for third-party authors.
+# Example (uncomment and adjust for your own package):
+#
 # [project.entry-points."summarizer.extractors"]
-# pdf = "summarizer.plugins.builtin.pdf_extractor:PDFExtractor"
-
+# my_extractor = "mypkg.extractors:MyExtractor"
+#
 # [project.entry-points."summarizer.formatters"]
-# slack = "summarizer.plugins.builtin.slack_formatter:SlackFormatter"
+# my_formatter = "mypkg.formatters:MyFormatter"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+# ---------------------------------------------------------------------------
+# Tool configuration
+# ---------------------------------------------------------------------------
 
-[tool.setuptools.package-dir]
-"" = "src"
+[tool.hatch.build.targets.wheel]
+packages = ["src/summarizer"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.ruff]
-line-length = 88
+line-length = 100
 target-version = "py39"
 
 [tool.mypy]

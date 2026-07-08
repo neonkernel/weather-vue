@@ -1,134 +1,144 @@
 """
-Base ABCs for all plugin types in the summarizer plugin system.
+Base ABCs for all plugin types.
 
-Plugin authors should subclass one of these ABCs to create custom plugins:
-- BaseExtractor: custom article extraction logic
-- BasePostProcessor: transforms the Summary after LLM response
-- BaseFormatter: custom output formats
+Plugin authors should subclass one of these ABCs and implement the required
+abstract methods, then register their class via the appropriate entry point
+group in their package's pyproject.toml.
 """
 
 from __future__ import annotations
 
 import abc
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
+
+from ..models import Summary
 
 
 class BaseExtractor(abc.ABC):
     """
-    Abstract base class for custom article extractors.
+    Base class for custom article extractors.
 
-    Subclass this to provide custom extraction logic for specific
-    content sources (e.g., paywalled sites, custom CMSes, PDFs).
+    Extractors are responsible for fetching and parsing raw text content
+    from a source (URL, file path, etc.).
+
+    Entry point group: ``summarizer.extractors``
     """
 
-    # Human-readable name for this extractor
-    name: str = "unnamed_extractor"
-
-    # Description shown in `plugins list`
+    #: Human-readable name shown in ``summarize plugins list``
+    name: str = ""
+    #: Short description of what this extractor does
     description: str = ""
+    #: Version string for the extractor
+    version: str = "0.1.0"
 
     @abc.abstractmethod
-    def can_handle(self, url: str) -> bool:
+    def can_handle(self, source: str) -> bool:
         """
-        Return True if this extractor can handle the given URL.
+        Return True if this extractor can handle the given source string.
+
+        The plugin registry calls this method to determine which extractor
+        should be used for a given source.  The first extractor that returns
+        True wins.
 
         Args:
-            url: The URL to check.
+            source: A URL, file path, or other identifier for the content.
 
         Returns:
-            True if this extractor should be used for the given URL.
+            True if this extractor is able to process *source*.
         """
-        ...
 
     @abc.abstractmethod
-    def extract(self, url: str, **kwargs: Any) -> dict[str, Any]:
+    def extract(self, source: str, **kwargs: Any) -> str:
         """
-        Extract article content from the given URL.
+        Extract and return the raw text content from *source*.
 
         Args:
-            url: The URL to extract content from.
-            **kwargs: Additional options passed by the caller.
+            source: A URL, file path, or other identifier for the content.
+            **kwargs: Optional extractor-specific parameters.
 
         Returns:
-            A dict with at least 'text' (str) and optionally
-            'title' (str), 'author' (str), 'date' (str), 'html' (str).
+            The plain-text body of the article.
 
         Raises:
-            ExtractionError: if content cannot be extracted.
+            ExtractionError: If the content cannot be retrieved or parsed.
         """
-        ...
 
     def __repr__(self) -> str:
-        return f"<Extractor: {self.name}>"
+        return f"<{self.__class__.__name__} name={self.name!r} version={self.version!r}>"
 
 
 class BasePostProcessor(abc.ABC):
     """
-    Abstract base class for post-processors.
+    Base class for post-processors that transform a :class:`~summarizer.models.Summary`
+    after the LLM has produced it.
 
-    Subclass this to transform or enrich a Summary object after
-    the LLM has generated the summary text.
+    Post-processors can enrich the summary with additional metadata fields
+    (e.g. keywords, readability scores) or mutate the text in-place.
+
+    Entry point group: ``summarizer.postprocessors``
     """
 
-    # Human-readable name for this post-processor
-    name: str = "unnamed_postprocessor"
-
-    # Description shown in `plugins list`
+    #: Human-readable name shown in ``summarize plugins list``
+    name: str = ""
+    #: Short description of what this post-processor does
     description: str = ""
-
-    # Whether this processor is enabled by default
-    enabled_by_default: bool = False
+    #: Version string for the post-processor
+    version: str = "0.1.0"
 
     @abc.abstractmethod
-    def process(self, summary: Any, article_text: str = "", **kwargs: Any) -> Any:
+    def process(self, summary: Summary, original_text: str, **kwargs: Any) -> Summary:
         """
-        Process and enrich a Summary object.
+        Process *summary* and return the (possibly mutated) result.
+
+        Implementations should avoid replacing the Summary object wholesale;
+        instead, update ``summary.metadata`` or ``summary.text`` in-place and
+        return *summary*.
 
         Args:
-            summary: The Summary object produced by the LLM pipeline.
-            article_text: The original article text (for analysis).
-            **kwargs: Additional options.
+            summary: The :class:`~summarizer.models.Summary` produced by the LLM.
+            original_text: The raw article text that was summarised.
+            **kwargs: Optional processor-specific parameters.
 
         Returns:
-            The (potentially modified) Summary object. Processors should
-            add their results to summary.metadata or a dedicated field.
+            The enriched / transformed :class:`~summarizer.models.Summary`.
         """
-        ...
 
     def __repr__(self) -> str:
-        return f"<PostProcessor: {self.name}>"
+        return f"<{self.__class__.__name__} name={self.name!r} version={self.version!r}>"
 
 
 class BaseFormatter(abc.ABC):
     """
-    Abstract base class for custom output formatters.
+    Base class for custom output formatters.
 
-    Subclass this to produce custom output formats (e.g., HTML,
-    Slack messages, database inserts) from a Summary object.
+    Formatters convert a :class:`~summarizer.models.Summary` object into a
+    string (or bytes) representation suitable for a particular output target
+    (terminal, Markdown file, JSON API response, etc.).
+
+    Entry point group: ``summarizer.formatters``
     """
 
-    # Human-readable name for this formatter
-    name: str = "unnamed_formatter"
-
-    # Description shown in `plugins list`
+    #: Human-readable name shown in ``summarize plugins list``
+    name: str = ""
+    #: Short description of what this formatter produces
     description: str = ""
-
-    # File extension hint (e.g., ".html", ".json")
+    #: Version string for the formatter
+    version: str = "0.1.0"
+    #: File extension hint, e.g. ``".md"`` or ``".json"``
     extension: str = ".txt"
 
     @abc.abstractmethod
-    def format(self, summary: Any, **kwargs: Any) -> str:
+    def format(self, summary: Summary, **kwargs: Any) -> str:
         """
-        Format a Summary object into a string representation.
+        Render *summary* to a string.
 
         Args:
-            summary: The Summary object to format.
-            **kwargs: Additional options.
+            summary: The :class:`~summarizer.models.Summary` to render.
+            **kwargs: Optional formatter-specific parameters.
 
         Returns:
             A string representation of the summary.
         """
-        ...
 
     def __repr__(self) -> str:
-        return f"<Formatter: {self.name}>"
+        return f"<{self.__class__.__name__} name={self.name!r} version={self.version!r}>"
